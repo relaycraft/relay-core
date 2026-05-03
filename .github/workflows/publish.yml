@@ -1,0 +1,46 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish relay-core-api
+        run: cargo publish -p relay-core-api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-lib
+        run: cargo publish -p relay-core-lib --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-storage
+        run: cargo publish -p relay-core-storage --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-script
+        run: cargo publish -p relay-core-script --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-runtime
+        run: cargo publish -p relay-core-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-http
+        run: cargo publish -p relay-core-http --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-probe
+        run: cargo publish -p relay-core-probe --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-cli
+        run: cargo publish -p relay-core-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish relay-core-tauri
+        run: cargo publish -p relay-core-tauri --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
