@@ -70,13 +70,11 @@ pub fn apply_transform(body: &mut BodyData, transform: &BodyTransform) {
                     if let Some(parent) = parent {
                         if let Value::Object(map) = parent {
                             map.remove(last_segment);
-                        } else if let Value::Array(arr) = parent {
-                            if let Ok(idx) = last_segment.parse::<usize>() {
-                                if idx < arr.len() {
+                        } else if let Value::Array(arr) = parent
+                            && let Ok(idx) = last_segment.parse::<usize>()
+                                && idx < arr.len() {
                                     arr.remove(idx);
                                 }
-                            }
-                        }
                     }
                 }
 
@@ -103,11 +101,10 @@ fn jsonpath_to_pointer(path: &str) -> String {
     let mut chars = path.chars().peekable();
     
     // Handle first segment if it doesn't start with separator
-    if let Some(&c) = chars.peek() {
-        if c != '.' && c != '[' {
+    if let Some(&c) = chars.peek()
+        && c != '.' && c != '[' {
             pointer.push('/');
         }
-    }
 
     while let Some(c) = chars.next() {
         match c {

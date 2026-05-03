@@ -79,12 +79,11 @@ impl RuleStateStore for InMemoryRuleStateStore {
     async fn get_variable(&self, key: &str) -> Option<String> {
         let mut variables = self.variables.lock().await;
         if let Some(v) = variables.get(key) {
-            if let Some(exp) = v.expires_at {
-                if Instant::now() >= exp {
+            if let Some(exp) = v.expires_at
+                && Instant::now() >= exp {
                     variables.remove(key);
                     return None;
                 }
-            }
             return Some(v.value.clone());
         }
         None

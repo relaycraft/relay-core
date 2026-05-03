@@ -102,13 +102,11 @@ where
     let policy = policy_rx.borrow().clone();
     
     // Check Content-Length against policy
-    if let Some(cl) = req.headers().get(hyper::header::CONTENT_LENGTH) {
-        if let Ok(len) = cl.to_str().unwrap_or_default().parse::<usize>() {
-            if len > policy.max_body_size {
+    if let Some(cl) = req.headers().get(hyper::header::CONTENT_LENGTH)
+        && let Ok(len) = cl.to_str().unwrap_or_default().parse::<usize>()
+            && len > policy.max_body_size {
                 return Ok(create_error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large"));
             }
-        }
-    }
 
     // Create Flow
     let meta = parse_request_meta(&req, is_mitm);

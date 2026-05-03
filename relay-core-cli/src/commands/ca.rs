@@ -1,8 +1,10 @@
 use crate::args::CaAction;
 use anyhow::Result;
 use relay_core_lib::tls::CertificateAuthority;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[allow(unused_variables)]
 pub fn execute(action: CaAction) -> Result<()> {
     match action {
         CaAction::Init { cert, key, force } => {
@@ -121,8 +123,10 @@ pub fn execute(action: CaAction) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 use sha1::{Sha1, Digest};
 
+#[cfg(target_os = "macos")]
 fn get_file_sha1(path: &std::path::Path) -> Result<String> {
     // Read PEM file content
     let pem_content = std::fs::read_to_string(path)?;

@@ -42,8 +42,8 @@ impl RuleStoreActor {
 
     pub async fn run(mut self) {
         // Load rules from store if available
-        if let Some(store) = &self.store {
-            if let Ok(loaded_rules) = store.load_rules().await {
+        if let Some(store) = &self.store
+            && let Ok(loaded_rules) = store.load_rules().await {
                 let mut rules = Vec::new();
                 for (_, content) in loaded_rules {
                     if let Ok(rule) = serde_json::from_value::<Rule>(content) {
@@ -56,7 +56,6 @@ impl RuleStoreActor {
                     tracing::info!("Loaded {} rules from storage", self.rules.len());
                 }
             }
-        }
 
         while let Some(msg) = self.receiver.recv().await {
             match msg {

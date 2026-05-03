@@ -104,7 +104,7 @@ impl FlowStoreActor {
                         .filter(|(_, flow)| flow_matches_query(flow, &query))
                         .map(|(_, flow)| flow_to_summary(flow))
                         .collect();
-                    results.sort_by(|a, b| b.start_time_ms.cmp(&a.start_time_ms));
+                    results.sort_by_key(|r| std::cmp::Reverse(r.start_time_ms));
                     let results: Vec<FlowSummary> = results.into_iter().skip(offset).take(limit).collect();
                     let _ = respond_to.send(results);
                 },
@@ -135,24 +135,18 @@ fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
         _ => return false,
     };
 
-    if let Some(h) = &query.host {
-        if !host_str.contains(h.as_str()) { return false; }
-    }
-    if let Some(p) = &query.path_contains {
-        if !path_str.contains(p.as_str()) { return false; }
-    }
-    if let Some(m) = &query.method {
-        if !method_str.eq_ignore_ascii_case(m) { return false; }
-    }
-    if let Some(min) = query.status_min {
-        if status.is_none_or(|s| s < min) { return false; }
-    }
-    if let Some(max) = query.status_max {
-        if status.is_none_or(|s| s > max) { return false; }
-    }
-    if let Some(ws_only) = query.is_websocket {
-        if is_ws != ws_only { return false; }
-    }
+    if let Some(h) = &query.host
+        && !host_str.contains(h.as_str()) { return false; }
+    if let Some(p) = &query.path_contains
+        && !path_str.contains(p.as_str()) { return false; }
+    if let Some(m) = &query.method
+        && !method_str.eq_ignore_ascii_case(m) { return false; }
+    if let Some(min) = query.status_min
+        && status.is_none_or(|s| s < min) { return false; }
+    if let Some(max) = query.status_max
+        && status.is_none_or(|s| s > max) { return false; }
+    if let Some(ws_only) = query.is_websocket
+        && is_ws != ws_only { return false; }
     if let Some(err_only) = query.has_error {
         // has_error: status >= 500 or flow has "error" tag
         let is_err = status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error");

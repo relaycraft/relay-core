@@ -44,7 +44,7 @@ impl RuleEngine {
         }
         
         // Sort by priority (descending)
-        all_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        all_rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
         
         // Compile all rules
         let compiled_rules = all_rules.into_iter()

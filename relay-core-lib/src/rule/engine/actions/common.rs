@@ -12,11 +12,10 @@ fn infer_throttle_bytes(flow: &Flow) -> u64 {
             if let Some(body) = &http.request.body {
                 total = total.saturating_add(body.size);
             }
-            if let Some(response) = &http.response {
-                if let Some(body) = &response.body {
+            if let Some(response) = &http.response
+                && let Some(body) = &response.body {
                     total = total.saturating_add(body.size);
                 }
-            }
             total
         }
         Layer::WebSocket(ws) => {
@@ -150,11 +149,10 @@ pub async fn execute(
                         Err(e) => return ActionOutcome::Failed(e),
                     };
                     http.request.url = mapped;
-                    if !*preserve_host {
-                        if let Some(authority) = authority_for_host_header(&http.request.url) {
+                    if !*preserve_host
+                        && let Some(authority) = authority_for_host_header(&http.request.url) {
                             upsert_host_header(&mut http.request.headers, &authority);
                         }
-                    }
                     ActionOutcome::Continue
                 }
                 Layer::WebSocket(ws) => {
@@ -163,11 +161,10 @@ pub async fn execute(
                         Err(e) => return ActionOutcome::Failed(e),
                     };
                     ws.handshake_request.url = mapped;
-                    if !*preserve_host {
-                        if let Some(authority) = authority_for_host_header(&ws.handshake_request.url) {
+                    if !*preserve_host
+                        && let Some(authority) = authority_for_host_header(&ws.handshake_request.url) {
                             upsert_host_header(&mut ws.handshake_request.headers, &authority);
                         }
-                    }
                     ActionOutcome::Continue
                 }
                 _ => ActionOutcome::Failed("MapRemote only supports HTTP/WebSocket flows".to_string()),

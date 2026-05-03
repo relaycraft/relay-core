@@ -213,13 +213,13 @@ impl LinuxTproxy {
 unsafe fn sockaddr_to_socket_addr(storage: &libc::sockaddr_storage) -> io::Result<SocketAddr> {
     match storage.ss_family as libc::c_int {
         libc::AF_INET => {
-            let addr: &libc::sockaddr_in = mem::transmute(storage);
+            let addr: &libc::sockaddr_in = unsafe { mem::transmute(storage) };
             let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
             let port = u16::from_be(addr.sin_port);
             Ok(SocketAddr::V4(SocketAddrV4::new(ip, port)))
         }
         libc::AF_INET6 => {
-            let addr: &libc::sockaddr_in6 = mem::transmute(storage);
+            let addr: &libc::sockaddr_in6 = unsafe { mem::transmute(storage) };
             let ip = Ipv6Addr::from(addr.sin6_addr.s6_addr);
             let port = u16::from_be(addr.sin6_port);
             Ok(SocketAddr::V6(SocketAddrV6::new(ip, port, addr.sin6_flowinfo, addr.sin6_scope_id)))
@@ -230,22 +230,24 @@ unsafe fn sockaddr_to_socket_addr(storage: &libc::sockaddr_storage) -> io::Resul
 
 #[cfg(target_os = "linux")]
 unsafe fn parse_orig_dst(msg: &libc::msghdr) -> Option<SocketAddr> {
-    let mut cmsg: *mut libc::cmsghdr = libc::CMSG_FIRSTHDR(msg);
+    let mut cmsg: *mut libc::cmsghdr = unsafe { libc::CMSG_FIRSTHDR(msg) };
     
     while !cmsg.is_null() {
-        if (*cmsg).cmsg_level == libc::SOL_IP && (*cmsg).cmsg_type == libc::IP_RECVORIGDSTADDR {
-            let data = libc::CMSG_DATA(cmsg) as *const libc::sockaddr_in;
-            let ip = Ipv4Addr::from(u32::from_be((*data).sin_addr.s_addr));
-            let port = u16::from_be((*data).sin_port);
-            return Some(SocketAddr::V4(SocketAddrV4::new(ip, port)));
-        } else if (*cmsg).cmsg_level == libc::SOL_IPV6 && (*cmsg).cmsg_type == libc::IPV6_RECVORIGDSTADDR {
-             let data = libc::CMSG_DATA(cmsg) as *const libc::sockaddr_in6;
-             let ip = Ipv6Addr::from((*data).sin6_addr.s6_addr);
-             let port = u16::from_be((*data).sin6_port);
-             return Some(SocketAddr::V6(SocketAddrV6::new(ip, port, (*data).sin6_flowinfo, (*data).sin6_scope_id)));
-        }
+        unsafe {
+            if (*cmsg).cmsg_level == libc::SOL_IP && (*cmsg).cmsg_type == libc::IP_RECVORIGDSTADDR {
+                let data = libc::CMSG_DATA(cmsg) as *const libc::sockaddr_in;
+                let ip = Ipv4Addr::from(u32::from_be((*data).sin_addr.s_addr));
+                let port = u16::from_be((*data).sin_port);
+                return Some(SocketAddr::V4(SocketAddrV4::new(ip, port)));
+            } else if (*cmsg).cmsg_level == libc::SOL_IPV6 && (*cmsg).cmsg_type == libc::IPV6_RECVORIGDSTADDR {
+                 let data = libc::CMSG_DATA(cmsg) as *const libc::sockaddr_in6;
+                 let ip = Ipv6Addr::from((*data).sin6_addr.s6_addr);
+                 let port = u16::from_be((*data).sin6_port);
+                 return Some(SocketAddr::V6(SocketAddrV6::new(ip, port, (*data).sin6_flowinfo, (*data).sin6_scope_id)));
+            }
         
-        cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+            cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+        }
     }
     
     None

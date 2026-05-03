@@ -31,7 +31,7 @@ use relay_core_api::flow::{Flow, WebSocketMessage, FlowUpdate, BodyData, Directi
 use relay_core_script::ScriptInterceptor;
 use relay_core_lib::interceptor::{Interceptor, CompositeInterceptor};
 use relay_core_lib::tls::CertificateAuthority;
-use relay_core_lib::capture::{TcpCaptureSource, TransparentTcpCaptureSource, OriginalDstProvider, NoOpOriginalDstProvider};
+use relay_core_lib::capture::{TcpCaptureSource, TransparentTcpCaptureSource, OriginalDstProvider};
 use relay_core_lib::capture::udp::UdpProxy;
 #[cfg(all(target_os = "linux", feature = "transparent-linux"))]
 use relay_core_lib::capture::LinuxOriginalDstProvider;
@@ -1132,11 +1132,10 @@ impl CoreState {
         let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
         let state = self.clone();
 
-        if let Some(parent) = config.ca_cert_path.parent() {
-            if !parent.exists() {
+        if let Some(parent) = config.ca_cert_path.parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-        }
 
         let ca = CertificateAuthority::load_or_create(&config.ca_cert_path, &config.ca_key_path)
             .map_err(|e| format!("Failed to load/create CA: {}", e))?;
@@ -1243,7 +1242,7 @@ impl CoreState {
                         Ok(provider) => Arc::new(provider),
                         Err(e) => {
                             error!("Failed to initialize macOS PF provider: {}", e);
-                            Arc::new(NoOpOriginalDstProvider::new(addrs))
+                            Arc::new(relay_core_lib::capture::NoOpOriginalDstProvider::new(addrs))
                         }
                     }
                 }

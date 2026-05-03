@@ -48,11 +48,10 @@ impl LoopDetector {
         }
         
         // Check cached local addrs
-        if let Ok(guard) = self.local_addrs.read() {
-            if guard.contains(&ip) {
+        if let Ok(guard) = self.local_addrs.read()
+            && guard.contains(&ip) {
                 return true;
             }
-        }
         
         false
     }

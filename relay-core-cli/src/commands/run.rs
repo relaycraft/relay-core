@@ -106,13 +106,11 @@ impl CliSink {
                     }
                 } // End of !ui_enabled check
 
-                if let Some(mutex) = &self.writer {
-                    if let Ok(mut w) = mutex.lock() {
-                        if let Ok(json) = serde_json::to_string(flow) {
+                if let Some(mutex) = &self.writer
+                    && let Ok(mut w) = mutex.lock()
+                        && let Ok(json) = serde_json::to_string(flow) {
                             let _ = writeln!(w, "{}", json);
                         }
-                    }
-                }
             } else if let FlowUpdate::WebSocketMessage { flow_id, message } = &update {
                 // For now, only log WS messages in table/default mode and if UI is disabled
                  if !self.ui_enabled && self.output == "table" {
@@ -142,11 +140,10 @@ async fn run_tui(mut app: TuiApp, mut rx: tokio::sync::broadcast::Receiver<FlowU
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| std::time::Duration::from_secs(0));
 
-        if crossterm::event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+        if crossterm::event::poll(timeout)?
+            && let Event::Key(key) = event::read()? {
                 app.on_key(key.code);
             }
-        }
         
         if app.should_quit {
             break;
@@ -364,13 +361,12 @@ pub async fn execute(
 
         // Run TUI in main thread
         let app = TuiApp::new();
-        if let Some(rx) = tui_rx {
-            if let Err(e) = run_tui(app, rx).await {
+        if let Some(rx) = tui_rx
+            && let Err(e) = run_tui(app, rx).await {
                 // Restore terminal on error
                 let _ = disable_raw_mode();
                 eprintln!("TUI error: {}", e);
             }
-        }
     } else {
         info!("Proxy listening on {}", addr);
         info!("Control API listening on 127.0.0.1:{}", control_port);

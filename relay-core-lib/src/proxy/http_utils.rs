@@ -37,15 +37,14 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
     let mut url_str = req.uri().to_string();
     
     // Attempt to construct absolute URL if relative
-    if Url::parse(&url_str).is_err() {
-        if let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
+    if Url::parse(&url_str).is_err()
+        && let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
              let scheme = if is_mitm { "https" } else { "http" };
              let new_url = format!("{}://{}{}", scheme, host, url_str);
              if Url::parse(&new_url).is_ok() {
                  url_str = new_url;
              }
         }
-    }
 
     let version = format!("{:?}", req.version());
     
@@ -61,8 +60,8 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
     };
 
     let mut cookies = Vec::new();
-    if let Some(cookie_header) = req.headers().get(hyper::header::COOKIE) {
-        if let Ok(cookie_str) = cookie_header.to_str() {
+    if let Some(cookie_header) = req.headers().get(hyper::header::COOKIE)
+        && let Ok(cookie_str) = cookie_header.to_str() {
              for c in CookieCrate::split_parse(cookie_str).flatten() {
                  cookies.push(Cookie {
                      name: c.name().to_string(),
@@ -75,7 +74,6 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
                  });
              }
         }
-    }
 
     RequestMeta {
         method,
@@ -225,8 +223,8 @@ pub fn build_forward_request(
     let mut target_url = current_req.url.clone();
     
     // Transparent Proxy Routing Logic
-    if policy.transparent_enabled {
-        if let Some(addr) = target_addr {
+    if policy.transparent_enabled
+        && let Some(addr) = target_addr {
             flow.tags.push("transparent".to_string());
             
             // Update Flow Network Info
@@ -251,7 +249,6 @@ pub fn build_forward_request(
                 target_url.set_scheme("https").ok();
             }
         }
-    }
 
     forward_req_builder = forward_req_builder.uri(target_url.as_str());
 
@@ -280,9 +277,9 @@ pub fn update_flow_with_response_headers(
 ) {
     let mut response_cookies = Vec::new();
     for (k, v) in headers.iter() {
-        if k == hyper::header::SET_COOKIE {
-            if let Ok(v_str) = v.to_str() {
-                if let Ok(c) = CookieCrate::parse(v_str) {
+        if k == hyper::header::SET_COOKIE
+            && let Ok(v_str) = v.to_str()
+                && let Ok(c) = CookieCrate::parse(v_str) {
                     response_cookies.push(Cookie {
                         name: c.name().to_string(),
                         value: c.value().to_string(),
@@ -293,8 +290,6 @@ pub fn update_flow_with_response_headers(
                         secure: c.secure(),
                     });
                 }
-            }
-        }
     }
 
     let resp_headers_vec: Vec<(String, String)> = headers.iter()

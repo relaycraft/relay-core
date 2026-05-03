@@ -10,8 +10,8 @@ use bytes::Bytes;
 use base64::Engine as _;
 
 fn body_from_flow(flow: &Flow) -> HttpBody {
-    if let Layer::Http(http) = &flow.layer {
-        if let Some(body_data) = &http.request.body {
+    if let Layer::Http(http) = &flow.layer
+        && let Some(body_data) = &http.request.body {
             let bytes = if body_data.encoding == "base64" {
                 base64::engine::general_purpose::STANDARD.decode(&body_data.content).unwrap_or_default().into()
             } else {
@@ -19,7 +19,6 @@ fn body_from_flow(flow: &Flow) -> HttpBody {
             };
             return Full::new(bytes).map_err(|e| Box::new(e) as BoxError).boxed();
         }
-    }
     Full::new(Bytes::new()).map_err(|e| Box::new(e) as BoxError).boxed()
 }
 

@@ -69,7 +69,7 @@ impl OriginalDstProvider for LinuxOriginalDstProvider {
             } else {
                 // TODO: Support IPv6 transparent proxy
                 // Explicitly return error for IPv6 to avoid silent fallback/failures
-                return Err(io::Error::new(io::ErrorKind::Unsupported, "IPv6 transparent proxy not implemented"));
+                Err(io::Error::new(io::ErrorKind::Unsupported, "IPv6 transparent proxy not implemented"))
             }
         }
     }

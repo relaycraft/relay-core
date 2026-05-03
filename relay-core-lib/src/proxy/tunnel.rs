@@ -77,11 +77,10 @@ pub async fn handle_tunnel(
             let mut req = req;
             let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
             let uri_string = format!("https://{}{}", host, path);
-            if let Ok(new_uri) = Url::parse(&uri_string) {
-                if let Ok(uri) = new_uri.as_str().parse() {
+            if let Ok(new_uri) = Url::parse(&uri_string)
+                && let Ok(uri) = new_uri.as_str().parse() {
                     *req.uri_mut() = uri;
                 }
-            }
 
             handle_http_request(
                 req, 

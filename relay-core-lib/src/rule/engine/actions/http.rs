@@ -81,39 +81,34 @@ pub async fn execute(
         }
         Action::SetRequestUrl { url } => {
             let val = substitute_variables(url, flow, ctx, None);
-            if let Ok(new_url) = Url::parse(&val) {
-                if let Layer::Http(http) = &mut flow.layer {
+            if let Ok(new_url) = Url::parse(&val)
+                && let Layer::Http(http) = &mut flow.layer {
                     http.request.url = new_url;
                 }
-            }
             ActionOutcome::Continue
         }
         Action::SetRequestBody { body } => {
-            if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await {
-                if let Layer::Http(http) = &mut flow.layer {
+            if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await
+                && let Layer::Http(http) = &mut flow.layer {
                     http.request.body = Some(body_data);
                 }
-            }
             ActionOutcome::Continue
         }
 
         // --- Response Modification Actions ---
         Action::SetResponseStatus { status } => {
-            if let Layer::Http(http) = &mut flow.layer {
-                if let Some(res) = &mut http.response {
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(res) = &mut http.response {
                     res.status = *status;
                 }
-            }
             ActionOutcome::Continue
         }
         Action::SetResponseBody { body } => {
-            if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await {
-                if let Layer::Http(http) = &mut flow.layer {
-                     if let Some(res) = &mut http.response {
+            if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await
+                && let Layer::Http(http) = &mut flow.layer
+                     && let Some(res) = &mut http.response {
                          res.body = Some(body_data);
                      }
-                }
-            }
             ActionOutcome::Continue
         }
         Action::Redirect { location, status } => {
@@ -194,18 +189,17 @@ pub async fn execute(
         // --- Response Header Actions ---
         Action::AddResponseHeader { name, value } => {
             let val = substitute_variables(value, flow, ctx, None);
-            if let Layer::Http(http) = &mut flow.layer {
-                if let Some(res) = &mut http.response {
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(res) = &mut http.response {
                     res.headers.push((name.clone(), val));
                 }
-            }
             ActionOutcome::Continue
         }
         Action::UpdateResponseHeader { name, value, add_if_missing } => {
             // First pass: find existing value
             let mut old_val = None;
-            if let Layer::Http(http) = &flow.layer {
-                 if let Some(res) = &http.response {
+            if let Layer::Http(http) = &flow.layer
+                 && let Some(res) = &http.response {
                      for (k, v) in &res.headers {
                          if k.eq_ignore_ascii_case(name) {
                              old_val = Some(v.clone());
@@ -213,14 +207,13 @@ pub async fn execute(
                          }
                      }
                  }
-            }
             
             // Compute new value
             let new_val = substitute_variables(value, flow, ctx, old_val.as_deref());
 
             // Second pass: apply change
-            if let Layer::Http(http) = &mut flow.layer {
-                if let Some(res) = &mut http.response {
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(res) = &mut http.response {
                     let mut found = false;
                     for (k, v) in res.headers.iter_mut() {
                         if k.eq_ignore_ascii_case(name) {
@@ -232,16 +225,14 @@ pub async fn execute(
                         res.headers.push((name.clone(), new_val));
                     }
                 }
-            }
             ActionOutcome::Continue
         }
          Action::DeleteResponseHeader { name } => {
-            if let Layer::Http(http) = &mut flow.layer {
-                 if let Some(res) = &mut http.response {
+            if let Layer::Http(http) = &mut flow.layer
+                 && let Some(res) = &mut http.response {
                     res.headers
                     .retain(|(k, _)| !k.eq_ignore_ascii_case(name));
                  }
-            }
             ActionOutcome::Continue
         }
         
@@ -324,21 +315,18 @@ pub async fn execute(
         
         // --- Transformation Actions ---
         Action::TransformRequestBody { transform } => {
-             if let Layer::Http(http) = &mut flow.layer {
-                 if let Some(body) = &mut http.request.body {
+             if let Layer::Http(http) = &mut flow.layer
+                 && let Some(body) = &mut http.request.body {
                      apply_transform(body, transform);
                  }
-             }
              ActionOutcome::Continue
         }
         Action::TransformResponseBody { transform } => {
-             if let Layer::Http(http) = &mut flow.layer {
-                 if let Some(res) = &mut http.response {
-                     if let Some(body) = &mut res.body {
+             if let Layer::Http(http) = &mut flow.layer
+                 && let Some(res) = &mut http.response
+                     && let Some(body) = &mut res.body {
                          apply_transform(body, transform);
                      }
-                 }
-             }
              ActionOutcome::Continue
         }
 

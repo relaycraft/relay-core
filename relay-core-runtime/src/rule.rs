@@ -65,11 +65,10 @@ impl InterceptRule {
         let url_str = url.as_deref().unwrap_or("");
         let method_str = method.as_deref().unwrap_or("");
 
-        if let Some(m) = &self.method {
-            if !m.eq_ignore_ascii_case(method_str) {
+        if let Some(m) = &self.method
+            && !m.eq_ignore_ascii_case(method_str) {
                 return false;
             }
-        }
 
         if let Ok(re) = Regex::new(&self.url_pattern) {
             if re.is_match(url_str) {

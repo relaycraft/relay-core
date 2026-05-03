@@ -47,12 +47,11 @@ impl Body for TapBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match Pin::new(&mut self.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    if self.buffer.len() < self.limit {
+                if let Some(data) = frame.data_ref()
+                    && self.buffer.len() < self.limit {
                         let len = std::cmp::min(data.len(), self.limit - self.buffer.len());
                         self.buffer.extend_from_slice(&data[..len]);
                     }
-                }
                 Poll::Ready(Some(Ok(frame)))
             },
             Poll::Ready(None) => {

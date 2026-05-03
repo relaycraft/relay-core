@@ -148,8 +148,8 @@ where
     // Determine Target URL
     let mut target_url_str = meta.url_str.clone();
     
-    if policy.transparent_enabled {
-        if let Some(addr) = target_addr {
+    if policy.transparent_enabled
+        && let Some(addr) = target_addr {
             flow.tags.push("transparent".to_string());
             
             // Update Flow Network Info
@@ -186,7 +186,6 @@ where
                 target_url_str = u.to_string();
             }
         }
-    }
 
     // Prepare Forward Request
     let current_req = if let Layer::WebSocket(ws) = &flow.layer {

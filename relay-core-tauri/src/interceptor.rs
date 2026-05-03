@@ -30,11 +30,10 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return self.handle_termination(reason, flow, "request_headers", None).await;
         }
         
-        if let RuleTraceSummary::Modified { .. } = &ctx.summary {
-             if let Layer::Http(http) = &flow.layer {
+        if let RuleTraceSummary::Modified { .. } = &ctx.summary
+             && let Layer::Http(http) = &flow.layer {
                  return InterceptionResult::ModifiedRequest(http.request.clone());
              }
-        }
         
         InterceptionResult::Continue
     }
@@ -86,13 +85,12 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         // 5. Handle Modification (RuleEngine modification in place in flow)
         if let RuleTraceSummary::Modified { .. } = &ctx.summary {
             // Reconstruct body from flow
-            if let Layer::Http(http) = &flow.layer {
-                if let Some(body_data) = &http.request.body {
+            if let Layer::Http(http) = &flow.layer
+                && let Some(body_data) = &http.request.body {
                     let new_bytes = self.decode_body(body_data);
                     let new_body: HttpBody = Full::new(new_bytes).map_err(|e| match e {}).boxed();
                     return Ok(RequestAction::Continue(new_body));
                 }
-            }
         }
         
         // Default: Continue with original body
@@ -108,13 +106,11 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return self.handle_termination(reason, flow, "response_headers", None).await;
         }
         
-        if let RuleTraceSummary::Modified { .. } = &ctx.summary {
-             if let Layer::Http(http) = &flow.layer {
-                 if let Some(res) = &http.response {
+        if let RuleTraceSummary::Modified { .. } = &ctx.summary
+             && let Layer::Http(http) = &flow.layer
+                 && let Some(res) = &http.response {
                      return InterceptionResult::ModifiedResponse(res.clone());
                  }
-             }
-        }
         
         InterceptionResult::Continue
     }
@@ -153,18 +149,15 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         }
         
         // 5. Handle Modification
-        if let RuleTraceSummary::Modified { .. } = &ctx.summary {
-            if let Layer::Http(http) = &flow.layer {
-                if let Some(res) = &http.response {
-                    if let Some(_body_data) = &res.body {
+        if let RuleTraceSummary::Modified { .. } = &ctx.summary
+            && let Layer::Http(http) = &flow.layer
+                && let Some(res) = &http.response
+                    && let Some(_body_data) = &res.body {
                         // We need to return ModifiedResponse because headers might also be modified
                         // But ResponseAction::ModifiedResponse takes Response<HttpBody>.
                         // So we construct full response from flow.
                         return Ok(ResponseAction::ModifiedResponse(mock_to_response(res.clone())));
                     }
-                }
-            }
-        }
         
         // Default: Continue with original body
         let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
@@ -245,8 +238,8 @@ impl<R: Runtime> TauriInterceptor<R> {
     }
 
     fn update_flow_response_body(&self, flow: &mut Flow, bytes: &Bytes) {
-        if let Layer::Http(http) = &mut flow.layer {
-             if let Some(res) = &mut http.response {
+        if let Layer::Http(http) = &mut flow.layer
+             && let Some(res) = &mut http.response {
                  let (content, encoding) = if let Ok(s) = String::from_utf8(bytes.to_vec()) {
                      (s, "utf-8".to_string())
                  } else {
@@ -259,7 +252,6 @@ impl<R: Runtime> TauriInterceptor<R> {
                      size: bytes.len() as u64,
                  });
              }
-        }
     }
 
     fn decode_body(&self, body_data: &BodyData) -> Bytes {

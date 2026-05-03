@@ -46,12 +46,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut rx = state.flow_tx.subscribe();
 
     while let Ok(update) = rx.recv().await {
-        if let Ok(json) = serde_json::to_string(&update) {
-            if socket.send(Message::Text(json.into())).await.is_err() {
+        if let Ok(json) = serde_json::to_string(&update)
+            && socket.send(Message::Text(json.into())).await.is_err() {
                 // Client disconnected
                 break;
             }
-        }
     }
 }
 

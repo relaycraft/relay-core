@@ -1,11 +1,10 @@
-use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
 #[test]
 fn test_cli_help() {
-    let mut cmd = Command::cargo_bin("relay-core-cli").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("--help")
         .assert()
         .success()
@@ -18,7 +17,7 @@ fn test_ca_init() {
     let cert_path = dir.path().join("test_ca.pem");
     let key_path = dir.path().join("test_key.pem");
 
-    let mut cmd = Command::cargo_bin("relay-core-cli").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("ca")
         .arg("init")
         .arg("--cert")
@@ -32,7 +31,7 @@ fn test_ca_init() {
     assert!(key_path.exists());
 
     // Test CA status
-    let mut cmd = Command::cargo_bin("relay-core-cli").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("ca")
         .arg("status")
         .arg("--cert")
@@ -55,7 +54,7 @@ fn test_rules_validate_success() {
 "#;
     fs::write(&rule_path, content).unwrap();
 
-    let mut cmd = Command::cargo_bin("relay-core-cli").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("rules")
         .arg("validate")
         .arg(&rule_path)
@@ -77,7 +76,7 @@ filters: [
 "#;
     fs::write(&rule_path, content).unwrap();
 
-    let mut cmd = Command::cargo_bin("relay-core-cli").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("rules")
         .arg("validate")
         .arg(&rule_path)

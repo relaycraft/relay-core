@@ -1,6 +1,9 @@
 use crate::args::TransparentAction;
+#[cfg(target_os = "macos")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
 use anyhow::{Result, Context};
+#[cfg(target_os = "macos")]
 use std::io::Write;
 
 
@@ -95,7 +98,7 @@ pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn handle_transparent_command(_action: TransparentAction) -> Result<()> {
+pub fn handle_transparent_command(_action: TransparentAction) -> anyhow::Result<()> {
     anyhow::bail!("Transparent proxy management is only supported on macOS.");
 }
 
