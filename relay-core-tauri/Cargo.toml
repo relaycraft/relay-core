@@ -1,0 +1,36 @@
+[package]
+name = "relay-core-tauri"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tauri plugin for RelayCraft desktop: embeds relay-core proxy engine into Tauri applications"
+links = "relay-core"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+relay-core-lib.workspace = true
+relay-core-script.workspace = true
+relay-core-api.workspace = true
+relay-core-runtime.workspace = true
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin = "2"
+async-trait = "0.1.89"
+regex = "1.12.3"
+url.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+base64 = "0.22.1"
+http.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dev-dependencies]
+chrono.workspace = true
+uuid.workspace = true
+rustls.workspace = true

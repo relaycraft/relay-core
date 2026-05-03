@@ -1,0 +1,141 @@
+use std::sync::Arc;
+use relay_core_runtime::CoreState;
+use relay_core_api::modification::FlowQuery;
+use rmcp::model::{AnnotateAble, RawResource, Resource, ResourceContents};
+
+/// 返回静态资源列表（非模板化的固定 URI）
+pub fn static_resource_list() -> Vec<Resource> {
+    vec![
+        RawResource::new("flows://", "Recent Flows")
+            .with_description("List of recent HTTP/WebSocket flows (latest 50)")
+            .with_mime_type("text/markdown")
+            .no_annotation(),
+        RawResource::new("rules://", "Active Rules")
+            .with_description("Currently active interception/modification rules")
+            .with_mime_type("application/json")
+            .no_annotation(),
+        RawResource::new("proxy://status", "Proxy Status")
+            .with_description("Proxy health metrics and running status")
+            .with_mime_type("application/json")
+            .no_annotation(),
+        RawResource::new("audit://recent", "Recent Audit Events")
+            .with_description("Most recent adapter/runtime audit events")
+            .with_mime_type("application/json")
+            .no_annotation(),
+    ]
+}
+
+/// 根据 URI 路由到对应资源的读取逻辑
+pub async fn read_resource(
+    state: &Arc<CoreState>,
+    uri: &str,
+) -> Result<Vec<ResourceContents>, String> {
+    if uri == "flows://" {
+        flows_list(state).await
+    } else if let Some(id) = uri.strip_prefix("flows://") {
+        flow_detail(state, id).await
+    } else if uri == "rules://" {
+        rules_list(state).await
+    } else if uri == "proxy://status" {
+        proxy_status(state).await
+    } else if uri == "audit://recent" {
+        recent_audit(state).await
+    } else {
+        Err(format!("Unknown resource URI: {}", uri))
+    }
+}
+
+async fn flows_list(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
+    let summaries = state.search_flows(FlowQuery { limit: Some(50), ..Default::default() }).await;
+
+    let mut md = String::from("# Recent Flows\n\n");
+    if summaries.is_empty() {
+        md.push_str("_No flows captured yet._\n");
+    } else {
+        md.push_str("| ID (prefix) | Method | URL | Status | Duration | Tags |\n");
+        md.push_str("|-------------|--------|-----|--------|----------|------|\n");
+        for s in &summaries {
+            let id_short = &s.id[..8.min(s.id.len())];
+            let status = s.status.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
+            let dur = s.duration_ms.map(|d| format!("{}ms", d)).unwrap_or_else(|| "-".to_string());
+            let tags = s.tags.join(", ");
+            let url = if s.url.len() > 60 { format!("{}…", &s.url[..60]) } else { s.url.clone() };
+            md.push_str(&format!("| {}… | {} | {} | {} | {} | {} |\n",
+                id_short, s.method, url, status, dur, tags));
+        }
+        md.push_str(&format!("\n_Total: {} flows_\n", summaries.len()));
+    }
+
+    Ok(vec![ResourceContents::text(md, "flows://")])
+}
+
+async fn flow_detail(state: &Arc<CoreState>, id: &str) -> Result<Vec<ResourceContents>, String> {
+    match state.get_flow(id.to_string()).await {
+        Some(flow) => {
+            let json = serde_json::to_string_pretty(&flow)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![ResourceContents::text(json, format!("flows://{}", id))])
+        }
+        None => Err(format!("Flow not found: {}", id)),
+    }
+}
+
+async fn rules_list(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
+    let rules = state.get_rules().await;
+    let json = serde_json::to_string_pretty(&rules).map_err(|e| e.to_string())?;
+    Ok(vec![ResourceContents::text(json, "rules://")])
+}
+
+async fn proxy_status(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
+    let json = serde_json::to_string_pretty(&state.status_report().await).map_err(|e| e.to_string())?;
+    Ok(vec![ResourceContents::text(json, "proxy://status")])
+}
+
+async fn recent_audit(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
+    let json = serde_json::to_string_pretty(&state.audit_snapshot(50)).map_err(|e| e.to_string())?;
+    Ok(vec![ResourceContents::text(json, "audit://recent")])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_resource;
+    use relay_core_runtime::CoreState;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn proxy_status_resource_uses_shared_status_report_shape() {
+        let state = Arc::new(CoreState::new(None).await);
+        let contents = read_resource(&state, "proxy://status")
+            .await
+            .expect("resource should load");
+
+        let text = match &contents[0] {
+            rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+            other => panic!("unexpected resource contents: {:?}", other),
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("proxy status should be valid json");
+        assert_eq!(json["status"]["phase"], "created");
+        assert_eq!(json["status"]["running"], false);
+        assert!(json["metrics"].is_object());
+        assert!(json.get("lifecycle").is_none());
+    }
+
+    #[tokio::test]
+    async fn recent_audit_resource_uses_shared_audit_snapshot_shape() {
+        let state = Arc::new(CoreState::new(None).await);
+        let contents = read_resource(&state, "audit://recent")
+            .await
+            .expect("resource should load");
+
+        let text = match &contents[0] {
+            rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+            other => panic!("unexpected resource contents: {:?}", other),
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("audit resource should be valid json");
+        assert!(json["events"].is_array());
+    }
+}

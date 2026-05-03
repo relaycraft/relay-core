@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-install-ca-cert"
+description = "Enables the install_ca_cert command without any pre-configured scope."
+commands.allow = ["install_ca_cert"]
+
+[[permission]]
+identifier = "deny-install-ca-cert"
+description = "Denies the install_ca_cert command without any pre-configured scope."
+commands.deny = ["install_ca_cert"]

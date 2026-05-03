@@ -1,0 +1,64 @@
+[package]
+name = "relay-core-lib"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "[Internal] Transport and interception engine for relay-core-runtime. Use `relay-core-runtime` instead."
+
+[features]
+default = ["transparent-linux", "transparent-macos"]
+transparent-linux = []
+transparent-macos = []
+transparent-windows = []
+quic = []
+
+[dependencies]
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+h2.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+relay-core-api.workspace = true
+# sqlx.workspace = true
+# libsqlite3-sys.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+url.workspace = true
+http.workspace = true
+time = { version = "0.3.47", features = ["formatting", "parsing", "macros"] }
+hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "tls12", "native-tokio", "ring"] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3.32"
+data-encoding = "2.10.0"
+async-trait = "0.1.89"
+moka = { version = "0.12", features = ["future"] }
+cookie = "0.18.1"
+tracing = "0.1"
+regex.workspace = true
+ipnetwork.workspace = true
+glob.workspace = true
+libc = "0.2.182"
+x509-parser = "0.18.1"
+hyper-tungstenite = "0.19.0"
+if-addrs = "0.15.0"
+
+[target.'cfg(windows)'.dependencies]
+windivert = { version = "0.6" }
+etherparse = "0.13"
+
+[dev-dependencies]
+tempfile = "3.10"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "rule_engine"
+harness = false

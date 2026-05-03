@@ -1,0 +1,7 @@
+[default]
+description = "Default permissions for the relay-core plugin"
+permissions = ["allow-start-core-proxy"]
+
+[allow-start-core-proxy]
+description = "Allow starting the RelayCore proxy"
+commands.allow = ["start_core_proxy"]

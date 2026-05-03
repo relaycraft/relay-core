@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-ca-cert-path"
+description = "Enables the get_ca_cert_path command without any pre-configured scope."
+commands.allow = ["get_ca_cert_path"]
+
+[[permission]]
+identifier = "deny-get-ca-cert-path"
+description = "Denies the get_ca_cert_path command without any pre-configured scope."
+commands.deny = ["get_ca_cert_path"]

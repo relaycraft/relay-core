@@ -1,0 +1,50 @@
+name: Benchmark Smoke
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Benchmark Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apache2-utils python3
+
+      - name: Run Benchmark (single, quick)
+        run: |
+          chmod +x ./benchmarks/bench_minimal.sh
+          ./benchmarks/bench_minimal.sh quick
+
+      - name: Run Benchmark (matrix, short)
+        run: |
+          ./benchmarks/bench_minimal.sh matrix --duration 5
+
+      - name: Print Latest Benchmark Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_json="$(ls -1t benchmarks/results/bench_*.json | head -n1)"
+          echo "Latest report: ${latest_json}"
+          python3 benchmarks/print_summary.py "${latest_json}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke-results
+          path: benchmarks/results/
+          if-no-files-found: warn

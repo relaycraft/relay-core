@@ -1,0 +1,24 @@
+[package]
+name = "relay-core-http"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "REST/SSE HTTP API adapter for relay-core: language-agnostic integration boundary for external tools"
+
+[dependencies]
+relay-core-api.workspace = true
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.1.0" }
+axum = { version = "0.8.8", features = ["ws"] }
+tokio.workspace = true
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+uuid.workspace = true
+regex.workspace = true
+tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-core-metrics"
+description = "Enables the get_core_metrics command without any pre-configured scope."
+commands.allow = ["get_core_metrics"]
+
+[[permission]]
+identifier = "deny-get-core-metrics"
+description = "Denies the get_core_metrics command without any pre-configured scope."
+commands.deny = ["get_core_metrics"]

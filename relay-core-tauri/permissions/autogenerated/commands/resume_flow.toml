@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-resume-flow"
+description = "Enables the resume_flow command without any pre-configured scope."
+commands.allow = ["resume_flow"]
+
+[[permission]]
+identifier = "deny-resume-flow"
+description = "Denies the resume_flow command without any pre-configured scope."
+commands.deny = ["resume_flow"]

@@ -1,0 +1,53 @@
+[workspace]
+members = [
+    "relay-core-runtime",
+    "relay-core-lib",
+    "relay-core-script",
+    "relay-core-api",
+    "relay-core-cli",
+    "relay-core-tauri",
+    "relay-core-storage",
+    "relay-core-probe",
+    "relay-core-http",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["RelayCraft Team"]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/relaycraft/relay-core"
+homepage = "https://github.com/relaycraft/relay-core"
+
+[workspace.dependencies]
+tokio = { version = "1.37", features = ["full"] }
+hyper = { version = "1.3", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1.6"
+h2 = "0.4"
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rcgen = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+rquickjs = { version = "0.6", features = ["full", "futures", "macro", "parallel"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+libsqlite3-sys = { version = "0.27", features = ["bundled"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = { version = "2.5", features = ["serde"] }
+http = "1.0"
+regex = "1.10"
+ipnetwork = "0.20"
+glob = "0.3"
+relay-core-api = { path = "./relay-core-api", version = "0.1.0" }
+relay-core-lib = { path = "./relay-core-lib", version = "0.1.0" }
+relay-core-script = { path = "./relay-core-script", version = "0.1.0" }
+relay-core-runtime = { path = "./relay-core-runtime", version = "0.1.0" }
+relay-core-storage = { path = "./relay-core-storage", version = "0.1.0" }
+relay-core-probe = { path = "./relay-core-probe", version = "0.1.0" }
+relay-core-http = { path = "./relay-core-http", version = "0.1.0" }
+tracing = "0.1"

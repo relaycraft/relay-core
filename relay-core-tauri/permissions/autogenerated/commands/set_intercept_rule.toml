@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-intercept-rule"
+description = "Enables the set_intercept_rule command without any pre-configured scope."
+commands.allow = ["set_intercept_rule"]
+
+[[permission]]
+identifier = "deny-set-intercept-rule"
+description = "Denies the set_intercept_rule command without any pre-configured scope."
+commands.deny = ["set_intercept_rule"]
