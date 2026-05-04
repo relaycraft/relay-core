@@ -14,7 +14,7 @@ transport-sse = ["rmcp/transport-streamable-http-server"]
 
 [dependencies]
 relay-core-api.workspace = true
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.1.0" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.1.1" }
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
 tokio.workspace = true
 serde.workspace = true
