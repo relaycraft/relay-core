@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 authors = ["RelayCraft Team"]
 edition = "2024"
 license = "MIT"
@@ -43,11 +43,11 @@ http = "1.0"
 regex = "1.10"
 ipnetwork = "0.20"
 glob = "0.3"
-relay-core-api = { path = "./relay-core-api", version = "0.1.1" }
-relay-core-lib = { path = "./relay-core-lib", version = "0.1.1" }
-relay-core-script = { path = "./relay-core-script", version = "0.1.1" }
-relay-core-runtime = { path = "./relay-core-runtime", version = "0.1.1" }
-relay-core-storage = { path = "./relay-core-storage", version = "0.1.1" }
-relay-core-probe = { path = "./relay-core-probe", version = "0.1.1" }
-relay-core-http = { path = "./relay-core-http", version = "0.1.1" }
+relay-core-api = { path = "./relay-core-api", version = "0.1.2" }
+relay-core-lib = { path = "./relay-core-lib", version = "0.1.2" }
+relay-core-script = { path = "./relay-core-script", version = "0.1.2" }
+relay-core-runtime = { path = "./relay-core-runtime", version = "0.1.2" }
+relay-core-storage = { path = "./relay-core-storage", version = "0.1.2" }
+relay-core-probe = { path = "./relay-core-probe", version = "0.1.2" }
+relay-core-http = { path = "./relay-core-http", version = "0.1.2" }
 tracing = "0.1"
