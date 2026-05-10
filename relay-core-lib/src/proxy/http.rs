@@ -149,7 +149,7 @@ where
     }
 
     // Phase 2: Request Body Streaming & Interception
-    let (parts, body) = req.into_parts();
+    let (_, body) = req.into_parts();
     let body: HttpBody = body.map_frame(|f| f.map_data(|d| d.into())).map_err(|e| e.into()).boxed();
     
     // Wrap in TapBody for streaming visualization BEFORE interception
@@ -192,7 +192,7 @@ where
         }
     }
     
-    let forward_req = match build_forward_request(&mut flow, current_body, &parts, target_addr, &policy, &loop_detector) {
+    let forward_req = match build_forward_request(&mut flow, current_body, target_addr, &policy, &loop_detector) {
         Ok(req) => req,
         Err(res) => return Ok(res),
     };

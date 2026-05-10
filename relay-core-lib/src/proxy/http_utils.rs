@@ -204,7 +204,6 @@ pub fn mock_to_response(mock: HttpResponse) -> Response<HttpBody> {
 pub fn build_forward_request(
     flow: &mut Flow,
     body: HttpBody,
-    req_parts: &http::request::Parts,
     target_addr: Option<SocketAddr>,
     policy: &ProxyPolicy,
     loop_detector: &LoopDetector,
