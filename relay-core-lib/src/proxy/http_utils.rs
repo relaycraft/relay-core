@@ -216,8 +216,7 @@ pub fn build_forward_request(
     };
 
     let mut forward_req_builder = Request::builder()
-        .method(current_req.method.as_str())
-        .version(req_parts.version);
+        .method(current_req.method.as_str());
 
     // Determine upstream URI
     let mut target_url = current_req.url.clone();
