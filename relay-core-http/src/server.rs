@@ -14,6 +14,10 @@ use axum::{
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use relay_core_runtime::CoreState;
+use relay_core_runtime::services::{
+    FlowReadService, FlowEventHub, RuleService, InterceptService,
+    AuditService, RuntimeStatusService,
+};
 use tracing::info;
 
 use crate::routes;
@@ -47,6 +51,30 @@ impl HttpApiConfig {
     }
 }
 
+/// Shared context for HTTP API handlers, exposing only narrow-capability traits.
+/// Constructed from a `CoreState` instance; handlers never import `CoreState` directly.
+pub struct HttpApiContext {
+    pub flows: Arc<dyn FlowReadService>,
+    pub events: Arc<dyn FlowEventHub>,
+    pub rules: Arc<dyn RuleService>,
+    pub intercepts: Arc<dyn InterceptService>,
+    pub audit: Arc<dyn AuditService>,
+    pub status: Arc<dyn RuntimeStatusService>,
+}
+
+impl HttpApiContext {
+    pub fn new(core: Arc<CoreState>) -> Self {
+        Self {
+            flows: core.clone(),
+            events: core.clone(),
+            rules: core.clone(),
+            intercepts: core.clone(),
+            audit: core.clone(),
+            status: core.clone(),
+        }
+    }
+}
+
 /// HTTP API server handle.
 pub struct HttpApiServer {
     config: HttpApiConfig,
@@ -60,7 +88,8 @@ impl HttpApiServer {
 
     /// Start the server; resolves when the server exits or an error occurs.
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        let app = build_router(self.state, Arc::new(self.config.clone()));
+        let ctx = Arc::new(HttpApiContext::new(self.state));
+        let app = build_router(ctx, Arc::new(self.config.clone()));
         let listener = tokio::net::TcpListener::bind(self.config.addr).await?;
         info!("relay-core HTTP API listening on {}", self.config.addr);
         axum::serve(listener, app).await?;
@@ -68,14 +97,14 @@ impl HttpApiServer {
     }
 }
 
-fn build_router(state: Arc<CoreState>, config: Arc<HttpApiConfig>) -> Router {
+fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router {
     let router = Router::new()
         .merge(routes::version::router())
-        .merge(routes::metrics::router(state.clone()))
-        .merge(routes::flows::router(state.clone()))
-        .merge(routes::rules::router(state.clone()))
-        .merge(routes::intercepts::router(state.clone()))
-        .merge(routes::events::router(state))
+        .merge(routes::metrics::router(ctx.clone()))
+        .merge(routes::flows::router(ctx.clone()))
+        .merge(routes::rules::router(ctx.clone()))
+        .merge(routes::intercepts::router(ctx.clone()))
+        .merge(routes::events::router(ctx))
         .route_layer(middleware::from_fn_with_state(config.clone(), require_bearer_token))
         .layer(TraceLayer::new_for_http());
 
@@ -138,7 +167,7 @@ async fn require_bearer_token(
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpApiConfig, build_router};
+    use super::{HttpApiConfig, HttpApiContext, build_router};
     use axum::{
         body::{Body, to_bytes},
         http::{HeaderValue, Method, Request, StatusCode, header::ACCESS_CONTROL_ALLOW_ORIGIN},
@@ -209,7 +238,8 @@ mod tests {
     #[tokio::test]
     async fn status_endpoint_is_available_without_auth_by_default() {
         let state = Arc::new(CoreState::new(None).await);
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
 
         let response = app
             .oneshot(
@@ -235,7 +265,8 @@ mod tests {
     #[tokio::test]
     async fn intercepts_endpoint_uses_shared_snapshot_shape() {
         let state = Arc::new(CoreState::new(None).await);
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
 
         let response = app
             .oneshot(
@@ -276,7 +307,8 @@ mod tests {
                 None,
             )
             .await;
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
 
         let response = app
             .oneshot(
@@ -304,7 +336,8 @@ mod tests {
     #[tokio::test]
     async fn prometheus_metrics_endpoint_returns_text_format() {
         let state = Arc::new(CoreState::new(None).await);
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
 
         let response = app
             .oneshot(
@@ -344,7 +377,8 @@ mod tests {
         state.upsert_flow(Box::new(flow_c));
         sleep(Duration::from_millis(30)).await;
 
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
         let response = app
             .oneshot(
                 Request::builder()
@@ -371,8 +405,9 @@ mod tests {
     #[tokio::test]
     async fn status_endpoint_requires_bearer_token_when_configured() {
         let state = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
         let app = build_router(
-            state,
+            ctx,
             Arc::new(HttpApiConfig::new(8082).with_bearer_token("secret-token")),
         );
 
@@ -406,7 +441,8 @@ mod tests {
     #[tokio::test]
     async fn cors_is_not_open_by_default() {
         let state = Arc::new(CoreState::new(None).await);
-        let app = build_router(state, Arc::new(HttpApiConfig::new(8082)));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
 
         let response = app
             .oneshot(
@@ -426,8 +462,9 @@ mod tests {
     #[tokio::test]
     async fn cors_allows_explicit_origin_only() {
         let state = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
         let app = build_router(
-            state,
+            ctx,
             Arc::new(
                 HttpApiConfig::new(8082).with_allowed_origins([HeaderValue::from_static(
                     "https://allowed.example",

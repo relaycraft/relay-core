@@ -7,14 +7,14 @@ use axum::{
 };
 use relay_core_api::modification::FlowQuery;
 use relay_core_api::modification::FlowSummary;
-use relay_core_runtime::CoreState;
+use crate::server::HttpApiContext;
 use serde::{Deserialize, Serialize};
 
-pub fn router(state: Arc<CoreState>) -> Router {
+pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/flows", get(search_flows))
         .route("/api/v1/flows/{id}", get(get_flow))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// Query parameters for GET /api/v1/flows
@@ -41,7 +41,7 @@ struct FlowSearchResponse {
 }
 
 async fn search_flows(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Query(params): Query<FlowQueryParams>,
 ) -> Json<FlowSearchResponse> {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
@@ -57,7 +57,7 @@ async fn search_flows(
         limit: Some(limit),
         offset: Some(offset),
     };
-    let items = state.search_flows(query).await;
+    let items = ctx.flows.search_flows(query).await;
     Json(FlowSearchResponse {
         returned: items.len(),
         items,
@@ -67,10 +67,10 @@ async fn search_flows(
 }
 
 async fn get_flow(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.get_flow(id).await {
+    match ctx.flows.get_flow(&id).await {
         Some(flow) => Ok(Json(serde_json::to_value(&flow).unwrap_or_default())),
         None => Err(StatusCode::NOT_FOUND),
     }

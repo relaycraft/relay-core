@@ -7,38 +7,39 @@ use axum::{
     routing::get,
 };
 use relay_core_runtime::{
-    CoreAuditQuery, CoreAuditSnapshot, CoreMetrics, CoreState, CoreStatusSnapshot,
+    CoreAuditQuery, CoreAuditSnapshot, CoreMetrics, CoreStatusSnapshot,
     audit::{AuditActor, AuditEventKind, AuditOutcome},
 };
+use crate::server::HttpApiContext;
 use serde::Deserialize;
 
 /// GET /api/v1/metrics
-pub fn router(state: Arc<CoreState>) -> Router {
+pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/metrics", get(get_metrics))
         .route("/api/v1/metrics/prometheus", get(get_metrics_prometheus))
         .route("/api/v1/audit", get(get_audit))
         .route("/api/v1/status", get(get_status))
-        .with_state(state)
+        .with_state(ctx)
 }
 
-async fn get_metrics(State(state): State<Arc<CoreState>>) -> Json<CoreMetrics> {
-    Json(state.get_metrics().await)
+async fn get_metrics(State(ctx): State<Arc<HttpApiContext>>) -> Json<CoreMetrics> {
+    Json(ctx.status.get_metrics().await)
 }
 
-async fn get_metrics_prometheus(State(state): State<Arc<CoreState>>) -> impl IntoResponse {
+async fn get_metrics_prometheus(State(ctx): State<Arc<HttpApiContext>>) -> impl IntoResponse {
     (
         StatusCode::OK,
         [(
             CONTENT_TYPE,
             HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
         )],
-        state.get_metrics_prometheus_text().await,
+        ctx.status.get_metrics_prometheus_text().await,
     )
 }
 
-async fn get_status(State(state): State<Arc<CoreState>>) -> Json<CoreStatusSnapshot> {
-    Json(state.status_snapshot())
+async fn get_status(State(ctx): State<Arc<HttpApiContext>>) -> Json<CoreStatusSnapshot> {
+    Json(ctx.status.status_snapshot())
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +53,7 @@ struct AuditQueryParams {
 }
 
 async fn get_audit(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Query(params): Query<AuditQueryParams>,
 ) -> Json<CoreAuditSnapshot> {
     let query = CoreAuditQuery {
@@ -69,5 +70,5 @@ async fn get_audit(
             .and_then(|v| v.parse::<AuditOutcome>().ok()),
         limit: params.limit.unwrap_or(50),
     };
-    Json(state.query_audit_snapshot(query).await)
+    Json(ctx.audit.query_audit_snapshot(query).await)
 }

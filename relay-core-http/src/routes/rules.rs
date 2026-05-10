@@ -6,36 +6,37 @@ use axum::{
     Json, Router,
 };
 use relay_core_api::rule::Rule;
-use relay_core_runtime::{CoreState, audit::AuditActor};
+use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::MockResponseRuleConfig;
+use crate::server::HttpApiContext;
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-pub fn router(state: Arc<CoreState>) -> Router {
+pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/rules", get(list_rules))
         .route("/api/v1/rules", put(set_rule))
         .route("/api/v1/rules/{id}", delete(delete_rule))
         .route("/api/v1/mock", post(mock_url))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// GET /api/v1/rules
-async fn list_rules(State(state): State<Arc<CoreState>>) -> Json<Value> {
-    let rules = state.get_rules().await;
+async fn list_rules(State(ctx): State<Arc<HttpApiContext>>) -> Json<Value> {
+    let rules = ctx.rules.get_rules().await;
     Json(serde_json::to_value(&rules).unwrap_or_default())
 }
 
 /// PUT /api/v1/rules  — body: full Rule JSON
 async fn set_rule(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Json(rule_val): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let rule: Rule = serde_json::from_value(rule_val)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid rule JSON: {}", e)))?;
     let rule_id = rule.id.clone();
-    state
+    ctx.rules
         .upsert_rule_from(
             AuditActor::Http,
             "rule.upsert",
@@ -50,10 +51,10 @@ async fn set_rule(
 
 /// DELETE /api/v1/rules/{id}
 async fn delete_rule(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let deleted = state
+    let deleted = ctx.rules
         .delete_rule_from(
             AuditActor::Http,
             "rule.delete",
@@ -85,11 +86,11 @@ fn default_content_type() -> String {
 }
 
 async fn mock_url(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Json(req): Json<MockRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let rule_id = format!("api-mock-{}", Uuid::new_v4());
-    state
+    ctx.rules
         .create_mock_response_rule_from(
             AuditActor::Http,
             rule_id.clone(),

@@ -6,18 +6,19 @@ use axum::{
     Json, Router,
 };
 use relay_core_api::modification::FlowModification;
-use relay_core_runtime::{CoreInterceptSnapshot, CoreState, audit::AuditActor};
+use relay_core_runtime::{CoreInterceptSnapshot, audit::AuditActor};
 use relay_core_runtime::rule::InterceptRuleConfig;
+use crate::server::HttpApiContext;
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-pub fn router(state: Arc<CoreState>) -> Router {
+pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/intercepts", post(set_intercept))
         .route("/api/v1/intercepts", get(pending_intercepts))
         .route("/api/v1/intercepts/{key}/resume", post(resume_flow))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// POST /api/v1/intercepts
@@ -33,11 +34,11 @@ fn default_phase() -> String {
 }
 
 async fn set_intercept(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Json(req): Json<SetInterceptRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let rule_id = Uuid::new_v4().to_string();
-    state
+    ctx.rules
         .create_intercept_rule_from(
             AuditActor::Http,
             rule_id.clone(),
@@ -69,8 +70,8 @@ async fn set_intercept(
 }
 
 /// GET /api/v1/intercepts
-async fn pending_intercepts(State(state): State<Arc<CoreState>>) -> Json<CoreInterceptSnapshot> {
-    Json(state.intercept_snapshot().await)
+async fn pending_intercepts(State(ctx): State<Arc<HttpApiContext>>) -> Json<CoreInterceptSnapshot> {
+    Json(ctx.intercepts.intercept_snapshot().await)
 }
 
 /// POST /api/v1/intercepts/{key}/resume
@@ -87,13 +88,13 @@ fn default_action() -> String {
 }
 
 async fn resume_flow(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
     Path(key): Path<String>,
     Json(req): Json<ResumeRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let ResumeRequest { action, modifications } = req;
     let mods = modifications.into_option();
-    state.resolve_intercept_with_modifications_from(AuditActor::Http, key.clone(), &action, mods)
+    ctx.intercepts.resolve_intercept_with_modifications_from(AuditActor::Http, key.clone(), &action, mods)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 

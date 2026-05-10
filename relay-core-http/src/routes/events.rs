@@ -7,13 +7,15 @@ use axum::{
 };
 use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
+use relay_core_runtime::services::{FlowEventHub, AuditService, RuntimeStatusService};
+use crate::server::HttpApiContext;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::StreamExt;
 
-pub fn router(state: Arc<CoreState>) -> Router {
+pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/events", get(sse_handler))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 /// GET /api/v1/events
@@ -27,23 +29,23 @@ pub fn router(state: Arc<CoreState>) -> Router {
 ///
 /// Consumers should handle `event: ping` (heartbeat) and reconnect on disconnect.
 async fn sse_handler(
-    State(state): State<Arc<CoreState>>,
+    State(ctx): State<Arc<HttpApiContext>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    Sse::new(event_stream(state)).keep_alive(KeepAlive::default())
+    Sse::new(event_stream(ctx)).keep_alive(KeepAlive::default())
 }
 
 fn event_stream(
-    state: Arc<CoreState>,
+    ctx: Arc<HttpApiContext>,
 ) -> impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> {
-    let flow_rx = state.subscribe_flow_updates();
-    let audit_rx = state.subscribe_audit_events();
-    let lifecycle_rx = state.subscribe_lifecycle();
+    let flow_rx = ctx.events.subscribe_flow_updates();
+    let audit_rx = ctx.audit.subscribe_audit_events();
+    let lifecycle_rx = ctx.status.subscribe_lifecycle();
 
-    let flow_state = state.clone();
+    let flow_events = ctx.events.clone();
     let flow_stream = BroadcastStream::new(flow_rx).filter_map(move |res| {
         match res {
             Ok(update) => {
-                let update = flow_state.redact_flow_update_for_output(update);
+                let update = flow_events.redact_flow_update_for_output(update);
                 let event = match &update {
                     FlowUpdate::Full(flow) => {
                         let data = serde_json::to_string(flow).unwrap_or_default();
@@ -64,12 +66,12 @@ fn event_stream(
                 event.map(Ok)
             }
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
-                flow_state.record_flow_events_lagged(skipped);
+                flow_events.record_flow_events_lagged(skipped);
                 Some(Ok(Event::default().event("lagged").data("some events were dropped")))
             }
         }
     });
-    let audit_state = state.clone();
+    let audit_svc = ctx.audit.clone();
     let audit_stream = BroadcastStream::new(audit_rx).filter_map(move |res| {
         match res {
             Ok(event) => {
@@ -77,7 +79,7 @@ fn event_stream(
                 Some(Ok(Event::default().event("audit").data(data)))
             }
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
-                audit_state.record_audit_events_lagged(skipped);
+                audit_svc.record_audit_events_lagged(skipped);
                 Some(Ok(Event::default().event("audit-lagged").data("some audit events were dropped")))
             }
         }
@@ -95,6 +97,7 @@ mod tests {
     use super::event_stream;
     use relay_core_api::policy::ProxyPolicy;
     use relay_core_runtime::{CoreState, audit::AuditActor};
+    use crate::server::HttpApiContext;
     use std::{pin::pin, sync::Arc};
     use tokio::time::{Duration, timeout};
     use tokio_stream::StreamExt;
@@ -102,7 +105,8 @@ mod tests {
     #[tokio::test]
     async fn sse_stream_emits_event_after_policy_audit_update() {
         let state = Arc::new(CoreState::new(None).await);
-        let mut stream = pin!(event_stream(state.clone()));
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let mut stream = pin!(event_stream(ctx));
 
         let first = timeout(Duration::from_millis(300), stream.next())
             .await
