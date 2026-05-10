@@ -154,7 +154,6 @@ fn is_cert_installed_macos(sha1: &str) -> Result<bool> {
         .arg("-c")
         .arg("RelayCraft CA")
         .arg("-Z") // Print SHA-1 hash
-        .arg("-p") // Output as PEM (and hash due to -Z)
         .arg("/Library/Keychains/System.keychain")
         .output()?;
 
