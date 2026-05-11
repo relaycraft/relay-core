@@ -89,9 +89,20 @@ impl HttpApiServer {
     /// Start the server; resolves when the server exits or an error occurs.
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = Arc::new(HttpApiContext::new(self.state));
-        let app = build_router(ctx, Arc::new(self.config.clone()));
-        let listener = tokio::net::TcpListener::bind(self.config.addr).await?;
-        info!("relay-core HTTP API listening on {}", self.config.addr);
+        let config = Arc::new(self.config.clone());
+        let listener = tokio::net::TcpListener::bind(config.addr).await?;
+        info!("relay-core HTTP API listening on {}", config.addr);
+
+        if !config.addr.ip().is_loopback() && config.bearer_token.is_none() {
+            tracing::warn!(
+                "HTTP API is listening on {} without a bearer token configured. \
+                 This exposes the API to the network without authentication. \
+                 Set a bearer token for production use, or use --bind 127.0.0.1 for local-only access.",
+                config.addr
+            );
+        }
+
+        let app = build_router(ctx, config);
         axum::serve(listener, app).await?;
         Ok(())
     }
