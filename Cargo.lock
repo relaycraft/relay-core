@@ -4661,6 +4661,7 @@ dependencies = [
  "regex",
  "relay-core-api",
  "relay-core-runtime",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

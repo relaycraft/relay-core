@@ -2,9 +2,10 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
+use relay_core_api::flow::Layer;
 use relay_core_api::modification::FlowQuery;
 use relay_core_api::modification::FlowSummary;
 use crate::server::HttpApiContext;
@@ -14,6 +15,7 @@ pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
         .route("/api/v1/flows", get(search_flows))
         .route("/api/v1/flows/{id}", get(get_flow))
+        .route("/api/v1/flows/{id}/replay", post(replay_flow))
         .with_state(ctx)
 }
 
@@ -74,4 +76,67 @@ async fn get_flow(
         Some(flow) => Ok(Json(serde_json::to_value(&flow).unwrap_or_default())),
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+/// POST /api/v1/flows/{id}/replay
+///
+/// Re-sends the original HTTP request from a captured flow and returns the new response.
+/// Only works for HTTP flows (not WebSocket, TCP, UDP).
+async fn replay_flow(
+    State(ctx): State<Arc<HttpApiContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let flow = ctx.flows.get_flow(&id).await
+        .ok_or((StatusCode::NOT_FOUND, format!("Flow {} not found", id)))?;
+
+    let (method, url, headers, body) = match &flow.layer {
+        Layer::Http(http) => {
+            let method = http.request.method.clone();
+            let url = http.request.url.to_string();
+            let headers: Vec<(String, String)> = http.request.headers.iter()
+                .filter(|(k, _)| !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection"))
+                .cloned()
+                .collect();
+            let body = http.request.body.clone();
+            (method, url, headers, body)
+        }
+        _ => {
+            return Err((StatusCode::BAD_REQUEST, "Replay only supports HTTP flows".to_string()));
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut req = client.request(
+        method.parse::<reqwest::Method>().map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid method: {}", e)))?,
+        &url,
+    );
+
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+
+    if let Some(body_data) = &body {
+        req = req.body(body_data.content.clone());
+    }
+
+    let resp = req.send().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Replay request failed: {}", e)))?;
+
+    let status = resp.status().as_u16();
+    let resp_headers: Vec<(String, String)> = resp.headers().iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
+        .collect();
+    let resp_body = resp.text().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "status": status,
+        "url": url,
+        "headers": resp_headers,
+        "body": resp_body,
+    })))
 }
