@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
-use relay_core_runtime::{CoreState, audit::AuditActor};
+use relay_core_runtime::audit::AuditActor;
 use relay_core_api::rule::Rule;
 use relay_core_runtime::rule::MockResponseRuleConfig;
+use crate::server::ProbeContext;
 use rmcp::model::{Content, Tool};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -103,13 +104,13 @@ pub fn patch_policy_schema() -> Tool {
     )
 }
 
-pub async fn set_rule(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let rule_val = args.get("rule").ok_or("Missing 'rule' parameter")?;
     let rule: Rule = serde_json::from_value(rule_val.clone())
         .map_err(|e| format!("Invalid rule JSON: {}", e))?;
 
     let rule_id = rule.id.clone();
-    state
+    ctx.rules
         .upsert_rule_from(
             AuditActor::Probe,
             "rule.upsert",
@@ -122,9 +123,9 @@ pub async fn set_rule(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content
     ok_text(format!("Rule '{}' set successfully.", rule_id))
 }
 
-pub async fn delete_rule(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let id = require_str(&args, "id")?.to_string();
-    let deleted = state
+    let deleted = ctx.rules
         .delete_rule_from(
             AuditActor::Probe,
             "rule.delete",
@@ -141,7 +142,7 @@ pub async fn delete_rule(state: &Arc<CoreState>, args: Value) -> Result<Vec<Cont
     }
 }
 
-pub async fn mock_url(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let status = args.get("status").and_then(Value::as_u64)
         .ok_or("Missing 'status' parameter")? as u16;
@@ -150,7 +151,7 @@ pub async fn mock_url(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content
         .unwrap_or("application/json").to_string();
 
     let rule_id = format!("probe-mock-{}", Uuid::new_v4());
-    state
+    ctx.rules
         .create_mock_response_rule_from(
             AuditActor::Probe,
             rule_id.clone(),
@@ -176,18 +177,18 @@ pub async fn mock_url(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content
     ))
 }
 
-pub async fn get_policy(state: &Arc<CoreState>) -> Result<Vec<Content>, String> {
-    ok_json(&state.policy_snapshot())
+pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+    ok_json(&ctx.policy.policy_snapshot())
 }
 
-pub async fn update_policy(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let policy_val = args
         .get("policy")
         .ok_or("Missing 'policy' parameter")?;
     let policy: ProxyPolicy = serde_json::from_value(policy_val.clone())
         .map_err(|e| format!("Invalid policy JSON: {}", e))?;
 
-    state.update_policy_from(
+    ctx.policy.update_policy_from(
         AuditActor::Probe,
         "probe.policy".to_string(),
         policy,
@@ -195,14 +196,14 @@ pub async fn update_policy(state: &Arc<CoreState>, args: Value) -> Result<Vec<Co
     ok_text("Policy updated.")
 }
 
-pub async fn patch_policy(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn patch_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let patch_val = args
         .get("patch")
         .ok_or("Missing 'patch' parameter")?;
     let patch: ProxyPolicyPatch = serde_json::from_value(patch_val.clone())
         .map_err(|e| format!("Invalid patch JSON: {}", e))?;
 
-    state.patch_policy_from(
+    ctx.policy.patch_policy_from(
         AuditActor::Probe,
         "probe.policy.patch".to_string(),
         patch,

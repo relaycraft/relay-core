@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use relay_core_runtime::CoreState;
+use crate::server::ProbeContext;
 use relay_core_api::modification::FlowQuery;
 use rmcp::model::{Content, Tool};
 use serde_json::{json, Value};
@@ -49,7 +49,7 @@ pub fn get_metrics_schema() -> Tool {
     )
 }
 
-pub async fn search_flows(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let query = FlowQuery {
         host:          args.get("host").and_then(Value::as_str).map(str::to_string),
         path_contains: args.get("path_contains").and_then(Value::as_str).map(str::to_string),
@@ -61,19 +61,19 @@ pub async fn search_flows(state: &Arc<CoreState>, args: Value) -> Result<Vec<Con
         limit:         args.get("limit").and_then(Value::as_u64).map(|v| v as usize),
         offset:        args.get("offset").and_then(Value::as_u64).map(|v| v as usize),
     };
-    let summaries = state.search_flows(query).await;
+    let summaries = ctx.flows.search_flows(query).await;
     ok_json(&summaries)
 }
 
-pub async fn get_flow(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let id = require_str(&args, "id")?;
-    match state.get_flow(id.clone()).await {
+    match ctx.flows.get_flow(&id).await {
         Some(flow) => ok_json(&flow),
         None => Err(format!("Flow not found: {}", id)),
     }
 }
 
-pub async fn get_metrics(state: &Arc<CoreState>) -> Result<Vec<Content>, String> {
-    let m = state.get_metrics().await;
+pub async fn get_metrics(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+    let m = ctx.status.get_metrics().await;
     ok_json(&m)
 }

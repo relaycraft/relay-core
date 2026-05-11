@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use relay_core_runtime::{CoreState, audit::AuditActor};
+use crate::server::ProbeContext;
+use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::InterceptRuleConfig;
 use relay_core_api::modification::FlowModification;
 use relay_core_api::rule::RuleTermination;
@@ -69,12 +70,12 @@ pub fn resume_flow_schema() -> Tool {
     )
 }
 
-pub async fn set_intercept(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let phase = args.get("phase").and_then(Value::as_str).unwrap_or("request");
 
     let rule_id = Uuid::new_v4().to_string();
-    state
+    ctx.rules
         .create_intercept_rule_from(
             AuditActor::Probe,
             rule_id.clone(),
@@ -98,16 +99,16 @@ pub async fn set_intercept(state: &Arc<CoreState>, args: Value) -> Result<Vec<Co
     ok_text(format!("Intercept breakpoint set (rule_id: {}). Waiting for matching request…", rule_id))
 }
 
-pub async fn get_pending_intercepts(state: &Arc<CoreState>) -> Result<Vec<Content>, String> {
-    ok_json(&state.intercept_snapshot().await)
+pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+    ok_json(&ctx.intercepts.intercept_snapshot().await)
 }
 
-pub async fn resume_flow(state: &Arc<CoreState>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let key = require_str(&args, "key")?.to_string();
     let action = args.get("action").and_then(Value::as_str).unwrap_or("continue").to_string();
 
     let mods = FlowModification::from_json_value(&args).into_option();
-    state
+    ctx.intercepts
         .resolve_intercept_with_modifications_from(AuditActor::Probe, key.clone(), &action, mods)
         .await?;
     ok_text(format!("Flow {} resumed with action '{}'", key, action))
@@ -117,12 +118,14 @@ pub async fn resume_flow(state: &Arc<CoreState>, args: Value) -> Result<Vec<Cont
 mod tests {
     use super::get_pending_intercepts;
     use relay_core_runtime::CoreState;
+    use crate::server::ProbeContext;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn pending_intercepts_tool_returns_shared_snapshot_shape() {
         let state = Arc::new(CoreState::new(None).await);
-        let contents = get_pending_intercepts(&state)
+        let ctx = Arc::new(ProbeContext::new(state));
+        let contents = get_pending_intercepts(&ctx)
             .await
             .expect("tool should succeed");
 

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use relay_core_runtime::CoreState;
+use crate::server::ProbeContext;
 use relay_core_api::modification::FlowQuery;
 use rmcp::model::{AnnotateAble, RawResource, Resource, ResourceContents};
 
@@ -27,26 +27,26 @@ pub fn static_resource_list() -> Vec<Resource> {
 
 /// 根据 URI 路由到对应资源的读取逻辑
 pub async fn read_resource(
-    state: &Arc<CoreState>,
+    ctx: &Arc<ProbeContext>,
     uri: &str,
 ) -> Result<Vec<ResourceContents>, String> {
     if uri == "flows://" {
-        flows_list(state).await
+        flows_list(ctx).await
     } else if let Some(id) = uri.strip_prefix("flows://") {
-        flow_detail(state, id).await
+        flow_detail(ctx, id).await
     } else if uri == "rules://" {
-        rules_list(state).await
+        rules_list(ctx).await
     } else if uri == "proxy://status" {
-        proxy_status(state).await
+        proxy_status(ctx).await
     } else if uri == "audit://recent" {
-        recent_audit(state).await
+        recent_audit(ctx).await
     } else {
         Err(format!("Unknown resource URI: {}", uri))
     }
 }
 
-async fn flows_list(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
-    let summaries = state.search_flows(FlowQuery { limit: Some(50), ..Default::default() }).await;
+async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+    let summaries = ctx.flows.search_flows(FlowQuery { limit: Some(50), ..Default::default() }).await;
 
     let mut md = String::from("# Recent Flows\n\n");
     if summaries.is_empty() {
@@ -69,8 +69,8 @@ async fn flows_list(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, Str
     Ok(vec![ResourceContents::text(md, "flows://")])
 }
 
-async fn flow_detail(state: &Arc<CoreState>, id: &str) -> Result<Vec<ResourceContents>, String> {
-    match state.get_flow(id.to_string()).await {
+async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, String> {
+    match ctx.flows.get_flow(id).await {
         Some(flow) => {
             let json = serde_json::to_string_pretty(&flow)
                 .map_err(|e| e.to_string())?;
@@ -80,19 +80,19 @@ async fn flow_detail(state: &Arc<CoreState>, id: &str) -> Result<Vec<ResourceCon
     }
 }
 
-async fn rules_list(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
-    let rules = state.get_rules().await;
+async fn rules_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+    let rules = ctx.rules.get_rules().await;
     let json = serde_json::to_string_pretty(&rules).map_err(|e| e.to_string())?;
     Ok(vec![ResourceContents::text(json, "rules://")])
 }
 
-async fn proxy_status(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
-    let json = serde_json::to_string_pretty(&state.status_report().await).map_err(|e| e.to_string())?;
+async fn proxy_status(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+    let json = serde_json::to_string_pretty(&ctx.status.status_report().await).map_err(|e| e.to_string())?;
     Ok(vec![ResourceContents::text(json, "proxy://status")])
 }
 
-async fn recent_audit(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, String> {
-    let json = serde_json::to_string_pretty(&state.audit_snapshot(50)).map_err(|e| e.to_string())?;
+async fn recent_audit(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+    let json = serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| e.to_string())?;
     Ok(vec![ResourceContents::text(json, "audit://recent")])
 }
 
@@ -100,12 +100,14 @@ async fn recent_audit(state: &Arc<CoreState>) -> Result<Vec<ResourceContents>, S
 mod tests {
     use super::read_resource;
     use relay_core_runtime::CoreState;
+    use crate::server::ProbeContext;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn proxy_status_resource_uses_shared_status_report_shape() {
         let state = Arc::new(CoreState::new(None).await);
-        let contents = read_resource(&state, "proxy://status")
+        let ctx = Arc::new(ProbeContext::new(state));
+        let contents = read_resource(&ctx, "proxy://status")
             .await
             .expect("resource should load");
 
@@ -125,7 +127,8 @@ mod tests {
     #[tokio::test]
     async fn recent_audit_resource_uses_shared_audit_snapshot_shape() {
         let state = Arc::new(CoreState::new(None).await);
-        let contents = read_resource(&state, "audit://recent")
+        let ctx = Arc::new(ProbeContext::new(state));
+        let contents = read_resource(&ctx, "audit://recent")
             .await
             .expect("resource should load");
 

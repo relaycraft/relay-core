@@ -4,6 +4,10 @@ use tokio::sync::broadcast;
 
 use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
+use relay_core_runtime::services::{
+    FlowReadService, FlowEventHub, RuleService, InterceptService,
+    AuditService, RuntimeStatusService, PolicyService,
+};
 use rmcp::{
     ServerHandler,
     model::{
@@ -34,19 +38,44 @@ pub struct ProbeConfig {
     pub transport: ProbeTransport,
 }
 
+/// Shared context for probe tools/resources, exposing only narrow-capability traits.
+pub struct ProbeContext {
+    pub flows: Arc<dyn FlowReadService>,
+    pub flow_events: Arc<dyn FlowEventHub>,
+    pub rules: Arc<dyn RuleService>,
+    pub intercepts: Arc<dyn InterceptService>,
+    pub audit: Arc<dyn AuditService>,
+    pub status: Arc<dyn RuntimeStatusService>,
+    pub policy: Arc<dyn PolicyService>,
+}
+
+impl ProbeContext {
+    pub fn new(core: Arc<CoreState>) -> Self {
+        Self {
+            flows: core.clone(),
+            flow_events: core.clone(),
+            rules: core.clone(),
+            intercepts: core.clone(),
+            audit: core.clone(),
+            status: core.clone(),
+            policy: core.clone(),
+        }
+    }
+}
+
 /// MCP 探针服务器。
 ///
-/// 持有 `Arc<CoreState>`，实现 `rmcp::ServerHandler` trait，
-/// 将 relay-core 的流量管理能力以 MCP Resources + Tools 形式暴露。
+/// Holds `ProbeContext` backed by `CoreState`, implementing `rmcp::ServerHandler` trait.
 #[derive(Clone)]
 pub struct ProbeServer {
-    pub(crate) state: Arc<CoreState>,
+    pub(crate) ctx: Arc<ProbeContext>,
     config: ProbeConfig,
 }
 
 impl ProbeServer {
     pub fn new(config: ProbeConfig, state: Arc<CoreState>) -> Self {
-        Self { state, config }
+        let ctx = Arc::new(ProbeContext::new(state));
+        Self { ctx, config }
     }
 
     /// 启动 MCP 服务，阻塞直到连接断开或 shutdown。
@@ -67,10 +96,10 @@ impl ProbeServer {
 
     /// 启动实时订阅循环：监听 broadcast，在有新流量时通知 MCP 客户端刷新资源。
     pub async fn run_subscription_loop(
-        state: Arc<CoreState>,
+        ctx: Arc<ProbeContext>,
         peer: rmcp::Peer<RoleServer>,
     ) {
-        let mut rx: broadcast::Receiver<FlowUpdate> = state.subscribe_flow_updates();
+        let mut rx: broadcast::Receiver<FlowUpdate> = ctx.flow_events.subscribe_flow_updates();
         loop {
             match rx.recv().await {
                 Ok(FlowUpdate::Full(flow)) => {
@@ -141,7 +170,7 @@ impl ServerHandler for ProbeServer {
         request: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        let contents = resources::read_resource(&self.state, &request.uri).await
+        let contents = resources::read_resource(&self.ctx, &request.uri).await
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(ReadResourceResult::new(contents))
     }
@@ -163,7 +192,7 @@ impl ServerHandler for ProbeServer {
         let args = request.arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
-        let content = tools::dispatch(&self.state, &request.name, args).await
+        let content = tools::dispatch(&self.ctx, &request.name, args).await
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(CallToolResult::success(content))
     }
