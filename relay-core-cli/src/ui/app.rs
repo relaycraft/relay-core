@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap, Tabs, Table, Row, TableState, Cell},
+    widgets::{Block, Borders, Paragraph, Wrap, Tabs, Table, Row, TableState, Cell, Clear},
     Frame,
 };
 use crossterm::event::KeyCode;
@@ -42,6 +42,7 @@ impl DetailTab {
 pub enum InputMode {
     Normal,
     Filtering,
+    Help,
 }
 
 #[derive(PartialEq)]
@@ -123,6 +124,10 @@ impl TuiApp {
     pub fn on_key(&mut self, key: KeyCode) {
         match self.input_mode {
             InputMode::Normal => {
+                if key == KeyCode::Char('?') {
+                    self.input_mode = InputMode::Help;
+                    return;
+                }
                 match self.active_area {
                     ActiveArea::FlowList => match key {
                         KeyCode::Char('q') => self.should_quit = true,
@@ -150,6 +155,7 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('/') => self.input_mode = InputMode::Filtering,
+                        KeyCode::Char('?') => self.input_mode = InputMode::Help,
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.active_area = ActiveArea::FlowDetail,
                         _ => {}
                     },
@@ -174,9 +180,15 @@ impl TuiApp {
             },
             InputMode::Filtering => match key {
                 KeyCode::Enter | KeyCode::Esc => self.input_mode = InputMode::Normal,
+                KeyCode::Char('?') => self.input_mode = InputMode::Help,
                 KeyCode::Char(c) => self.filter_input.push(c),
                 KeyCode::Backspace => { self.filter_input.pop(); },
                 _ => {}
+            },
+            InputMode::Help => {
+                if key == KeyCode::Char('?') || key == KeyCode::Esc {
+                    self.input_mode = InputMode::Normal;
+                }
             }
         }
     }
@@ -238,6 +250,40 @@ impl TuiApp {
         self.render_flow_list(f, main_chunks[0]);
         self.render_flow_detail(f, main_chunks[1]);
         self.render_status_bar(f, chunks[1]);
+
+        if self.input_mode == InputMode::Help {
+            self.render_help_overlay(f);
+        }
+    }
+
+    fn render_help_overlay(&self, f: &mut Frame) {
+        let lines = vec![
+            Line::from(vec![Span::styled("Keyboard Shortcuts", Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))]),
+            Line::from(""),
+            Line::from(vec![Span::styled(" j / ↓      ", Style::default().fg(Color::Cyan)), Span::raw("Navigate flow list down")]),
+            Line::from(vec![Span::styled(" k / ↑      ", Style::default().fg(Color::Cyan)), Span::raw("Navigate flow list up")]),
+            Line::from(vec![Span::styled(" g          ", Style::default().fg(Color::Cyan)), Span::raw("Jump to newest flow")]),
+            Line::from(vec![Span::styled(" /          ", Style::default().fg(Color::Cyan)), Span::raw("Filter flows by host/URL/method")]),
+            Line::from(vec![Span::styled(" Enter / l  ", Style::default().fg(Color::Cyan)), Span::raw("Focus detail panel")]),
+            Line::from(vec![Span::styled(" Esc / h    ", Style::default().fg(Color::Cyan)), Span::raw("Focus flow list")]),
+            Line::from(vec![Span::styled(" Tab        ", Style::default().fg(Color::Cyan)), Span::raw("Switch detail tab (Overview→Request→Response→Messages)")]),
+            Line::from(vec![Span::styled(" 1-4        ", Style::default().fg(Color::Cyan)), Span::raw("Jump to tab 1=Overview 2=Request 3=Response 4=Messages")]),
+            Line::from(vec![Span::styled(" PgUp / PgDown ", Style::default().fg(Color::Cyan)), Span::raw("Scroll detail panel")]),
+            Line::from(vec![Span::styled(" ?          ", Style::default().fg(Color::Cyan)), Span::raw("Toggle this help")]),
+            Line::from(vec![Span::styled(" q          ", Style::default().fg(Color::Cyan)), Span::raw("Quit")]),
+        ];
+
+        let help_width = 65;
+        let help_height = lines.len() as u16 + 2;
+        let area = centered_rect(help_width, help_height, f.area());
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Help (? to close) ")
+            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        let paragraph = Paragraph::new(lines).block(block);
+        f.render_widget(Clear, area);
+        f.render_widget(paragraph, area);
     }
 
     fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
@@ -574,34 +620,73 @@ impl TuiApp {
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let (msg, style) = match self.input_mode {
-            InputMode::Normal => (
-                vec![
-                    Span::raw("Press "),
-                    Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" to exit, "),
-                    Span::styled("/", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" to filter, "),
-                    Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" to switch tabs, "),
-                    Span::styled("Enter/Esc", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" to toggle focus."),
-                ],
-                Style::default().add_modifier(Modifier::RAPID_BLINK),
-            ),
-            InputMode::Filtering => (
-                vec![
-                    Span::raw("Filter: "),
-                    Span::styled(&self.filter_input, Style::default().fg(Color::Yellow)),
-                ],
-                Style::default(),
-            ),
+        let flow_count = self.flows.len();
+        let filtered_count = self.get_filtered_flows().len();
+        let count_str = if filtered_count != flow_count {
+            format!("{} (filtered from {})", filtered_count, flow_count)
+        } else {
+            flow_count.to_string()
         };
 
-        let text = Text::from(Line::from(msg));
+        let bar_text = match self.input_mode {
+            InputMode::Normal => {
+                vec![
+                    Span::styled(format!("Flows: {} ", count_str), Style::default().fg(Color::Green)),
+                    Span::raw("| "),
+                    Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" quit | "),
+                    Span::styled("/", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" filter | "),
+                    Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" tabs | "),
+                    Span::styled("?", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" help"),
+                ]
+            },
+            InputMode::Filtering => {
+                vec![
+                    Span::raw("Filter: "),
+                    Span::styled(self.filter_input.as_str(), Style::default().fg(Color::Yellow)),
+                    Span::raw(" | "),
+                    Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" apply | "),
+                    Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" cancel"),
+                ]
+            },
+            InputMode::Help => {
+                vec![
+                    Span::styled("HELP", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::raw(" — press "),
+                    Span::styled("? or Esc", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" to close"),
+                ]
+            },
+        };
+
+        let text = Text::from(Line::from(bar_text));
         let paragraph = Paragraph::new(text)
-            .style(style)
             .block(Block::default().borders(Borders::ALL));
         f.render_widget(paragraph, area);
     }
+}
+
+fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length((r.height.saturating_sub(height)) / 2),
+            Constraint::Length(height),
+            Constraint::Length((r.height.saturating_sub(height)) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length((r.width.saturating_sub(width)) / 2),
+            Constraint::Length(width),
+            Constraint::Length((r.width.saturating_sub(width)) / 2),
+        ])
+        .split(vertical[1])[1]
 }

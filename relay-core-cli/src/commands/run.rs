@@ -388,6 +388,7 @@ pub async fn execute(
 
         // Run TUI in main thread
         let app = TuiApp::new();
+        info!("Proxy listening on {} | Press ? for help, q to quit", addr);
         if let Some(rx) = tui_rx
             && let Err(e) = run_tui(app, rx).await {
                 // Restore terminal on error
@@ -395,9 +396,16 @@ pub async fn execute(
                 eprintln!("TUI error: {}", e);
             }
     } else {
-        info!("Proxy listening on {}", addr);
-        info!("Control API listening on 127.0.0.1:{}", control_port);
-        
+        info!("──────────────────────────────────────────────");
+        info!("RelayCore proxy started");
+        info!("  Proxy   {}", addr);
+        info!("  Control http://127.0.0.1:{}/", control_port);
+        if let Some(port) = api_port {
+            info!("  REST    http://{}:{}/api/v1/", api_bind, port);
+        }
+        info!("  TUI     run with --ui for interactive mode");
+        info!("──────────────────────────────────────────────");
+
         // Run proxy in main thread
         if let Err(e) = state.start_proxy(config, proxy_tx, extra_interceptor).await {
             error!("Failed to start proxy: {}", e);
