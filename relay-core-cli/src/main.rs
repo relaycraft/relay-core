@@ -62,11 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             save_stream,
             api_port,
+            api_bind,
+            api_token,
+            api_cors,
         } => {
              #[cfg(feature = "script")]
-             commands::run::execute(listen, control_port, udp_tproxy_port, ca_cert, ca_key, rules, script, script_watch, ui, transparent, output, save_stream, api_port).await?;
+             commands::run::execute(listen, control_port, udp_tproxy_port, ca_cert, ca_key, rules, script, script_watch, ui, transparent, output, save_stream, api_port, api_bind, api_token, api_cors).await?;
              #[cfg(not(feature = "script"))]
-             commands::run::execute(listen, control_port, udp_tproxy_port, ca_cert, ca_key, rules, ui, transparent, output, save_stream, api_port).await?;
+             commands::run::execute(listen, control_port, udp_tproxy_port, ca_cert, ca_key, rules, ui, transparent, output, save_stream, api_port, api_bind, api_token, api_cors).await?;
         },
         #[cfg(any(feature = "transparent-linux", feature = "transparent-macos"))]
         Commands::Proxy { action } => {

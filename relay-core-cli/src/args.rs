@@ -66,6 +66,18 @@ pub enum Commands {
         /// Exposes GET /api/v1/flows, /api/v1/rules, /api/v1/events, etc.
         #[arg(long)]
         api_port: Option<u16>,
+
+        /// HTTP API bind address (default 127.0.0.1)
+        #[arg(long, default_value = "127.0.0.1")]
+        api_bind: String,
+
+        /// Bearer token for HTTP API authentication
+        #[arg(long)]
+        api_token: Option<String>,
+
+        /// CORS allowed origins (comma-separated), e.g. "https://app.example.com,http://localhost:3000"
+        #[arg(long)]
+        api_cors: Option<String>,
     },
     /// Manage Certificate Authority
     Ca {

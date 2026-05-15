@@ -191,6 +191,9 @@ pub async fn execute(
     output: String,
     save_stream: Option<PathBuf>,
     api_port: Option<u16>,
+    api_bind: String,
+    api_token: Option<String>,
+    api_cors: Option<String>,
 ) -> Result<()> {
     let state = Arc::new(CoreState::new(None).await);
     let interception_enabled = Arc::new(AtomicBool::new(true));
@@ -207,14 +210,38 @@ pub async fn execute(
 
     // Start REST/SSE HTTP API server (if --api-port specified)
     if let Some(port) = api_port {
+        let bind_addr = std::net::SocketAddr::new(
+            api_bind.parse().unwrap_or(std::net::IpAddr::from([127, 0, 0, 1])),
+            port,
+        );
         let api_state = state.clone();
+        let api_token = api_token.clone();
+        let api_cors = api_cors.clone();
         tokio::spawn(async move {
-            let srv = HttpApiServer::new(HttpApiConfig::new(port), api_state);
+            let mut cfg = HttpApiConfig::new(port);
+            cfg.addr = bind_addr;
+            if let Some(token) = api_token {
+                cfg = cfg.with_bearer_token(token);
+            }
+            if let Some(cors) = api_cors {
+                let origins: Vec<_> = cors.split(',')
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() { None } else { Some(trimmed) }
+                    })
+                    .collect();
+                if !origins.is_empty() {
+                    cfg = cfg.with_allowed_origins(
+                        origins.into_iter().filter_map(|s| s.parse().ok())
+                    );
+                }
+            }
+            let srv = HttpApiServer::new(cfg, api_state);
             if let Err(e) = srv.run().await {
                 error!("HTTP API server error: {}", e);
             }
         });
-        if !ui { info!("HTTP API listening on 127.0.0.1:{}", port); }
+        if !ui { info!("HTTP API listening on {}", bind_addr); }
     }
 
     // Configure TUI
