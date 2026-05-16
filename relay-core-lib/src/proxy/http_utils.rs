@@ -143,7 +143,10 @@ pub fn create_initial_flow(
                     headers: vec![],
                     cookies: vec![],
                     body: None,
-                    timing: relay_core_api::flow::ResponseTiming { time_to_first_byte: None, time_to_last_byte: None },
+                    timing: relay_core_api::flow::ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
                 },
                 messages: vec![],
                 closed: false,
@@ -304,6 +307,8 @@ pub fn update_flow_with_response_headers(
         timing: relay_core_api::flow::ResponseTiming {
             time_to_first_byte: None,
             time_to_last_byte: None,
+            connect_time_ms: None,
+            ssl_time_ms: None,
         },
     };
 
@@ -471,6 +476,8 @@ mod tests {
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
+            connect_time_ms: None,
+            ssl_time_ms: None,
                     },
                 }),
                 error: None,

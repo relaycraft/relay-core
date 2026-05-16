@@ -66,6 +66,8 @@ fn create_ws_flow(url: &str) -> Flow {
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None
             },
         },
         messages: vec![],

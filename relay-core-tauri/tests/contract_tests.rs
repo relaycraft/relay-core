@@ -55,6 +55,8 @@ fn test_flow_to_flow_index_conversion() {
                 timing: ResponseTiming {
                     time_to_first_byte: Some(50),
                     time_to_last_byte: Some(100),
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
                 cookies: vec![],
             }),
@@ -179,7 +181,10 @@ fn test_websocket_flow_to_detail_conversion() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
-                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None },
+                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
                 cookies: vec![],
             },
             messages: vec![
@@ -334,6 +339,8 @@ fn test_flow_detail_http_har_compat_fields() {
                 timing: ResponseTiming {
                     time_to_first_byte: Some(5),
                     time_to_last_byte: Some(10),
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
                 cookies: vec![],
             }),
@@ -395,6 +402,8 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
                 cookies: vec![],
             }),
@@ -491,6 +500,8 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
                 cookies: vec![],
             }),
@@ -539,6 +550,8 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
                 cookies: vec![],
             },

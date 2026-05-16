@@ -198,6 +198,7 @@ where
     };
     
     // Send Request
+    let upstream_start = std::time::Instant::now();
     let res = match tokio::time::timeout(std::time::Duration::from_millis(policy.request_timeout_ms), client.request(forward_req)).await {
         Ok(Ok(res)) => res,
         Ok(Err(e)) => {
@@ -230,6 +231,12 @@ where
     
     update_flow_with_response_headers(&mut flow, res_parts.status, res_parts.version, &res_parts.headers);
     
+    let ttfbs_ms = upstream_start.elapsed().as_millis() as u64;
+    if let Layer::Http(http) = &mut flow.layer
+        && let Some(response) = &mut http.response {
+            response.timing.time_to_first_byte = Some(ttfbs_ms);
+    }
+
     match interceptor.on_response_headers(&mut flow).await {
         InterceptionResult::Continue => {},
         InterceptionResult::Drop => {

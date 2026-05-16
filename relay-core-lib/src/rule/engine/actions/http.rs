@@ -125,6 +125,8 @@ pub async fn execute(
                 timing: ResponseTiming {
                     time_to_first_byte: Some(0),
                     time_to_last_byte: Some(0),
+                connect_time_ms: None,
+                ssl_time_ms: None,
                 },
             };
 
@@ -261,6 +263,8 @@ pub async fn execute(
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
+                connect_time_ms: None,
+                ssl_time_ms: None,
                     },
                  });
              } else if let Layer::WebSocket(ws) = &mut flow.layer {
@@ -280,6 +284,8 @@ pub async fn execute(
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
+                connect_time_ms: None,
+                ssl_time_ms: None,
                     },
                  };
              }
@@ -304,6 +310,8 @@ pub async fn execute(
                         timing: ResponseTiming {
                             time_to_first_byte: Some(0),
                             time_to_last_byte: Some(0),
+                connect_time_ms: None,
+                ssl_time_ms: None,
                         },
                      });
                 }

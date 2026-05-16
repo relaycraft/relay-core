@@ -183,6 +183,10 @@ pub struct Cookie {
 pub struct ResponseTiming {
     pub time_to_first_byte: Option<u64>, // ms
     pub time_to_last_byte: Option<u64>,  // ms
+    /// TCP connect time in milliseconds for the upstream connection (new connections only).
+    pub connect_time_ms: Option<u64>,
+    /// TLS handshake time in milliseconds for the upstream connection (new connections only).
+    pub ssl_time_ms: Option<u64>,
 }
 
 // --- WebSocket Layer ---
