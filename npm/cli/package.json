@@ -1,0 +1,22 @@
+{
+  "name": "@relay-core/cli",
+  "version": "0.3.0",
+  "description": "RelayCore CLI — high-performance Rust traffic interception proxy with TUI",
+  "license": "MIT",
+  "repository": "github:relaycraft/relay-core",
+  "bin": {
+    "relay-core": "./bin/relay-core-cli"
+  },
+  "files": [
+    "install.js",
+    "bin/"
+  ],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux"],
+  "cpu": ["x64", "arm64"]
+}

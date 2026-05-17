@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "MCP probe adapter for relay-core: exposes traffic inspection and control to AI agents"
 
+[[bin]]
+name = "relay-core-probe"
+path = "src/main.rs"
+
 [features]
 default = ["transport-stdio"]
 transport-stdio = ["rmcp/transport-io"]
@@ -14,13 +18,14 @@ transport-sse = ["rmcp/transport-streamable-http-server"]
 
 [dependencies]
 relay-core-api.workspace = true
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.2.0" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.0" }
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1.89"
 regex = "1.10"
 uuid.workspace = true

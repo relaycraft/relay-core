@@ -1,0 +1,22 @@
+{
+  "name": "@relay-core/mcp",
+  "version": "0.3.0",
+  "description": "RelayCore MCP server — AI agent traffic control via Model Context Protocol",
+  "license": "MIT",
+  "repository": "github:relaycraft/relay-core",
+  "bin": {
+    "relay-core-probe": "./bin/relay-core-probe"
+  },
+  "files": [
+    "install.js",
+    "bin/"
+  ],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux"],
+  "cpu": ["x64", "arm64"]
+}
