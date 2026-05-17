@@ -139,6 +139,11 @@ impl ServerHandler for ProbeServer {
             "relay-core traffic proxy probe (tool-contract-version: {}). \
             Use tools to search/inspect flows, manage interception rules, \
             and debug network traffic. \
+            \
+            To intercept HTTPS traffic, the relay-core CA certificate must be \
+            trusted by the system (I cannot do this — it requires sudo). \
+            Read the ca://install resource for platform-specific one-liner commands. \
+            \
             Tool contract is stable; new optional parameters may be added \
             without a version bump — ignore unknown fields.",
             crate::TOOL_CONTRACT_VERSION,
