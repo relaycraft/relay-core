@@ -29,11 +29,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 rustls = { version = "0.23", features = ["ring"] }
 
-relay-core-api = { path = "../relay-core-api", version = "0.3.2" }
-relay-core-lib = { path = "../relay-core-lib", version = "0.3.2" }
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.2", default-features = false }
-relay-core-http = { path = "../relay-core-http", version = "0.3.2" }
-relay-core-script = { path = "../relay-core-script", version = "0.3.2", optional = true }
+relay-core-api = { path = "../relay-core-api", version = "0.3.4" }
+relay-core-lib = { path = "../relay-core-lib", version = "0.3.4" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.4", default-features = false }
+relay-core-http = { path = "../relay-core-http", version = "0.3.4" }
+relay-core-script = { path = "../relay-core-script", version = "0.3.4", optional = true }
 notify = "8.2.0"
 serde_yaml = "0.9.34"
 ratatui = "0.30.0"
@@ -43,7 +43,7 @@ reqwest = { version = "0.13.2", features = ["json"] }
 tokio-stream = "0.1.18"
 tower-http = { version = "0.6.8", features = ["cors", "trace"] }
 tokio-tungstenite = "0.28.0"
-futures-util = "0.3.32"
+futures-util = "0.3.42"
 async-trait = "0.1.89"
 tempfile = "3.26.0"
 sha1 = "0.10.6"

@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+const { spawnSync } = require("child_process");
+const path = require("path");
+const binary = process.platform === "win32" ? "relay-core-cli.exe" : "relay-core-cli";
+const result = spawnSync(path.join(__dirname, binary), process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);

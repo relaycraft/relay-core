@@ -74,10 +74,18 @@ async function download(url, dest) {
     const binaryName = getBinaryName();
     const binaryPath = getBinaryPath(binaryName);
 
-    // Skip download if binary already exists (re-install)
+    // Re-download if binary missing or version mismatch
     if (existsSync(binaryPath)) {
-      console.log(`${binaryName} already installed.`);
-      return;
+      try {
+        const out = execSync(`"${binaryPath}" --version`, { encoding: "utf-8", timeout: 5000 }).trim();
+        if (out.includes(VERSION)) {
+          console.log(`${binaryName} v${VERSION} already installed.`);
+          return;
+        }
+        console.log(`Installed ${out}, updating to v${VERSION}...`);
+      } catch {
+        console.log("Binary exists but failed --version check, re-downloading...");
+      }
     }
 
     const target = getTarget();
