@@ -23,7 +23,7 @@ bytes.workspace = true
 http.workspace = true
 base64 = "0.22.1"
 tokio-util = { version = "0.7.18", features = ["io", "io-util"] }
-futures-util = "0.3.42"
+futures-util = "0.3.32"
 http-body = "1.0.1"
 
 [dev-dependencies]

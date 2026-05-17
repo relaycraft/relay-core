@@ -43,7 +43,7 @@ reqwest = { version = "0.13.2", features = ["json"] }
 tokio-stream = "0.1.18"
 tower-http = { version = "0.6.8", features = ["cors", "trace"] }
 tokio-tungstenite = "0.28.0"
-futures-util = "0.3.42"
+futures-util = "0.3.32"
 async-trait = "0.1.89"
 tempfile = "3.26.0"
 sha1 = "0.10.6"

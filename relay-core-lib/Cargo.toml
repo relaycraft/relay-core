@@ -38,7 +38,7 @@ http.workspace = true
 time = { version = "0.3.47", features = ["formatting", "parsing", "macros"] }
 hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "tls12", "native-tokio", "ring"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
-futures-util = "0.3.42"
+futures-util = "0.3.32"
 data-encoding = "2.10.0"
 async-trait = "0.1.89"
 moka = { version = "0.12", features = ["future", "sync"] }
