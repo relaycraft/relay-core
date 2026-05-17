@@ -75,7 +75,10 @@ async fn main() {
 cargo install relay-core-cli
 
 # 在 8080 端口启动代理
-relay-core-cli run --port 8080
+relay-core-cli run
+
+# 或使用 TUI 模式
+relay-core-cli run --ui
 
 # 生成用于 HTTPS 拦截的 CA 证书
 relay-core-cli ca init

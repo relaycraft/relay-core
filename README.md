@@ -75,7 +75,10 @@ async fn main() {
 cargo install relay-core-cli
 
 # Start proxy on port 8080
-relay-core-cli run --port 8080
+relay-core-cli run
+
+# Or with TUI
+relay-core-cli run --ui
 
 # Generate CA certificate for HTTPS interception
 relay-core-cli ca init
