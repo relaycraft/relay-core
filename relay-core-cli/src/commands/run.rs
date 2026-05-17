@@ -406,6 +406,28 @@ pub async fn execute(
         info!("  TUI     run with --ui for interactive mode");
         info!("──────────────────────────────────────────────");
 
+        // CA certificate guidance
+        if !ca_cert.exists() || !ca_key.exists() {
+            info!("");
+            info!("  First run — CA certificate not found. To intercept HTTPS traffic:");
+            if cfg!(target_os = "macos") {
+                info!("    1. relay-core-cli ca init");
+                info!("    2. relay-core-cli ca install");
+                info!("");
+                info!("  Then configure your system/browser to use this proxy:");
+                info!("    Proxy: {}  |  No authentication", addr);
+            } else {
+                info!("    1. relay-core-cli ca init");
+                info!("    2. Install {:?} to your system trust store manually", ca_cert);
+                info!("       (Linux: cp to /usr/local/share/ca-certificates/ && update-ca-certificates)");
+                info!("       (Windows: certmgr.msc → Trusted Root Certification Authorities)");
+            }
+            info!("");
+        } else if !cfg!(target_os = "macos") && !ca_cert.exists() {
+            // Only show if CA exists but might not be installed (non-macOS)
+            info!("  CA cert ready at {:?} — may need manual system trust installation", ca_cert);
+        }
+
         // Run proxy in main thread
         if let Err(e) = state.start_proxy(config, proxy_tx, extra_interceptor).await {
             error!("Failed to start proxy: {}", e);

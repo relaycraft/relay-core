@@ -50,7 +50,8 @@ pub fn execute(action: CaAction) -> Result<()> {
             
             #[cfg(target_os = "macos")]
             {
-                println!("Installing CA certificate to System Keychain (requires sudo)...");
+                println!("Adding RelayCraft CA to System Keychain (requires sudo)...");
+                println!("This allows your browser to trust certificates signed by RelayCore.");
                 let status = Command::new("sudo")
                     .arg("security")
                     .arg("add-trusted-cert")
@@ -63,9 +64,15 @@ pub fn execute(action: CaAction) -> Result<()> {
                     .status()?;
                     
                 if status.success() {
-                    println!("CA certificate installed successfully.");
+                    println!();
+                    println!("CA certificate installed and trusted by macOS.");
+                    println!();
+                    println!("Next: configure your browser or system proxy to use relay-core.");
+                    println!("  HTTP Proxy: 127.0.0.1, Port: 8080");
+                    println!("  HTTPS Proxy: 127.0.0.1, Port: 8080");
                 } else {
                     eprintln!("Failed to install CA certificate. Exit code: {:?}", status.code());
+                    eprintln!("Try running: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {:?}", cert);
                 }
             }
             
