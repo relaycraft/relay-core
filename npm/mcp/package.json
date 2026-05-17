@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "RelayCore MCP server — AI agent traffic control via Model Context Protocol",
   "license": "MIT",
   "repository": "github:relaycraft/relay-core",
