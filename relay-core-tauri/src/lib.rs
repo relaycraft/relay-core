@@ -1,14 +1,44 @@
 use std::sync::Arc;
 use tauri::{Runtime, Manager};
 use relay_core_runtime::CoreState;
+use relay_core_runtime::services::{
+    FlowReadService, RuleService, InterceptService, PolicyService,
+    AuditService, RuntimeStatusService, ScriptService,
+};
 pub use relay_core_runtime::rule::InterceptRule;
 
 pub mod commands;
 pub mod transport;
 pub mod interceptor;
 
+/// Narrow-trait context for Tauri commands — most data operations go through here.
+pub struct TauriContext {
+    pub flows: Arc<dyn FlowReadService>,
+    pub rules: Arc<dyn RuleService>,
+    pub intercepts: Arc<dyn InterceptService>,
+    pub policy: Arc<dyn PolicyService>,
+    pub audit: Arc<dyn AuditService>,
+    pub status: Arc<dyn RuntimeStatusService>,
+    pub script: Arc<dyn ScriptService>,
+}
+
+impl TauriContext {
+    pub fn new(core: Arc<CoreState>) -> Self {
+        Self {
+            flows: core.clone(),
+            rules: core.clone(),
+            intercepts: core.clone(),
+            policy: core.clone(),
+            audit: core.clone(),
+            status: core.clone(),
+            script: core.clone(),
+        }
+    }
+}
+
 pub struct RelayCoreState {
     pub core: Arc<CoreState>,
+    pub ctx: Arc<TauriContext>,
 }
 
 impl Default for RelayCoreState {
@@ -25,8 +55,10 @@ impl RelayCoreState {
     }
 
     pub async fn new_async() -> Self {
+        let core = Arc::new(CoreState::new(None).await);
         Self {
-            core: Arc::new(CoreState::new(None).await),
+            ctx: Arc::new(TauriContext::new(core.clone())),
+            core,
         }
     }
 }

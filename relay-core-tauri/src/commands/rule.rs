@@ -51,7 +51,7 @@ mod tests {
         let res = set_intercept_rule_impl(&state, initial).await;
         assert!(res.is_ok());
 
-        let mut rules = state.core.get_rules().await;
+        let mut rules = state.ctx.rules.get_rules().await;
         rules.sort_by(|a, b| a.id.cmp(&b.id));
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].id, "legacy-1-0");
@@ -67,7 +67,7 @@ mod tests {
         let res = set_intercept_rule_impl(&state, updated).await;
         assert!(res.is_ok());
 
-        let rules = state.core.get_rules().await;
+        let rules = state.ctx.rules.get_rules().await;
         assert_eq!(rules.len(), 1, "old derived rules should be replaced");
         assert_eq!(rules[0].id, "legacy-1");
         assert_eq!(rules[0].stage, RuleStage::RequestHeaders);
@@ -108,7 +108,7 @@ mod tests {
         let res = set_intercept_rule_impl(&state, legacy).await;
         assert!(res.is_ok());
 
-        let mut ids: Vec<String> = state.core.get_rules().await.into_iter().map(|r| r.id).collect();
+        let mut ids: Vec<String> = state.ctx.rules.get_rules().await.into_iter().map(|r| r.id).collect();
         ids.sort();
         assert_eq!(ids, vec!["legacy-keep".to_string(), "manual-rule".to_string()]);
     }
@@ -127,7 +127,7 @@ mod tests {
         set_intercept_rule_impl(&state, active)
             .await
             .expect("seed active rule");
-        assert_eq!(state.core.get_rules().await.len(), 2);
+        assert_eq!(state.ctx.rules.get_rules().await.len(), 2);
 
         let inactive = InterceptRule {
             id: "legacy-clear".to_string(),
@@ -139,7 +139,7 @@ mod tests {
         let res = set_intercept_rule_impl(&state, inactive).await;
         assert!(res.is_ok());
         assert!(
-            state.core.get_rules().await.is_empty(),
+            state.ctx.rules.get_rules().await.is_empty(),
             "inactive update should remove existing family and add nothing"
         );
     }
@@ -158,7 +158,7 @@ mod tests {
         set_intercept_rule_impl(&state, active)
             .await
             .expect("seed active rule");
-        assert_eq!(state.core.get_rules().await.len(), 1);
+        assert_eq!(state.ctx.rules.get_rules().await.len(), 1);
 
         let invalid_phase = InterceptRule {
             id: "legacy-invalid-phase".to_string(),
@@ -170,7 +170,7 @@ mod tests {
         let res = set_intercept_rule_impl(&state, invalid_phase).await;
         assert!(res.is_ok());
         assert!(
-            state.core.get_rules().await.is_empty(),
+            state.ctx.rules.get_rules().await.is_empty(),
             "invalid phase yields empty to_rules and should leave no family rules"
         );
     }

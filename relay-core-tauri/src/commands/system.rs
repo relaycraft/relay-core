@@ -22,12 +22,12 @@ fn build_proxy_config(app_data_dir: PathBuf, port: u16) -> Result<ProxyConfig, S
 
 #[tauri::command]
 pub fn get_core_status(state: State<'_, RelayCoreState>) -> CoreStatusSnapshot {
-    state.core.status_snapshot()
+    state.ctx.status.status_snapshot()
 }
 
 #[tauri::command]
 pub async fn get_core_metrics(state: State<'_, RelayCoreState>) -> Result<CoreMetrics, String> {
-    Ok(state.core.get_metrics().await)
+    Ok(state.ctx.status.get_metrics().await)
 }
 
 #[tauri::command]
@@ -66,26 +66,24 @@ pub fn patch_policy(
 }
 
 pub async fn get_pending_intercepts_impl(state: &RelayCoreState) -> CoreInterceptSnapshot {
-    state.core.intercept_snapshot().await
+    state.ctx.intercepts.intercept_snapshot().await
 }
 
 pub fn get_recent_audit_impl(state: &RelayCoreState) -> CoreAuditSnapshot {
-    state.core.audit_snapshot(50)
+    state.ctx.audit.audit_snapshot(50)
 }
 
 pub fn get_policy_impl(state: &RelayCoreState) -> ProxyPolicy {
-    state.core.policy_snapshot()
+    state.ctx.policy.policy_snapshot()
 }
 
 pub fn update_policy_impl(state: &RelayCoreState, policy: ProxyPolicy) {
-    state
-        .core
+    state.ctx.policy
         .update_policy_from(AuditActor::Tauri, "tauri.policy".to_string(), policy);
 }
 
 pub fn patch_policy_impl(state: &RelayCoreState, patch: ProxyPolicyPatch) {
-    state
-        .core
+    state.ctx.policy
         .patch_policy_from(AuditActor::Tauri, "tauri.policy.patch".to_string(), patch);
 }
 
@@ -103,8 +101,7 @@ pub async fn stop_core_proxy_impl(state: &RelayCoreState) -> Result<String, Stri
 
 #[tauri::command]
 pub async fn load_script(state: State<'_, RelayCoreState>, script: String) -> Result<(), String> {
-    state
-        .core
+    state.ctx.script
         .load_script_from(AuditActor::Tauri, "tauri.load_script".to_string(), &script)
         .await
 }

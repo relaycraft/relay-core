@@ -19,7 +19,7 @@ impl<R: Runtime> TauriFlowSink<R> {
                 FlowUpdate::Full(flow) => {
                     let mut index = FlowIndex::from(*flow);
                     if let Some(state) = self.app_handle.try_state::<RelayCoreState>() {
-                        index.is_intercepted = state.core.is_flow_intercepted(index.id.clone()).await;
+                        index.is_intercepted = state.ctx.intercepts.is_flow_intercepted(index.id.clone()).await;
                     }
                     if let Err(e) = self.app_handle.emit("flow-update", index) {
                         eprintln!("Failed to emit flow-update event: {}", e);
@@ -91,9 +91,9 @@ pub async fn get_flow_detail(state: State<'_, RelayCoreState>, id: String) -> Re
 }
 
 pub async fn get_flow_detail_impl(state: &RelayCoreState, id: String) -> Result<FlowDetail, String> {
-    if let Some(flow) = state.core.get_flow(id.clone()).await {
+    if let Some(flow) = state.ctx.flows.get_flow(&id).await {
         let mut detail = FlowDetail::from(flow);
-        detail._rc.intercept.intercepted = state.core.is_flow_intercepted(id).await;
+        detail._rc.intercept.intercepted = state.ctx.intercepts.is_flow_intercepted(id).await;
         Ok(detail)
     } else {
         Err(format!("Flow not found: {}", id))
@@ -119,8 +119,7 @@ pub async fn resume_flow_impl(
     let mods = modifications
         .map(FlowModification::from)
         .and_then(FlowModification::into_option);
-    state
-        .core
+    state.ctx.intercepts
         .resolve_intercept_with_modifications_from(AuditActor::Tauri, id, &action, mods)
         .await
 }
