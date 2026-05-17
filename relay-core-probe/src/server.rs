@@ -6,7 +6,7 @@ use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
 use relay_core_runtime::services::{
     FlowReadService, FlowEventHub, RuleService, InterceptService,
-    AuditService, RuntimeStatusService, PolicyService,
+    AuditService, RuntimeStatusService, PolicyService, ScriptService,
 };
 use rmcp::{
     ServerHandler,
@@ -47,6 +47,7 @@ pub struct ProbeContext {
     pub audit: Arc<dyn AuditService>,
     pub status: Arc<dyn RuntimeStatusService>,
     pub policy: Arc<dyn PolicyService>,
+    pub script: Arc<dyn ScriptService>,
 }
 
 impl ProbeContext {
@@ -59,6 +60,7 @@ impl ProbeContext {
             audit: core.clone(),
             status: core.clone(),
             policy: core.clone(),
+            script: core.clone(),
         }
     }
 }

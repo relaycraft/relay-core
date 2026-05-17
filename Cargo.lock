@@ -4724,6 +4724,7 @@ dependencies = [
  "regex",
  "relay-core-api",
  "relay-core-runtime",
+ "reqwest",
  "rmcp",
  "serde",
  "serde_json",

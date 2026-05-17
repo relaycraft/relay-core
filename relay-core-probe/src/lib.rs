@@ -12,12 +12,15 @@
 //!
 //! | Version | Status  | Notes                                  |
 //! |---------|---------|----------------------------------------|
-//! | 1       | current | All tools listed in [`tools`] are stable |
+//! | 1       | current | 15 tools, all stable                   |
 //!
 //! ## Stable tools (v1)
 //! - `search_flows` / `get_flow` / `get_metrics` — read-only, no side effects
+//! - `replay_flow` / `export_har` — flow replay and HAR export
 //! - `set_rule` / `delete_rule` / `mock_url` — rule engine management
 //! - `set_intercept` / `get_pending_intercepts` / `resume_flow` — breakpoint flow
+//! - `get_policy` / `update_policy` / `patch_policy` — policy management
+//! - `set_script` — load Deno scripts for dynamic modification
 //!
 //! # Quick start
 //! ```no_run

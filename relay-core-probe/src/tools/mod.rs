@@ -6,6 +6,7 @@ use serde_json::Value;
 mod query;
 mod intercept;
 mod rules;
+mod script;
 
 /// 返回所有工具的 schema 声明（用于 list_tools 响应）
 pub fn tool_list() -> Vec<Tool> {
@@ -13,6 +14,8 @@ pub fn tool_list() -> Vec<Tool> {
         query::search_flows_schema(),
         query::get_flow_schema(),
         query::get_metrics_schema(),
+        query::replay_flow_schema(),
+        query::export_har_schema(),
         intercept::set_intercept_schema(),
         intercept::get_pending_intercepts_schema(),
         intercept::resume_flow_schema(),
@@ -22,6 +25,7 @@ pub fn tool_list() -> Vec<Tool> {
         rules::get_policy_schema(),
         rules::update_policy_schema(),
         rules::patch_policy_schema(),
+        script::set_script_schema(),
     ]
 }
 
@@ -35,6 +39,8 @@ pub async fn dispatch(
         "search_flows"          => query::search_flows(ctx, args).await,
         "get_flow"              => query::get_flow(ctx, args).await,
         "get_metrics"           => query::get_metrics(ctx).await,
+        "replay_flow"           => query::replay_flow(ctx, args).await,
+        "export_har"            => query::export_har(ctx, args).await,
         "set_intercept"         => intercept::set_intercept(ctx, args).await,
         "get_pending_intercepts"=> intercept::get_pending_intercepts(ctx).await,
         "resume_flow"           => intercept::resume_flow(ctx, args).await,
@@ -44,6 +50,7 @@ pub async fn dispatch(
         "get_policy"            => rules::get_policy(ctx).await,
         "update_policy"         => rules::update_policy(ctx, args).await,
         "patch_policy"          => rules::patch_policy(ctx, args).await,
+        "set_script"            => script::set_script(ctx, args).await,
         other => Err(format!("Unknown tool: {}", other)),
     }
 }
