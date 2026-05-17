@@ -9,6 +9,7 @@
   },
   "files": [
     "install.js",
+    "README.md",
     "bin/"
   ],
   "scripts": {

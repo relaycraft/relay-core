@@ -11,10 +11,11 @@ description = "[Internal] Transport and interception engine for relay-core-runti
 default = ["transparent-linux", "transparent-macos"]
 transparent-linux = []
 transparent-macos = []
-transparent-windows = []
+transparent-windows = ["dep:windivert"]
 quic = []
 
 [dependencies]
+windivert = { version = "0.6", optional = true }
 tokio.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -52,7 +53,6 @@ hyper-tungstenite = "0.19.0"
 if-addrs = "0.15.0"
 
 [target.'cfg(windows)'.dependencies]
-windivert = { version = "0.6" }
 etherparse = "0.13"
 
 [dev-dependencies]
