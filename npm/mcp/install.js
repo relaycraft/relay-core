@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 const { execSync } = require("child_process");
-const { existsSync, mkdirSync } = require("fs");
+const { existsSync, mkdirSync, readFileSync } = require("fs");
 const { createWriteStream } = require("fs");
 const { pipeline } = require("stream/promises");
 const { join } = require("path");
 const https = require("https");
 
+const getVersion = () => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf-8"));
+    return pkg.version;
+  } catch {
+    return "0.3.0";
+  }
+};
+
 const PACKAGE = process.env.npm_package_name || "@relay-core/cli";
-const VERSION = process.env.npm_package_version || "0.2.0";
+const VERSION = getVersion();
 
 // Map (os, arch) → GitHub release target
 function getTarget() {
