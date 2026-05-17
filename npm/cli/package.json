@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/cli",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "RelayCore CLI — high-performance Rust traffic interception proxy with TUI",
   "license": "MIT",
   "repository": "github:relaycraft/relay-core",

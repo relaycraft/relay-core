@@ -29,11 +29,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 rustls = { version = "0.23", features = ["ring"] }
 
-relay-core-api = { path = "../relay-core-api", version = "0.3.1" }
-relay-core-lib = { path = "../relay-core-lib", version = "0.3.1" }
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.1", default-features = false }
-relay-core-http = { path = "../relay-core-http", version = "0.3.1" }
-relay-core-script = { path = "../relay-core-script", version = "0.3.1", optional = true }
+relay-core-api = { path = "../relay-core-api", version = "0.3.2" }
+relay-core-lib = { path = "../relay-core-lib", version = "0.3.2" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.2", default-features = false }
+relay-core-http = { path = "../relay-core-http", version = "0.3.2" }
+relay-core-script = { path = "../relay-core-script", version = "0.3.2", optional = true }
 notify = "8.2.0"
 serde_yaml = "0.9.34"
 ratatui = "0.30.0"

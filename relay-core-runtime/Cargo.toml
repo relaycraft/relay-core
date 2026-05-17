@@ -26,11 +26,11 @@ futures = "0.3"
 regex = "1.0"
 lru = "0.16.3"
 
-relay-core-api = { path = "../relay-core-api", version = "0.3.1" }
+relay-core-api = { path = "../relay-core-api", version = "0.3.2" }
 url.workspace = true
-relay-core-lib = { path = "../relay-core-lib", version = "0.3.1", default-features = false }
-relay-core-storage = { path = "../relay-core-storage", version = "0.3.1" }
-relay-core-script = { path = "../relay-core-script", version = "0.3.1", optional = true }
+relay-core-lib = { path = "../relay-core-lib", version = "0.3.2", default-features = false }
+relay-core-storage = { path = "../relay-core-storage", version = "0.3.2" }
+relay-core-script = { path = "../relay-core-script", version = "0.3.2", optional = true }
 async-trait = "0.1.89"
 
 [dev-dependencies]

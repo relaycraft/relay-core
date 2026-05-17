@@ -1,5 +1,7 @@
 #[cfg(target_os = "windows")]
-use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::SocketAddr;
+#[cfg(all(target_os = "windows", feature = "transparent-windows"))]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(target_os = "windows")]
 use std::collections::BTreeSet;
 #[cfg(target_os = "windows")]
