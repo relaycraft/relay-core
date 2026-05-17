@@ -1,6 +1,6 @@
 # @relay-core/cli
 
-Standalone CLI and TUI for [RelayCore](https://github.com/relaycraft/relay-core) — a high-performance Rust traffic interception engine built to replace mitmproxy.
+Standalone CLI and TUI for [RelayCore](https://github.com/relaycraft/relay-core) — a high-performance Rust traffic interception engine.
 
 ## Quick Start
 

@@ -1,6 +1,6 @@
 # RelayCore AI Agent Guide (AGENTS.md)
 
-Welcome, AI Agent or Developer. This document outlines the essential information, workflows, and standards for developing the **RelayCore** engine (Rust-based replacement for mitmproxy).
+Welcome, AI Agent or Developer. This document outlines the essential information, workflows, and standards for developing the **RelayCore** engine.
 
 ## 1. Project Context
 RelayCore is a high-performance, Rust-based traffic interception engine designed to replace the legacy Python backend in RelayCraft.

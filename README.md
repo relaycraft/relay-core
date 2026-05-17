@@ -1,6 +1,6 @@
 # RelayCore
 
-High-performance Rust traffic interception engine — a modern replacement for mitmproxy.
+High-performance Rust traffic interception engine.
 
 Built as a standalone proxy platform with multiple host adapters (CLI, TUI, HTTP API, MCP, Tauri plugin) on top of a shared runtime.
 

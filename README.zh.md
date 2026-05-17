@@ -1,6 +1,6 @@
 # RelayCore
 
-基于 Rust 的高性能流量拦截引擎 —— 新一代 mitmproxy 替代方案。
+基于 Rust 的高性能流量拦截引擎。
 
 RelayCore 是一个独立的代理平台，在共享运行时之上提供了多种宿主适配器（CLI、TUI、HTTP API、MCP、Tauri 插件）。
 

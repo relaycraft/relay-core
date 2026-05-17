@@ -26,11 +26,12 @@ function getTarget() {
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
     "linux-x64": "x86_64-unknown-linux-gnu",
+    "win32-x64": "x86_64-pc-windows-msvc",
   };
   const key = `${os}-${arch}`;
   const target = map[key];
   if (!target) {
-    console.error(`Unsupported platform: ${key}. RelayCore currently supports macOS (Intel/Apple Silicon) and Linux (x86_64).`);
+    console.error(`Unsupported platform: ${key}. Supported: macOS (x64/arm64), Linux (x64), Windows (x64).`);
     process.exit(1);
   }
   return target;
@@ -38,6 +39,12 @@ function getTarget() {
 
 function getBinaryName() {
   return PACKAGE.endsWith("mcp") ? "relay-core-probe" : "relay-core-cli";
+}
+
+function getBinaryPath(binaryName) {
+  return process.platform === "win32"
+    ? join(__dirname, "bin", binaryName + ".exe")
+    : join(__dirname, "bin", binaryName);
 }
 
 async function download(url, dest) {
@@ -63,8 +70,9 @@ async function download(url, dest) {
 (async () => {
   try {
     const binDir = join(__dirname, "bin");
+    mkdirSync(binDir, { recursive: true });
     const binaryName = getBinaryName();
-    const binaryPath = join(binDir, binaryName);
+    const binaryPath = getBinaryPath(binaryName);
 
     // Skip download if binary already exists (re-install)
     if (existsSync(binaryPath)) {
@@ -73,17 +81,17 @@ async function download(url, dest) {
     }
 
     const target = getTarget();
-    const url = `https://github.com/relaycraft/relay-core/releases/download/v${VERSION}/${binaryName}-${target}.tar.gz`;
-    const archivePath = join(binDir, `${binaryName}.tar.gz`);
+    const ext = process.platform === "win32" ? "zip" : "tar.gz";
+    const url = `https://github.com/relaycraft/relay-core/releases/download/v${VERSION}/${binaryName}-${target}.${ext}`;
+    const archivePath = join(binDir, `${binaryName}.${ext}`);
 
-    mkdirSync(binDir, { recursive: true });
     await download(url, archivePath);
 
     console.log("Extracting...");
-    execSync(`tar xzf ${archivePath} -C ${binDir}`, { stdio: "inherit" });
-
-    // Make executable
-    if (process.platform !== "win32") {
+    if (process.platform === "win32") {
+      execSync(`powershell -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${binDir}' -Force"`, { stdio: "inherit" });
+    } else {
+      execSync(`tar xzf ${archivePath} -C ${binDir}`, { stdio: "inherit" });
       execSync(`chmod +x ${binaryPath}`, { stdio: "inherit" });
     }
 
