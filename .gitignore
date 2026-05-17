@@ -86,3 +86,4 @@ relay-core-mcp-*.tgz
 npm/*/bin/relay-core-cli
 npm/*/bin/relay-core-probe
 npm/*/bin/relay-core-cli.tar.gz
+.env
