@@ -2,6 +2,7 @@ use std::sync::Arc;
 use crate::server::ProbeContext;
 use relay_core_api::flow::Layer;
 use relay_core_api::modification::FlowQuery;
+use relay_core_api::har::flow_to_har_entry;
 use rmcp::model::{Content, Tool};
 use serde_json::{json, Value};
 use super::{make_tool, require_str, ok_json};
@@ -189,59 +190,4 @@ pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Cont
     });
 
     ok_json(&har)
-}
-
-fn flow_to_har_entry(flow: &relay_core_api::flow::Flow) -> Value {
-    let (request, response) = match &flow.layer {
-        Layer::Http(http) => (&http.request, http.response.as_ref()),
-        Layer::WebSocket(ws) => (&ws.handshake_request, Some(&ws.handshake_response)),
-        _ => return json!({ "request": {}, "response": {}, "timings": {} }),
-    };
-
-    let req_headers: Vec<Value> = request.headers.iter()
-        .map(|(k, v)| json!({ "name": k, "value": v })).collect();
-    let resp_headers: Vec<Value> = response.map(|r| r.headers.iter()
-        .map(|(k, v)| json!({ "name": k, "value": v })).collect()).unwrap_or_default();
-
-    let mut timings = json!({ "send": 0, "wait": 0, "receive": 0, "connect": -1, "ssl": -1 });
-    if let Some(resp) = response {
-        timings["wait"] = json!(resp.timing.time_to_first_byte.unwrap_or(0));
-        let ttlbs = resp.timing.time_to_last_byte.unwrap_or(0);
-        let wait = resp.timing.time_to_first_byte.unwrap_or(0);
-        timings["receive"] = json!(ttlbs.saturating_sub(wait));
-        if let Some(c) = resp.timing.connect_time_ms { timings["connect"] = json!(c); }
-        if let Some(s) = resp.timing.ssl_time_ms { timings["ssl"] = json!(s); }
-    }
-
-    let total_time = response.map(|r| r.timing.time_to_last_byte.unwrap_or(0))
-        .unwrap_or(0);
-
-    json!({
-        "startedDateTime": flow.start_time.to_rfc3339(),
-        "time": total_time,
-        "request": {
-            "method": request.method,
-            "url": request.url.to_string(),
-            "httpVersion": request.version,
-            "headers": req_headers,
-            "bodySize": request.body.as_ref().map(|b| b.size).unwrap_or(0),
-            "headersSize": 0,
-        },
-        "response": {
-            "status": response.map(|r| r.status).unwrap_or(0),
-            "statusText": response.map(|r| r.status_text.as_str()).unwrap_or(""),
-            "headers": resp_headers,
-            "content": {
-                "size": response.and_then(|r| r.body.as_ref().map(|b| b.size)).unwrap_or(0),
-                "mimeType": "",
-            },
-            "redirectURL": response.map(|r| r.headers.iter()
-                .find(|(k,_)| k.eq_ignore_ascii_case("location"))
-                .map(|(_,v)| v.clone()).unwrap_or_default()).unwrap_or_default(),
-            "bodySize": response.and_then(|r| r.body.as_ref().map(|b| b.size)).unwrap_or(0),
-            "headersSize": 0,
-        },
-        "timings": timings,
-        "cache": {},
-    })
 }

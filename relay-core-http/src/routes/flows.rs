@@ -5,9 +5,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use relay_core_api::flow::{Flow, Layer};
+use relay_core_api::flow::Layer;
 use relay_core_api::modification::FlowQuery;
 use relay_core_api::modification::FlowSummary;
+use relay_core_api::har::flow_to_har_entry;
 use crate::server::HttpApiContext;
 use serde::{Deserialize, Serialize};
 
@@ -193,141 +194,4 @@ async fn export_har(
             "entries": entries
         }
     }))
-}
-
-fn flow_to_har_entry(flow: &Flow) -> serde_json::Value {
-    let (request, response) = match &flow.layer {
-        Layer::Http(http) => (&http.request, http.response.as_ref()),
-        Layer::WebSocket(ws) => (&ws.handshake_request, Some(&ws.handshake_response)),
-        _ => {
-            return serde_json::json!({
-                "startedDateTime": flow.start_time.to_rfc3339(),
-                "request": {},
-                "response": {},
-                "timings": { "send": 0, "wait": 0, "receive": 0 }
-            });
-        }
-    };
-
-    let req_headers: Vec<serde_json::Value> = request.headers.iter()
-        .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
-        .collect();
-    let req_query: Vec<serde_json::Value> = request.query.iter()
-        .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
-        .collect();
-    let req_cookies: Vec<serde_json::Value> = request.cookies.iter()
-        .map(|c| serde_json::json!({ "name": c.name, "value": c.value }))
-        .collect();
-
-    let mut req_json = serde_json::json!({
-        "method": request.method,
-        "url": request.url.to_string(),
-        "httpVersion": request.version,
-        "headers": req_headers,
-        "queryString": req_query,
-        "cookies": req_cookies,
-        "headersSize": calc_har_headers_size(&request.headers, &request.method, request.url.path(), request.url.query(), &request.version),
-        "bodySize": request.body.as_ref().map(|b| b.size).unwrap_or(0),
-    });
-    if let Some(body) = &request.body
-        && !body.content.is_empty() {
-            req_json["postData"] = serde_json::json!({
-                "mimeType": body.encoding,
-                "text": body.content,
-            });
-    }
-
-    let mut resp_json = serde_json::json!({});
-    let mut timings = serde_json::json!({
-        "send": 0,
-        "wait": 0,
-        "receive": 0,
-        "connect": -1,
-        "ssl": -1,
-        "dns": -1,
-        "blocked": -1,
-    });
-
-    if let Some(resp) = response {
-        let resp_headers: Vec<serde_json::Value> = resp.headers.iter()
-            .map(|(k, v)| serde_json::json!({ "name": k, "value": v }))
-            .collect();
-        let resp_cookies: Vec<serde_json::Value> = resp.cookies.iter()
-            .map(|c| serde_json::json!({ "name": c.name, "value": c.value }))
-            .collect();
-        let redirect_url = resp.headers.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("location"))
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        let mime_type = resp.headers.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-
-        resp_json = serde_json::json!({
-            "status": resp.status,
-            "statusText": resp.status_text,
-            "httpVersion": resp.version,
-            "headers": resp_headers,
-            "cookies": resp_cookies,
-            "content": {
-                "size": resp.body.as_ref().map(|b| b.size).unwrap_or(0),
-                "mimeType": mime_type,
-                "text": resp.body.as_ref().map(|b| b.content.as_str()).unwrap_or(""),
-            },
-            "redirectURL": redirect_url,
-            "headersSize": calc_har_headers_size(&resp.headers, "", "", None, &resp.version),
-            "bodySize": resp.body.as_ref().map(|b| b.size).unwrap_or(0),
-        });
-
-        timings["wait"] = serde_json::json!(resp.timing.time_to_first_byte.unwrap_or(0));
-        timings["receive"] = serde_json::json!(resp.timing.time_to_last_byte.unwrap_or(0));
-        if let Some(connect) = resp.timing.connect_time_ms {
-            timings["connect"] = serde_json::json!(connect);
-        }
-        if let Some(ssl) = resp.timing.ssl_time_ms {
-            timings["ssl"] = serde_json::json!(ssl);
-        }
-    }
-
-    let send_ms = 0u64;
-    let wait_ms = response.map(|r| r.timing.time_to_first_byte.unwrap_or(0)).unwrap_or(0);
-    let receive_ms = response
-        .and_then(|r| r.timing.time_to_last_byte)
-        .unwrap_or(0)
-        .saturating_sub(wait_ms);
-
-    timings["send"] = serde_json::json!(send_ms);
-    timings["wait"] = serde_json::json!(wait_ms);
-    timings["receive"] = serde_json::json!(receive_ms);
-
-    let total_time = send_ms + wait_ms + receive_ms;
-
-    serde_json::json!({
-        "startedDateTime": flow.start_time.to_rfc3339(),
-        "time": total_time,
-        "request": req_json,
-        "response": resp_json,
-        "timings": timings,
-        "cache": {},
-        "_relaycore": {
-            "flow_id": flow.id.to_string(),
-            "client_ip": flow.network.client_ip,
-            "server_ip": flow.network.server_ip,
-            "tags": flow.tags,
-        }
-    })
-}
-
-fn calc_har_headers_size(headers: &[(String, String)], method: &str, path: &str, query: Option<&str>, version: &str) -> u64 {
-    let start_line = if method.is_empty() {
-        // Response: status line
-        version.len() + 1 + 3 + 1 + 3 + 2  // "HTTP/1.1 200 OK\r\n"
-    } else {
-        // Request: method + path + query + version
-        let q = query.map(|q| q.len() + 1).unwrap_or(0);
-        method.len() + 1 + path.len() + q + 1 + version.len() + 2
-    };
-    let headers_bytes: usize = headers.iter().map(|(k, v)| k.len() + 2 + v.len() + 2).sum();
-    (start_line + headers_bytes + 2) as u64
 }

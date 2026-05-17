@@ -9,6 +9,7 @@ pub mod rule;
 pub mod event;
 pub mod policy;
 pub mod modification;
+pub mod har;
 
 // Placeholder
 pub fn version() -> &'static str {
