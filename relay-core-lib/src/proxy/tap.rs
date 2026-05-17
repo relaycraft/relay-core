@@ -55,12 +55,11 @@ impl Body for TapBody {
                 Poll::Ready(Some(Ok(frame)))
             },
             Poll::Ready(None) => {
-                // Stream ended, send update
                 let (encoding, content) = process_body(&self.buffer, &self.headers);
                 let body_data = BodyData {
                     encoding,
                     content,
-                    size: self.buffer.len() as u64, // Note: This is captured size, not total size if truncated
+                    size: self.buffer.len() as u64,
                 };
                 
                 let _ = self.on_flow.try_send(FlowUpdate::HttpBody {

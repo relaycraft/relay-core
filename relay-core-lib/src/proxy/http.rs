@@ -306,6 +306,12 @@ where
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
         tracing::error!("Failed to send final flow update: {}", e);
     }
+
+    // Record time-to-last-byte as total upstream-to-client latency
+    if let Layer::Http(http) = &mut flow.layer
+        && let Some(response) = &mut http.response {
+            response.timing.time_to_last_byte = Some(upstream_start.elapsed().as_millis() as u64);
+    }
     
     Ok(Response::from_parts(res_parts, current_res_body))
 }

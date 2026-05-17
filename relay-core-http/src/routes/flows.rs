@@ -259,6 +259,10 @@ fn flow_to_har_entry(flow: &Flow) -> serde_json::Value {
             .find(|(k, _)| k.eq_ignore_ascii_case("location"))
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
+        let mime_type = resp.headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
 
         resp_json = serde_json::json!({
             "status": resp.status,
@@ -268,7 +272,7 @@ fn flow_to_har_entry(flow: &Flow) -> serde_json::Value {
             "cookies": resp_cookies,
             "content": {
                 "size": resp.body.as_ref().map(|b| b.size).unwrap_or(0),
-                "mimeType": resp.body.as_ref().map(|b| b.encoding.as_str()).unwrap_or(""),
+                "mimeType": mime_type,
                 "text": resp.body.as_ref().map(|b| b.content.as_str()).unwrap_or(""),
             },
             "redirectURL": redirect_url,
@@ -286,18 +290,22 @@ fn flow_to_har_entry(flow: &Flow) -> serde_json::Value {
         }
     }
 
-    let time_ms: i64 = flow.end_time
-        .map(|e| (e - flow.start_time).num_milliseconds())
-        .unwrap_or(0);
-    let send_ms = time_ms.saturating_sub(
-        response.map(|r| r.timing.time_to_first_byte.unwrap_or(0) as i64).unwrap_or(0)
-    ).max(0);
+    let send_ms = 0u64;
+    let wait_ms = response.map(|r| r.timing.time_to_first_byte.unwrap_or(0)).unwrap_or(0);
+    let receive_ms = response
+        .and_then(|r| r.timing.time_to_last_byte)
+        .unwrap_or(0)
+        .saturating_sub(wait_ms);
 
-    timings["send"] = serde_json::json!(send_ms.max(0));
+    timings["send"] = serde_json::json!(send_ms);
+    timings["wait"] = serde_json::json!(wait_ms);
+    timings["receive"] = serde_json::json!(receive_ms);
+
+    let total_time = send_ms + wait_ms + receive_ms;
 
     serde_json::json!({
         "startedDateTime": flow.start_time.to_rfc3339(),
-        "time": time_ms,
+        "time": total_time,
         "request": req_json,
         "response": resp_json,
         "timings": timings,
