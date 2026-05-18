@@ -2,6 +2,15 @@ use relay_core_probe::{ProbeServer, ProbeConfig, ProbeTransport};
 use relay_core_runtime::{CoreState, ProxyConfig};
 use relay_core_lib::tls::CertificateAuthority;
 use std::sync::Arc;
+use std::path::PathBuf;
+
+fn parse_arg(prefix: &str) -> Option<String> {
+    std::env::args().find_map(|a| a.strip_prefix(prefix).map(|v| v.to_string()))
+}
+
+fn parse_arg_env(arg_prefix: &str, env_key: &str) -> Option<String> {
+    parse_arg(arg_prefix).or_else(|| std::env::var(env_key).ok())
+}
 
 #[tokio::main]
 async fn main() {
@@ -9,16 +18,21 @@ async fn main() {
 
     let state = Arc::new(CoreState::new(None).await);
 
-    // ——— Parse args ———
-    let port = std::env::args()
-        .nth(1)
-        .and_then(|a| a.strip_prefix("--port=").map(|p| p.to_string()))
-        .or_else(|| std::env::var("RELAY_PORT").ok())
+    let port = parse_arg_env("--port=", "RELAY_PORT")
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-    let ca_dir = dirs_next().unwrap_or_else(|| std::env::current_dir().unwrap());
-    let ca_cert_path = ca_dir.join("ca_cert.pem");
-    let ca_key_path = ca_dir.join("ca_key.pem");
+    let ca_cert_path = parse_arg_env("--ca-cert=", "RELAY_CA_CERT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let dir = dirs_next().unwrap_or_else(|| std::env::current_dir().unwrap());
+            dir.join("ca_cert.pem")
+        });
+    let ca_key_path = parse_arg_env("--ca-key=", "RELAY_CA_KEY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let dir = dirs_next().unwrap_or_else(|| std::env::current_dir().unwrap());
+            dir.join("ca_key.pem")
+        });
 
     // Auto-init CA if not exists
     if !ca_cert_path.exists() || !ca_key_path.exists() {
