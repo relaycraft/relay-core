@@ -4721,8 +4721,10 @@ version = "0.3.4"
 dependencies = [
  "async-trait",
  "chrono",
+ "dirs",
  "regex",
  "relay-core-api",
+ "relay-core-lib",
  "relay-core-runtime",
  "reqwest",
  "rmcp",
