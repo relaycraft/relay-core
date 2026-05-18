@@ -3,52 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  notes:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Generate AI release notes
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-        run: |
-          if [ -z "$LLM_API_KEY" ]; then
-            echo "See https://github.com/relaycraft/relay-core/commits/${{ github.ref_name }}" > notes.md
-            exit 0
-          fi
-          prev_tag=$(git tag --sort=-version:refname | sed -n '2p')
-          commits=$(git log --oneline --no-merges "${prev_tag}..HEAD" | tr '\n' ' ')
-          prompt="根据以下 commits 生成 Release Notes。中英双语，按 Features/Fixes/Chores 分类。每条一句。最后一段总结。\n\nCommits: ${commits}"
-          response=$(curl -s "${LLM_BASE_URL}/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${LLM_API_KEY}" \
-            -d "$(node -e 'console.log(JSON.stringify({model:"MiniMax-M2.7",messages:[{role:"user",content:process.argv[1]}]}))' "$prompt")")
-          echo "$response" | python3 -c "
-import sys,json,re
-c=json.load(sys.stdin)['choices'][0]['message']['content']
-c=re.sub(r'<think>.*?</think>\s*','',c,flags=re.DOTALL)
-with open('notes.md','w') as f: f.write(c)
-" 2>/dev/null || echo "See https://github.com/relaycraft/relay-core/commits/${{ github.ref_name }}" > notes.md
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-notes
-          path: notes.md
-
   build:
-    needs: notes
     strategy:
       matrix:
         include:
@@ -71,10 +32,6 @@ with open('notes.md','w') as f: f.write(c)
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-notes
 
       - name: Build relay-core-cli
         run: cargo build --release --package relay-core-cli --target ${{ matrix.target }}
@@ -101,5 +58,3 @@ with open('notes.md','w') as f: f.write(c)
           files: |
             target/${{ matrix.target }}/release/relay-core-cli-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/relay-core-probe-${{ matrix.target }}.*
-          body_path: notes.md
-          generate_release_notes: false
