@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": "github:relaycraft/relay-core",
   "bin": {
-    "relay-core-probe": "./bin/relay-core-probe"
+    "relay-core-probe": "./bin/mcp-probe"
   },
   "files": [
     "install.js",
