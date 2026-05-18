@@ -51,3 +51,12 @@ relay-core-storage = { path = "./relay-core-storage", version = "0.3.5" }
 relay-core-probe = { path = "./relay-core-probe", version = "0.3.5" }
 relay-core-http = { path = "./relay-core-http", version = "0.3.5" }
 tracing = "0.1"
+
+[workspace.metadata.release]
+shared-version = true
+tag = true
+tag-name = "v{{version}}"
+push = true
+sign-commit = true
+sign-tag = true
+pre-release-hook = ["python3", "scripts/sync-npm-version.py"]

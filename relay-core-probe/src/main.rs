@@ -35,10 +35,9 @@ async fn main() {
         });
 
     // Auto-init CA if not exists
-    if !ca_cert_path.exists() || !ca_key_path.exists() {
-        if let Err(e) = CertificateAuthority::load_or_create(&ca_cert_path, &ca_key_path) {
+    if (!ca_cert_path.exists() || !ca_key_path.exists())
+        && let Err(e) = CertificateAuthority::load_or_create(&ca_cert_path, &ca_key_path) {
             eprintln!("Failed to init CA: {}", e);
-        }
     }
 
     let config = ProxyConfig::new(port, ca_cert_path.clone(), ca_key_path.clone());
@@ -53,7 +52,7 @@ async fn main() {
     eprintln!("RelayCore MCP proxy started");
     eprintln!("  Proxy:  127.0.0.1:{}", port);
     eprintln!("  CA:     {}", ca_cert_path.display());
-    eprintln!("");
+    eprintln!();
     if !cfg!(target_os = "macos") || ca_cert_path.exists() {
         eprintln!("Configure your browser/system to use this proxy.");
     }
@@ -74,5 +73,5 @@ async fn main() {
 }
 
 fn dirs_next() -> Option<std::path::PathBuf> {
-    dirs::data_local_dir().or_else(|| dirs::home_dir())
+    dirs::data_local_dir().or_else(dirs::home_dir)
 }

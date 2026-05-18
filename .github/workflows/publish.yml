@@ -18,29 +18,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Publish relay-core-api
-        run: cargo publish -p relay-core-api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish crates (skip already-published)
+        run: |
+          set -e
+          CRATES=(
+            relay-core-api
+            relay-core-lib
+            relay-core-storage
+            relay-core-script
+            relay-core-runtime
+            relay-core-http
+            relay-core-probe
+            relay-core-cli
+            relay-core-tauri
+          )
+          VERSION="$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)"
 
-      - name: Publish relay-core-lib
-        run: cargo publish -p relay-core-lib --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-storage
-        run: cargo publish -p relay-core-storage --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-script
-        run: cargo publish -p relay-core-script --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-runtime
-        run: cargo publish -p relay-core-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-http
-        run: cargo publish -p relay-core-http --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-probe
-        run: cargo publish -p relay-core-probe --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-cli
-        run: cargo publish -p relay-core-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish relay-core-tauri
-        run: cargo publish -p relay-core-tauri --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          for crate in "${CRATES[@]}"; do
+            echo "--- $crate@$VERSION ---"
+            status=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$crate/$VERSION")
+            if [ "$status" = "200" ]; then
+              echo "Already published, skipping"
+            else
+              cargo publish -p "$crate" --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+            fi
+          done
