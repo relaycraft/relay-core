@@ -35,7 +35,7 @@ uuid.workspace = true
 chrono.workspace = true
 url.workspace = true
 http.workspace = true
-time = { version = "0.3.47", features = ["formatting", "parsing", "macros"] }
+time = { version = "0.3.57", features = ["formatting", "parsing", "macros"] }
 hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "tls12", "native-tokio", "ring"] }
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3.32"
