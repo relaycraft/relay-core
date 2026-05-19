@@ -454,7 +454,7 @@ pub async fn execute(
         }
 
         // Run TUI in main thread
-        let app = TuiApp::new();
+        let app = TuiApp::new(port);
         info!("Proxy listening on {} | Press ? for help, q to quit", addr);
         if let Some(rx) = tui_rx
             && let Err(e) = run_tui(app, rx).await

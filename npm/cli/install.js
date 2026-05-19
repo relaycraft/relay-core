@@ -7,7 +7,7 @@ const { pipeline } = require("stream/promises");
 const { join } = require("path");
 const https = require("https");
 
-const PKG_DIR = join(__dirname, "..");
+const PKG_DIR = __dirname;
 const BINARY_NAME = "relay-core-cli";
 
 function getVersion() {

@@ -63,10 +63,11 @@ pub struct TuiApp {
     pub auto_scroll: bool,
     pub start_time: std::time::Instant,
     pub flow_count_total: u64,
+    pub proxy_port: u16,
 }
 
 impl TuiApp {
-    pub fn new() -> Self {
+    pub fn new(port: u16) -> Self {
         let mut app = Self {
             flows: VecDeque::with_capacity(1000),
             table_state: TableState::default(),
@@ -79,6 +80,7 @@ impl TuiApp {
             auto_scroll: true,
             start_time: std::time::Instant::now(),
             flow_count_total: 0,
+            proxy_port: port,
         };
         app.table_state.select(Some(0));
         app
@@ -133,6 +135,10 @@ impl TuiApp {
                 match self.active_area {
                     ActiveArea::FlowList => match key {
                         KeyCode::Char('q') => self.should_quit = true,
+                        KeyCode::Char('d') => {
+                            self.delete_selected();
+                            self.detail_scroll = 0;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
                             self.auto_scroll = false;
@@ -261,6 +267,22 @@ impl TuiApp {
         self.table_state.select(Some(i));
     }
 
+    fn delete_selected(&mut self) {
+        let id = self
+            .table_state
+            .selected()
+            .and_then(|i| self.get_filtered_flows().get(i).map(|f| f.id));
+        if let Some(id) = id {
+            self.flows.retain(|f| f.id != id);
+            let new_len = self.get_filtered_flows().len();
+            if new_len == 0 {
+                self.table_state.select(None);
+            } else if self.table_state.selected().unwrap_or(0) >= new_len {
+                self.table_state.select(Some(new_len - 1));
+            }
+        }
+    }
+
     pub fn ui(&mut self, f: &mut Frame) {
         let area = f.area();
 
@@ -359,6 +381,10 @@ impl TuiApp {
                 Span::styled(" q          ", Style::default().fg(Color::Cyan)),
                 Span::raw("Quit"),
             ]),
+            Line::from(vec![
+                Span::styled(" d          ", Style::default().fg(Color::Cyan)),
+                Span::raw("Delete selected flow"),
+            ]),
         ];
 
         let help_width = 70;
@@ -376,29 +402,47 @@ impl TuiApp {
 
     fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
         let filtered_flows = self.get_filtered_flows();
+        let wide = area.width >= 120;
+        let filter = &self.filter_input;
+        let filtering = !filter.is_empty();
 
         let rows: Vec<Row> = filtered_flows
             .iter()
             .map(|flow| {
-                let (method, url, status) = match &flow.layer {
-                    Layer::Http(h) => (
-                        h.request.method.clone(),
-                        h.request.url.to_string(),
-                        if let Some(resp) = &h.response {
-                            resp.status.to_string()
-                        } else {
-                            "---".to_string()
-                        },
-                    ),
+                let (method, url, status, size_str) = match &flow.layer {
+                    Layer::Http(h) => {
+                        let size = h
+                            .response
+                            .as_ref()
+                            .and_then(|r| r.body.as_ref())
+                            .map(|b| b.size)
+                            .unwrap_or(0);
+                        (
+                            h.request.method.clone(),
+                            h.request.url.to_string(),
+                            if let Some(resp) = &h.response {
+                                resp.status.to_string()
+                            } else {
+                                "---".to_string()
+                            },
+                            if size > 0 {
+                                format_size(size)
+                            } else {
+                                String::new()
+                            },
+                        )
+                    }
                     Layer::WebSocket(w) => (
                         "WS".to_string(),
                         w.handshake_request.url.to_string(),
                         w.handshake_response.status.to_string(),
+                        String::new(),
                     ),
                     _ => (
                         "UNKNOWN".to_string(),
                         "Unknown".to_string(),
                         "---".to_string(),
+                        String::new(),
                     ),
                 };
 
@@ -424,11 +468,45 @@ impl TuiApp {
                     Color::Gray
                 };
 
-                Row::new(vec![
-                    Cell::from(Span::styled(method, Style::default().fg(method_color))),
-                    Cell::from(Span::styled(status, Style::default().fg(status_color))),
-                    Cell::from(url),
-                ])
+                let url_cell = if filtering {
+                    let lower_url = url.to_lowercase();
+                    let lower_filter = filter.to_lowercase();
+                    let mut spans = Vec::new();
+                    let mut last = 0;
+                    for (idx, _) in lower_url.match_indices(&lower_filter) {
+                        if idx > last {
+                            spans.push(Span::raw(url[last..idx].to_string()));
+                        }
+                        spans.push(Span::styled(
+                            url[idx..idx + filter.len()].to_string(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        last = idx + filter.len();
+                    }
+                    if last < url.len() {
+                        spans.push(Span::raw(url[last..].to_string()));
+                    }
+                    Cell::from(Line::from(spans))
+                } else {
+                    Cell::from(url)
+                };
+
+                if wide {
+                    Row::new(vec![
+                        Cell::from(Span::styled(method, Style::default().fg(method_color))),
+                        Cell::from(Span::styled(status, Style::default().fg(status_color))),
+                        Cell::from(size_str),
+                        url_cell,
+                    ])
+                } else {
+                    Row::new(vec![
+                        Cell::from(Span::styled(method, Style::default().fg(method_color))),
+                        Cell::from(Span::styled(status, Style::default().fg(status_color))),
+                        url_cell,
+                    ])
+                }
             })
             .collect();
 
@@ -438,31 +516,45 @@ impl TuiApp {
             Style::default()
         };
 
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(8), // Method
-                Constraint::Length(5), // Status
-                Constraint::Min(10),   // URL
-            ],
-        )
-        .header(
-            Row::new(vec!["Method", "Code", "URL"])
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .bottom_margin(1),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Flows")
-                .border_style(border_style),
-        )
-        .row_highlight_style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .bg(Color::DarkGray),
-        )
-        .highlight_symbol("► ");
+        let (header, widths): (Vec<&str>, Vec<Constraint>) = if wide {
+            (
+                vec!["Method", "Code", "Size", "URL"],
+                vec![
+                    Constraint::Length(8),
+                    Constraint::Length(5),
+                    Constraint::Length(9),
+                    Constraint::Min(10),
+                ],
+            )
+        } else {
+            (
+                vec!["Method", "Code", "URL"],
+                vec![
+                    Constraint::Length(8),
+                    Constraint::Length(5),
+                    Constraint::Min(10),
+                ],
+            )
+        };
+
+        let header_row = Row::new(header)
+            .style(Style::default().add_modifier(Modifier::BOLD))
+            .bottom_margin(1);
+
+        let table = Table::new(rows, widths)
+            .header(header_row)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Flows")
+                    .border_style(border_style),
+            )
+            .row_highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .bg(Color::DarkGray),
+            )
+            .highlight_symbol("► ");
 
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
@@ -888,6 +980,11 @@ impl TuiApp {
                     ),
                     Span::raw("| "),
                     Span::styled(
+                        format!("Port: {} ", self.proxy_port),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw("| "),
+                    Span::styled(
                         format!("[{}] ", active),
                         Style::default()
                             .fg(Color::Yellow)
@@ -934,6 +1031,16 @@ impl TuiApp {
         let text = Text::from(Line::from(bar_text));
         let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
         f.render_widget(paragraph, area);
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -1005,7 +1112,7 @@ mod tests {
 
     #[test]
     fn test_new_app_has_selection() {
-        let app = TuiApp::new();
+        let app = TuiApp::new(8080);
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.detail_tab, DetailTab::Overview);
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -1015,7 +1122,7 @@ mod tests {
 
     #[test]
     fn test_next_previous_wraps_around() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         for i in 0..5 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -1038,7 +1145,7 @@ mod tests {
 
     #[test]
     fn test_filtering_filters_by_url_and_method() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/users",
@@ -1072,7 +1179,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_updates_existing_and_adds_new() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         let id = "00000000-0000-0000-0000-000000000001";
 
         let flow1 = make_http_flow(id, "http://example.com/original", "GET");
@@ -1091,7 +1198,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_caps_at_1000() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         for i in 0..1100 {
             app.on_flow(make_http_flow(
                 &format!("00000000-0000-0000-0000-{i:012x}"),
@@ -1105,14 +1212,14 @@ mod tests {
 
     #[test]
     fn test_key_quit() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         app.on_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_detail_tab_cycle() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.detail_tab, DetailTab::Overview);
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Request);
@@ -1126,7 +1233,7 @@ mod tests {
 
     #[test]
     fn test_filter_mode_toggle() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.input_mode, InputMode::Normal);
         app.on_key(key(KeyCode::Char('/')));
         assert_eq!(app.input_mode, InputMode::Filtering);
@@ -1140,7 +1247,7 @@ mod tests {
 
     #[test]
     fn test_keyboard_navigation_moves_selection() {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::new(8080);
         for i in 0..10 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
