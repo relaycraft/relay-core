@@ -1,3 +1,4 @@
+use super::ToolError;
 use super::{make_tool, ok_json, require_str};
 use crate::server::ProbeContext;
 use relay_core_api::flow::Layer;
@@ -51,7 +52,7 @@ pub fn get_metrics_schema() -> Tool {
     )
 }
 
-pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let query = FlowQuery {
         host: args.get("host").and_then(Value::as_str).map(str::to_string),
         path_contains: args
@@ -85,15 +86,15 @@ pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Co
     ok_json(&summaries)
 }
 
-pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let id = require_str(&args, "id")?;
     match ctx.flows.get_flow(&id).await {
         Some(flow) => ok_json(&flow),
-        None => Err(format!("Flow not found: {}", id)),
+        None => Err(format!("Flow not found: {id}").into()),
     }
 }
 
-pub async fn get_metrics(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+pub async fn get_metrics(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
     let m = ctx.status.get_metrics().await;
     ok_json(&m)
 }
@@ -113,7 +114,7 @@ pub fn replay_flow_schema() -> Tool {
     )
 }
 
-pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let id = require_str(&args, "id")?.to_string();
     let flow = ctx
         .flows
@@ -139,7 +140,7 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
                 http.request.body.clone(),
             )
         }
-        _ => return Err("Replay only supports HTTP flows".to_string()),
+        _ => return Err("Replay only supports HTTP flows".to_string().into()),
     };
 
     let client = reqwest::Client::builder()
@@ -200,7 +201,7 @@ pub fn export_har_schema() -> Tool {
     )
 }
 
-pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let entries = if let Some(id) = args.get("id").and_then(Value::as_str) {
         let flow = ctx
             .flows

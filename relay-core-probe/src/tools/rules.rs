@@ -1,3 +1,4 @@
+use super::ToolError;
 use super::{make_tool, ok_json, ok_text, require_str};
 use crate::server::ProbeContext;
 use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
@@ -104,7 +105,7 @@ pub fn patch_policy_schema() -> Tool {
     )
 }
 
-pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let rule_val = args.get("rule").ok_or("Missing 'rule' parameter")?;
     let rule: Rule = serde_json::from_value(rule_val.clone())
         .map_err(|e| format!("Invalid rule JSON: {}", e))?;
@@ -123,7 +124,7 @@ pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
     ok_text(format!("Rule '{}' set successfully.", rule_id))
 }
 
-pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let id = require_str(&args, "id")?.to_string();
     let deleted = ctx
         .rules
@@ -139,11 +140,11 @@ pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
     if deleted {
         ok_text(format!("Rule '{}' deleted.", id))
     } else {
-        Err(format!("Rule '{}' not found.", id))
+        Err(format!("Rule '{}' not found.", id).into())
     }
 }
 
-pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let status = args
         .get("status")
@@ -187,11 +188,11 @@ pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
     ))
 }
 
-pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
     ok_json(&ctx.policy.policy_snapshot())
 }
 
-pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let policy_val = args.get("policy").ok_or("Missing 'policy' parameter")?;
     let policy: ProxyPolicy = serde_json::from_value(policy_val.clone())
         .map_err(|e| format!("Invalid policy JSON: {}", e))?;
@@ -201,7 +202,7 @@ pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<C
     ok_text("Policy updated.")
 }
 
-pub async fn patch_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn patch_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let patch_val = args.get("patch").ok_or("Missing 'patch' parameter")?;
     let patch: ProxyPolicyPatch = serde_json::from_value(patch_val.clone())
         .map_err(|e| format!("Invalid patch JSON: {}", e))?;

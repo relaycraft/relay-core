@@ -8,6 +8,47 @@ mod query;
 mod rules;
 mod script;
 
+#[derive(Debug)]
+pub enum ToolError {
+    NotFound(String),
+    InvalidArgument(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolError::NotFound(msg) => write!(f, "NotFound: {msg}"),
+            ToolError::InvalidArgument(msg) => write!(f, "InvalidArgument: {msg}"),
+            ToolError::Internal(msg) => write!(f, "Internal: {msg}"),
+        }
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(s: String) -> Self {
+        ToolError::Internal(s)
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(s: &str) -> Self {
+        ToolError::Internal(s.to_string())
+    }
+}
+
+impl ToolError {
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        ToolError::NotFound(msg.into())
+    }
+    pub fn invalid_arg(msg: impl Into<String>) -> Self {
+        ToolError::InvalidArgument(msg.into())
+    }
+    pub fn internal(msg: impl Into<String>) -> Self {
+        ToolError::Internal(msg.into())
+    }
+}
+
 /// 返回所有工具的 schema 声明（用于 list_tools 响应）
 pub fn tool_list() -> Vec<Tool> {
     vec![
@@ -34,7 +75,7 @@ pub async fn dispatch(
     ctx: &Arc<ProbeContext>,
     name: &str,
     args: Value,
-) -> Result<Vec<Content>, String> {
+) -> Result<Vec<Content>, ToolError> {
     match name {
         "search_flows" => query::search_flows(ctx, args).await,
         "get_flow" => query::get_flow(ctx, args).await,
@@ -51,7 +92,7 @@ pub async fn dispatch(
         "update_policy" => rules::update_policy(ctx, args).await,
         "patch_policy" => rules::patch_policy(ctx, args).await,
         "set_script" => script::set_script(ctx, args).await,
-        other => Err(format!("Unknown tool: {}", other)),
+        other => Err(ToolError::not_found(format!("Unknown tool: {other}"))),
     }
 }
 
@@ -67,18 +108,18 @@ pub(crate) fn get_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// 从 args 中取 string 字段，缺失时返回错误
-pub(crate) fn require_str(args: &Value, key: &str) -> Result<String, String> {
+pub(crate) fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
     get_str(args, key)
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Missing required parameter: {}", key))
+        .ok_or_else(|| ToolError::invalid_arg(format!("Missing required parameter: {key}")))
 }
 
-/// 把结果序列化为 JSON 文本 Content
-pub(crate) fn ok_json(value: &impl serde::Serialize) -> Result<Vec<Content>, String> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+pub(crate) fn ok_json(value: &impl serde::Serialize) -> Result<Vec<Content>, ToolError> {
+    let text = serde_json::to_string_pretty(value).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![Content::text(text)])
 }
 
-pub(crate) fn ok_text(text: impl Into<String>) -> Result<Vec<Content>, String> {
+pub(crate) fn ok_text(text: impl Into<String>) -> Result<Vec<Content>, ToolError> {
     Ok(vec![Content::text(text.into())])
 }
+

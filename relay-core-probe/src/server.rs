@@ -11,7 +11,7 @@ use relay_core_runtime::services::{
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Implementation, ListResourceTemplatesResult,
+        CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListResourceTemplatesResult,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResourceTemplate,
         ReadResourceRequestParams, ReadResourceResult, ResourceUpdatedNotificationParam,
         ServerCapabilities, ServerInfo,
@@ -20,7 +20,7 @@ use rmcp::{
 };
 
 use crate::resources;
-use crate::tools;
+use crate::tools::{self, ToolError};
 
 /// Probe server 的传输方式
 #[derive(Debug, Clone)]
@@ -84,7 +84,12 @@ impl ProbeServer {
         match &self.config.transport.clone() {
             ProbeTransport::Stdio => {
                 let (stdin, stdout) = rmcp::transport::io::stdio();
+                let ctx = self.ctx.clone();
                 let running = rmcp::serve_server(self, (stdin, stdout)).await?;
+                let peer = running.peer().clone();
+                tokio::spawn(async move {
+                    ProbeServer::run_subscription_loop(ctx, peer).await;
+                });
                 running.waiting().await?;
             }
             ProbeTransport::Sse { port, bind } => {
@@ -184,7 +189,7 @@ impl ServerHandler for ProbeServer {
     ) -> Result<ReadResourceResult, ErrorData> {
         let contents = resources::read_resource(&self.ctx, &request.uri)
             .await
-            .map_err(|e| ErrorData::internal_error(e, None))?;
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
         Ok(ReadResourceResult::new(contents))
     }
 
@@ -208,7 +213,20 @@ impl ServerHandler for ProbeServer {
             .unwrap_or(Value::Object(Default::default()));
         let content = tools::dispatch(&self.ctx, &request.name, args)
             .await
-            .map_err(|e| ErrorData::internal_error(e, None))?;
+            .map_err(|e| {
+                let msg = e.to_string();
+                match &e {
+                    ToolError::NotFound(_) => {
+                        ErrorData::new(ErrorCode::METHOD_NOT_FOUND, msg, None)
+                    }
+                    ToolError::InvalidArgument(_) => {
+                        ErrorData::new(ErrorCode::INVALID_REQUEST, msg, None)
+                    }
+                    ToolError::Internal(_) => {
+                        ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None)
+                    }
+                }
+            })?;
         Ok(CallToolResult::success(content))
     }
 

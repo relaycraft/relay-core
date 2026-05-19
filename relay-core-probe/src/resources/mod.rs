@@ -1,4 +1,5 @@
 use crate::server::ProbeContext;
+use crate::tools::ToolError;
 use relay_core_api::modification::FlowQuery;
 use rmcp::model::{AnnotateAble, RawResource, Resource, ResourceContents};
 use std::sync::Arc;
@@ -33,7 +34,7 @@ pub fn static_resource_list() -> Vec<Resource> {
 pub async fn read_resource(
     ctx: &Arc<ProbeContext>,
     uri: &str,
-) -> Result<Vec<ResourceContents>, String> {
+) -> Result<Vec<ResourceContents>, ToolError> {
     if uri == "flows://" {
         flows_list(ctx).await
     } else if let Some(id) = uri.strip_prefix("flows://") {
@@ -47,11 +48,11 @@ pub async fn read_resource(
     } else if uri == "ca://install" {
         ca_install_guide(ctx).await
     } else {
-        Err(format!("Unknown resource URI: {}", uri))
+        Err(ToolError::not_found(format!("Unknown resource URI: {uri}")))
     }
 }
 
-async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let summaries = ctx
         .flows
         .search_flows(FlowQuery {
@@ -93,38 +94,38 @@ async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, St
     Ok(vec![ResourceContents::text(md, "flows://")])
 }
 
-async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, String> {
+async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, ToolError> {
     match ctx.flows.get_flow(id).await {
         Some(flow) => {
-            let json = serde_json::to_string_pretty(&flow).map_err(|e| e.to_string())?;
+            let json = serde_json::to_string_pretty(&flow).map_err(|e| ToolError::internal(e.to_string()))?;
             Ok(vec![ResourceContents::text(
                 json,
                 format!("flows://{}", id),
             )])
         }
-        None => Err(format!("Flow not found: {}", id)),
+        None => Err(ToolError::not_found(format!("Flow not found: {id}"))),
     }
 }
 
-async fn rules_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+async fn rules_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let rules = ctx.rules.get_rules().await;
-    let json = serde_json::to_string_pretty(&rules).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&rules).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![ResourceContents::text(json, "rules://")])
 }
 
-async fn proxy_status(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+async fn proxy_status(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let json = serde_json::to_string_pretty(&ctx.status.status_report().await)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![ResourceContents::text(json, "proxy://status")])
 }
 
-async fn recent_audit(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+async fn recent_audit(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let json =
-        serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| e.to_string())?;
+        serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![ResourceContents::text(json, "audit://recent")])
 }
 
-async fn ca_install_guide(_ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
+async fn ca_install_guide(_ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let guide = r#"# Install RelayCore CA Certificate
 
 To intercept HTTPS traffic, your system must trust the RelayCore CA.

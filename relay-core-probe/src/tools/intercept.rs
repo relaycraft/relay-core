@@ -1,3 +1,4 @@
+use super::ToolError;
 use super::{make_tool, ok_json, ok_text, require_str};
 use crate::server::ProbeContext;
 use relay_core_api::modification::FlowModification;
@@ -70,7 +71,7 @@ pub fn resume_flow_schema() -> Tool {
     )
 }
 
-pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let phase = args
         .get("phase")
@@ -105,11 +106,11 @@ pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<C
     ))
 }
 
-pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
+pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
     ok_json(&ctx.intercepts.intercept_snapshot().await)
 }
 
-pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let key = require_str(&args, "key")?.to_string();
     let action = args
         .get("action")

@@ -1,3 +1,4 @@
+use super::ToolError;
 use super::{make_tool, ok_text, require_str};
 use crate::server::ProbeContext;
 use relay_core_runtime::audit::AuditActor;
@@ -24,7 +25,7 @@ pub fn set_script_schema() -> Tool {
     )
 }
 
-pub async fn set_script(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
+pub async fn set_script(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let script = require_str(&args, "script")?.to_string();
     ctx.script
         .load_script_from(AuditActor::Probe, "probe.set_script".to_string(), &script)
