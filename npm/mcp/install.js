@@ -21,11 +21,12 @@ function getTarget() {
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
     "linux-x64": "x86_64-unknown-linux-gnu",
+    "linux-arm64": "aarch64-unknown-linux-gnu",
     "win32-x64": "x86_64-pc-windows-msvc",
   };
   const target = map[`${process.platform}-${process.arch}`];
   if (!target) {
-    console.error(`Unsupported platform: ${process.platform}-${process.arch}`);
+    console.error(`Unsupported platform: ${process.platform}-${process.arch}. macOS/Linux/Windows (x64/arm64) supported.`);
     process.exit(1);
   }
   return target;
