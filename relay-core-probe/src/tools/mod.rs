@@ -115,11 +115,11 @@ pub(crate) fn require_str(args: &Value, key: &str) -> Result<String, ToolError> 
 }
 
 pub(crate) fn ok_json(value: &impl serde::Serialize) -> Result<Vec<Content>, ToolError> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| ToolError::internal(e.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(value).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![Content::text(text)])
 }
 
 pub(crate) fn ok_text(text: impl Into<String>) -> Result<Vec<Content>, ToolError> {
     Ok(vec![Content::text(text.into())])
 }
-

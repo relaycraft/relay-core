@@ -71,7 +71,10 @@ pub fn resume_flow_schema() -> Tool {
     )
 }
 
-pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn set_intercept(
+    ctx: &Arc<ProbeContext>,
+    args: Value,
+) -> Result<Vec<Content>, ToolError> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let phase = args
         .get("phase")

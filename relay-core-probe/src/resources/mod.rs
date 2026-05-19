@@ -94,10 +94,14 @@ async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, To
     Ok(vec![ResourceContents::text(md, "flows://")])
 }
 
-async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, ToolError> {
+async fn flow_detail(
+    ctx: &Arc<ProbeContext>,
+    id: &str,
+) -> Result<Vec<ResourceContents>, ToolError> {
     match ctx.flows.get_flow(id).await {
         Some(flow) => {
-            let json = serde_json::to_string_pretty(&flow).map_err(|e| ToolError::internal(e.to_string()))?;
+            let json = serde_json::to_string_pretty(&flow)
+                .map_err(|e| ToolError::internal(e.to_string()))?;
             Ok(vec![ResourceContents::text(
                 json,
                 format!("flows://{}", id),
@@ -109,7 +113,8 @@ async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceCo
 
 async fn rules_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
     let rules = ctx.rules.get_rules().await;
-    let json = serde_json::to_string_pretty(&rules).map_err(|e| ToolError::internal(e.to_string()))?;
+    let json =
+        serde_json::to_string_pretty(&rules).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![ResourceContents::text(json, "rules://")])
 }
 
@@ -120,8 +125,8 @@ async fn proxy_status(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, 
 }
 
 async fn recent_audit(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, ToolError> {
-    let json =
-        serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| ToolError::internal(e.to_string()))?;
+    let json = serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50))
+        .map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(vec![ResourceContents::text(json, "audit://recent")])
 }
 

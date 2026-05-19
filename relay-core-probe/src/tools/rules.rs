@@ -192,7 +192,10 @@ pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolErr
     ok_json(&ctx.policy.policy_snapshot())
 }
 
-pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn update_policy(
+    ctx: &Arc<ProbeContext>,
+    args: Value,
+) -> Result<Vec<Content>, ToolError> {
     let policy_val = args.get("policy").ok_or("Missing 'policy' parameter")?;
     let policy: ProxyPolicy = serde_json::from_value(policy_val.clone())
         .map_err(|e| format!("Invalid policy JSON: {}", e))?;

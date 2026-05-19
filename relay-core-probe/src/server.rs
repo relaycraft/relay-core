@@ -11,10 +11,10 @@ use relay_core_runtime::services::{
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, ErrorCode, Implementation, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResourceTemplate,
-        ReadResourceRequestParams, ReadResourceResult, ResourceUpdatedNotificationParam,
-        ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, ErrorCode, Implementation,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo,
     },
     service::{NotificationContext, RequestContext, RoleServer},
 };
@@ -222,9 +222,7 @@ impl ServerHandler for ProbeServer {
                     ToolError::InvalidArgument(_) => {
                         ErrorData::new(ErrorCode::INVALID_REQUEST, msg, None)
                     }
-                    ToolError::Internal(_) => {
-                        ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None)
-                    }
+                    ToolError::Internal(_) => ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None),
                 }
             })?;
         Ok(CallToolResult::success(content))
