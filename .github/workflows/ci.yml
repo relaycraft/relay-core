@@ -58,7 +58,7 @@ jobs:
       - name: Run cargo-deny
         run: |
           cargo install cargo-deny --locked
-          cargo deny check
+          cargo deny check licenses bans sources
 
   coverage:
     runs-on: ubuntu-latest
