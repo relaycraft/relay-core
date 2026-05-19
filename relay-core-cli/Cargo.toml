@@ -57,3 +57,6 @@ base64 = "0.22.1"
 [dev-dependencies]
 assert_cmd = "2.1.2"
 predicates = "3.1.4"
+url = "2"
+chrono = "0.4"
+uuid = "1"

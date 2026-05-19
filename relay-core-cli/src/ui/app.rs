@@ -10,7 +10,7 @@ use relay_core_api::flow::{Flow, Layer};
 use serde_json::Value;
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum DetailTab {
     Overview,
     Request,
@@ -38,14 +38,14 @@ impl DetailTab {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum InputMode {
     Normal,
     Filtering,
     Help,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum ActiveArea {
     FlowList,
     FlowDetail,
@@ -61,6 +61,8 @@ pub struct TuiApp {
     pub filter_input: String,
     pub should_quit: bool,
     pub auto_scroll: bool,
+    pub start_time: std::time::Instant,
+    pub flow_count_total: u64,
 }
 
 impl TuiApp {
@@ -75,25 +77,22 @@ impl TuiApp {
             filter_input: String::new(),
             should_quit: false,
             auto_scroll: true,
+            start_time: std::time::Instant::now(),
+            flow_count_total: 0,
         };
         app.table_state.select(Some(0));
         app
     }
 
     pub fn on_flow(&mut self, flow: Flow) {
-        // Update existing flow or add new one
         if let Some(pos) = self.flows.iter().position(|f| f.id == flow.id) {
             self.flows[pos] = flow;
         } else {
             self.flows.push_front(flow);
+            self.flow_count_total = self.flow_count_total.saturating_add(1);
             if self.flows.len() > 1000 {
                 self.flows.pop_back();
             }
-
-            // Auto-scroll logic: if we are at the top (index 0) and auto_scroll is enabled
-            // Actually, we prepend flows, so index 0 is always the newest.
-            // If the user has selected index 0, we want to keep them on the newest flow?
-            // Or if they haven't moved selection, keep it at 0.
             if self.auto_scroll {
                 self.table_state.select(Some(0));
             }
@@ -250,20 +249,27 @@ impl TuiApp {
     }
 
     pub fn ui(&mut self, f: &mut Frame) {
+        let area = f.area();
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Min(0),
-                    Constraint::Length(3), // Filter/Status bar
-                ]
-                .as_ref(),
-            )
-            .split(f.area());
+            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+            .split(area);
+
+        let (list_width, detail_width) = if area.width < 100 {
+            (50, 50)
+        } else if area.width < 140 {
+            (40, 60)
+        } else {
+            (35, 65)
+        };
 
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+            .constraints([
+                Constraint::Percentage(list_width),
+                Constraint::Percentage(detail_width),
+            ])
             .split(chunks[0]);
 
         self.render_flow_list(f, main_chunks[0]);
@@ -817,25 +823,56 @@ impl TuiApp {
         let flow_count = self.flows.len();
         let filtered_count = self.get_filtered_flows().len();
         let count_str = if filtered_count != flow_count {
-            format!("{} (filtered from {})", filtered_count, flow_count)
+            format!("{}/{}", filtered_count, flow_count)
         } else {
             flow_count.to_string()
+        };
+        let elapsed = self.start_time.elapsed();
+        let uptime = if elapsed.as_secs() < 60 {
+            format!("{}s", elapsed.as_secs())
+        } else if elapsed.as_secs() < 3600 {
+            format!("{}m{}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
+        } else {
+            format!(
+                "{}h{}m",
+                elapsed.as_secs() / 3600,
+                (elapsed.as_secs() % 3600) / 60
+            )
         };
 
         let bar_text = match self.input_mode {
             InputMode::Normal => {
+                let active = match self.active_area {
+                    ActiveArea::FlowList => "LIST",
+                    ActiveArea::FlowDetail => "DETAIL",
+                };
                 vec![
                     Span::styled(
                         format!("Flows: {} ", count_str),
                         Style::default().fg(Color::Green),
                     ),
                     Span::raw("| "),
+                    Span::styled(
+                        format!("Total: {} ", self.flow_count_total),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw("| "),
+                    Span::styled(
+                        format!("Up: {} ", uptime),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw("| "),
+                    Span::styled(
+                        format!("[{}] ", active),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("| "),
                     Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(" quit | "),
                     Span::styled("/", Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(" filter | "),
-                    Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" tabs | "),
                     Span::styled("?", Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw(" help"),
                 ]
@@ -893,4 +930,207 @@ fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
             Constraint::Length((r.width.saturating_sub(width)) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use relay_core_api::flow::{
+        Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
+    };
+    use std::collections::HashMap;
+    use url::Url;
+
+    fn make_http_flow(id: &str, url_str: &str, method: &str) -> Flow {
+        Flow {
+            id: uuid::Uuid::parse_str(id).unwrap(),
+            start_time: chrono::Utc::now(),
+            end_time: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".into(),
+                client_port: 12345,
+                server_ip: "93.184.216.34".into(),
+                server_port: 443,
+                protocol: TransportProtocol::TCP,
+                tls: true,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Http(HttpLayer {
+                request: HttpRequest {
+                    method: method.into(),
+                    url: Url::parse(url_str).unwrap(),
+                    version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    cookies: vec![],
+                    query: vec![],
+                    body: None,
+                },
+                response: None,
+                error: None,
+            }),
+            tags: vec![],
+            meta: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_new_app_has_selection() {
+        let app = TuiApp::new();
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert_eq!(app.detail_tab, DetailTab::Overview);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.active_area, ActiveArea::FlowList);
+        assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn test_next_previous_wraps_around() {
+        let mut app = TuiApp::new();
+        for i in 0..5 {
+            app.flows.push_back(make_http_flow(
+                &format!("00000000-0000-0000-0000-00000000000{i}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+
+        assert_eq!(app.table_state.selected(), Some(0));
+        for _ in 0..5 {
+            app.next();
+        }
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(4));
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(3));
+    }
+
+    #[test]
+    fn test_filtering_filters_by_url_and_method() {
+        let mut app = TuiApp::new();
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://api.example.com/users",
+            "GET",
+        ));
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000002",
+            "http://example.com/admin",
+            "POST",
+        ));
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000003",
+            "http://api.example.com/items",
+            "GET",
+        ));
+
+        assert_eq!(app.get_filtered_flows().len(), 3);
+
+        app.filter_input = "api".into();
+        assert_eq!(app.get_filtered_flows().len(), 2);
+
+        app.filter_input = "admin".into();
+        assert_eq!(app.get_filtered_flows().len(), 1);
+
+        app.filter_input = "POST".into();
+        assert_eq!(app.get_filtered_flows().len(), 1);
+
+        app.filter_input = "nonexistent".into();
+        assert_eq!(app.get_filtered_flows().len(), 0);
+    }
+
+    #[test]
+    fn test_on_flow_updates_existing_and_adds_new() {
+        let mut app = TuiApp::new();
+        let id = "00000000-0000-0000-0000-000000000001";
+
+        let flow1 = make_http_flow(id, "http://example.com/original", "GET");
+        app.on_flow(flow1.clone());
+        assert_eq!(app.flows.len(), 1);
+        assert_eq!(app.flow_count_total, 1);
+
+        let mut flow2 = flow1.clone();
+        if let Layer::Http(ref mut h) = flow2.layer {
+            h.request.method = "POST".into();
+        }
+        app.on_flow(flow2);
+        assert_eq!(app.flows.len(), 1);
+        assert_eq!(app.flow_count_total, 1);
+    }
+
+    #[test]
+    fn test_on_flow_caps_at_1000() {
+        let mut app = TuiApp::new();
+        for i in 0..1100 {
+            app.on_flow(make_http_flow(
+                &format!("00000000-0000-0000-0000-{i:012x}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+        assert_eq!(app.flows.len(), 1000);
+        assert_eq!(app.flow_count_total, 1100);
+    }
+
+    #[test]
+    fn test_key_quit() {
+        let mut app = TuiApp::new();
+        app.on_key(KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_detail_tab_cycle() {
+        let mut app = TuiApp::new();
+        assert_eq!(app.detail_tab, DetailTab::Overview);
+        app.on_key(KeyCode::Tab);
+        assert_eq!(app.detail_tab, DetailTab::Request);
+        app.on_key(KeyCode::Tab);
+        assert_eq!(app.detail_tab, DetailTab::Response);
+        app.on_key(KeyCode::Tab);
+        assert_eq!(app.detail_tab, DetailTab::Messages);
+        app.on_key(KeyCode::Tab);
+        assert_eq!(app.detail_tab, DetailTab::Overview);
+    }
+
+    #[test]
+    fn test_filter_mode_toggle() {
+        let mut app = TuiApp::new();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app.on_key(KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::Filtering);
+        app.on_key(KeyCode::Char('a'));
+        app.on_key(KeyCode::Char('p'));
+        app.on_key(KeyCode::Char('i'));
+        assert_eq!(app.filter_input, "api");
+        app.on_key(KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_keyboard_navigation_moves_selection() {
+        let mut app = TuiApp::new();
+        for i in 0..10 {
+            app.flows.push_back(make_http_flow(
+                &format!("00000000-0000-0000-0000-00000000000{i}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+        app.table_state.select(Some(0));
+
+        app.on_key(KeyCode::Down);
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        app.on_key(KeyCode::Char('j'));
+        assert_eq!(app.table_state.selected(), Some(2));
+
+        app.on_key(KeyCode::Up);
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        app.on_key(KeyCode::Char('k'));
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
 }

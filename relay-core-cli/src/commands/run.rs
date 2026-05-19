@@ -150,14 +150,32 @@ async fn run_tui(
     mut app: TuiApp,
     mut rx: tokio::sync::broadcast::Receiver<FlowUpdate>,
 ) -> Result<()> {
-    // Setup terminal
+    use std::sync::atomic::AtomicBool;
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_tui = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        shutdown_tui.store(true, Ordering::Relaxed);
+    });
+
+    // Restore terminal on drop (panic/error safe)
+    struct TerminalGuard;
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+            let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        }
+    }
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Event loop
+    let _guard = TerminalGuard;
+
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 
@@ -166,7 +184,7 @@ async fn run_tui(
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| std::time::Duration::from_secs(0));
+            .unwrap_or_default();
 
         if crossterm::event::poll(timeout)?
             && let Event::Key(key) = event::read()?
@@ -174,15 +192,21 @@ async fn run_tui(
             app.on_key(key.code);
         }
 
+        if shutdown.load(Ordering::Relaxed) {
+            app.should_quit = true;
+        }
+
         if app.should_quit {
             break;
         }
 
-        // Handle flow updates
         while let Ok(update) = rx.try_recv() {
             if let FlowUpdate::Full(flow) = update {
                 app.on_flow(*flow);
             }
+        }
+        if let Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) = rx.try_recv() {
+            tracing::warn!("TUI lagged behind by {n} flow updates, resyncing");
         }
 
         if last_tick.elapsed() >= tick_rate {
@@ -190,15 +214,7 @@ async fn run_tui(
         }
     }
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
+    // Guard restores terminal on drop
     Ok(())
 }
 
@@ -225,7 +241,7 @@ pub async fn execute(
     let interception_enabled = Arc::new(AtomicBool::new(true));
 
     // Create broadcast channel for flow updates (TUI + WebSocket)
-    let (flow_tx, _) = tokio::sync::broadcast::channel(100);
+    let (flow_tx, _) = tokio::sync::broadcast::channel(1024);
 
     // Start legacy Control API Server (WebSocket flow stream + intercept toggle)
     let server_tx = flow_tx.clone();
