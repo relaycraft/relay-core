@@ -114,6 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.notes.outputs.has-notes == 'true'
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: release-notes
