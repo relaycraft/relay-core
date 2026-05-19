@@ -2,7 +2,21 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about = "Intercept and debug HTTP traffic with ease",
+    after_help = "\
+Examples:
+  relay run                      Start proxy in background (default)
+  relay run --ui                 Start proxy with interactive TUI
+  relay flows --output table     View captured flows in table format
+  relay ca init                  Generate a CA certificate for HTTPS interception
+  relay ca install               Install CA to system trust store (macOS)
+  relay rules validate rules.json   Validate a rules file
+
+Environment:
+  RELAY_LOG     Log filter (default: info, e.g. debug, trace)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

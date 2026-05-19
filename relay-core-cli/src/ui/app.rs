@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -121,7 +121,9 @@ impl TuiApp {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyCode) {
+    pub fn on_key(&mut self, event: KeyEvent) {
+        let key = event.code;
+        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match self.input_mode {
             InputMode::Normal => {
                 if key == KeyCode::Char('?') {
@@ -133,16 +135,25 @@ impl TuiApp {
                         KeyCode::Char('q') => self.should_quit = true,
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
-                            self.auto_scroll = false; // User moved manually
+                            self.auto_scroll = false;
                             self.detail_scroll = 0;
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.previous();
-                            self.auto_scroll = false; // User moved manually
+                            self.auto_scroll = false;
                             self.detail_scroll = 0;
                         }
-                        KeyCode::Char('g') => {
-                            // Go to top (newest)
+                        KeyCode::Home | KeyCode::Char('G') => {
+                            // Jump to last (oldest) flow
+                            let len = self.get_filtered_flows().len();
+                            if len > 0 {
+                                self.table_state.select(Some(len - 1));
+                            }
+                            self.auto_scroll = false;
+                            self.detail_scroll = 0;
+                        }
+                        KeyCode::End | KeyCode::Char('g') => {
+                            // Jump to first (newest) flow
                             self.table_state.select(Some(0));
                             self.auto_scroll = true;
                             self.detail_scroll = 0;
@@ -173,12 +184,14 @@ impl TuiApp {
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.detail_scroll = self.detail_scroll.saturating_sub(1)
                         }
-                        KeyCode::PageDown => {
+                        KeyCode::PageDown | KeyCode::Char('d') if ctrl => {
                             self.detail_scroll = self.detail_scroll.saturating_add(10)
                         }
-                        KeyCode::PageUp => {
+                        KeyCode::PageUp | KeyCode::Char('u') if ctrl => {
                             self.detail_scroll = self.detail_scroll.saturating_sub(10)
                         }
+                        KeyCode::Home | KeyCode::Char('g') => self.detail_scroll = 0,
+                        KeyCode::End | KeyCode::Char('G') => self.detail_scroll = u16::MAX,
                         KeyCode::Tab => {
                             self.detail_tab = self.detail_tab.next();
                             self.detail_scroll = 0;
@@ -292,26 +305,38 @@ impl TuiApp {
             Line::from(""),
             Line::from(vec![
                 Span::styled(" j / ↓      ", Style::default().fg(Color::Cyan)),
-                Span::raw("Navigate flow list down"),
+                Span::raw("Move selection down"),
             ]),
             Line::from(vec![
                 Span::styled(" k / ↑      ", Style::default().fg(Color::Cyan)),
-                Span::raw("Navigate flow list up"),
+                Span::raw("Move selection up"),
             ]),
             Line::from(vec![
-                Span::styled(" g          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Jump to newest flow"),
+                Span::styled(" g / End    ", Style::default().fg(Color::Cyan)),
+                Span::raw("Jump to newest flow (detail: scroll to top)"),
+            ]),
+            Line::from(vec![
+                Span::styled(" G / Home   ", Style::default().fg(Color::Cyan)),
+                Span::raw("Jump to oldest flow (detail: scroll to bottom)"),
+            ]),
+            Line::from(vec![
+                Span::styled(" Ctrl+d     ", Style::default().fg(Color::Cyan)),
+                Span::raw("Scroll detail panel down 10 lines"),
+            ]),
+            Line::from(vec![
+                Span::styled(" Ctrl+u     ", Style::default().fg(Color::Cyan)),
+                Span::raw("Scroll detail panel up 10 lines"),
             ]),
             Line::from(vec![
                 Span::styled(" /          ", Style::default().fg(Color::Cyan)),
                 Span::raw("Filter flows by host/URL/method"),
             ]),
             Line::from(vec![
-                Span::styled(" Enter / l  ", Style::default().fg(Color::Cyan)),
+                Span::styled(" Enter / →  ", Style::default().fg(Color::Cyan)),
                 Span::raw("Focus detail panel"),
             ]),
             Line::from(vec![
-                Span::styled(" Esc / h    ", Style::default().fg(Color::Cyan)),
+                Span::styled(" Esc / ←    ", Style::default().fg(Color::Cyan)),
                 Span::raw("Focus flow list"),
             ]),
             Line::from(vec![
@@ -336,7 +361,7 @@ impl TuiApp {
             ]),
         ];
 
-        let help_width = 65;
+        let help_width = 70;
         let help_height = lines.len() as u16 + 2;
         let area = centered_rect(help_width, help_height, f.area());
 
@@ -437,7 +462,7 @@ impl TuiApp {
                 .add_modifier(Modifier::BOLD)
                 .bg(Color::DarkGray),
         )
-        .highlight_symbol("> ");
+        .highlight_symbol("► ");
 
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
@@ -941,6 +966,10 @@ mod tests {
     use std::collections::HashMap;
     use url::Url;
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     fn make_http_flow(id: &str, url_str: &str, method: &str) -> Flow {
         Flow {
             id: uuid::Uuid::parse_str(id).unwrap(),
@@ -1077,7 +1106,7 @@ mod tests {
     #[test]
     fn test_key_quit() {
         let mut app = TuiApp::new();
-        app.on_key(KeyCode::Char('q'));
+        app.on_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
     }
 
@@ -1085,13 +1114,13 @@ mod tests {
     fn test_detail_tab_cycle() {
         let mut app = TuiApp::new();
         assert_eq!(app.detail_tab, DetailTab::Overview);
-        app.on_key(KeyCode::Tab);
+        app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Request);
-        app.on_key(KeyCode::Tab);
+        app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Response);
-        app.on_key(KeyCode::Tab);
+        app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Messages);
-        app.on_key(KeyCode::Tab);
+        app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Overview);
     }
 
@@ -1099,13 +1128,13 @@ mod tests {
     fn test_filter_mode_toggle() {
         let mut app = TuiApp::new();
         assert_eq!(app.input_mode, InputMode::Normal);
-        app.on_key(KeyCode::Char('/'));
+        app.on_key(key(KeyCode::Char('/')));
         assert_eq!(app.input_mode, InputMode::Filtering);
-        app.on_key(KeyCode::Char('a'));
-        app.on_key(KeyCode::Char('p'));
-        app.on_key(KeyCode::Char('i'));
+        app.on_key(key(KeyCode::Char('a')));
+        app.on_key(key(KeyCode::Char('p')));
+        app.on_key(key(KeyCode::Char('i')));
         assert_eq!(app.filter_input, "api");
-        app.on_key(KeyCode::Esc);
+        app.on_key(key(KeyCode::Esc));
         assert_eq!(app.input_mode, InputMode::Normal);
     }
 
@@ -1121,16 +1150,16 @@ mod tests {
         }
         app.table_state.select(Some(0));
 
-        app.on_key(KeyCode::Down);
+        app.on_key(key(KeyCode::Down));
         assert_eq!(app.table_state.selected(), Some(1));
 
-        app.on_key(KeyCode::Char('j'));
+        app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.table_state.selected(), Some(2));
 
-        app.on_key(KeyCode::Up);
+        app.on_key(key(KeyCode::Up));
         assert_eq!(app.table_state.selected(), Some(1));
 
-        app.on_key(KeyCode::Char('k'));
+        app.on_key(key(KeyCode::Char('k')));
         assert_eq!(app.table_state.selected(), Some(0));
     }
 }

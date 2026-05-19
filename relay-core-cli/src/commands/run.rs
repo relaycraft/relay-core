@@ -187,9 +187,9 @@ async fn run_tui(
             .unwrap_or_default();
 
         if crossterm::event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
+            && let Event::Key(event) = event::read()?
         {
-            app.on_key(key.code);
+            app.on_key(event);
         }
 
         if shutdown.load(Ordering::Relaxed) {
