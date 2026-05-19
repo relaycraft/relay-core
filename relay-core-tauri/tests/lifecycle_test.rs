@@ -1,16 +1,18 @@
-use std::sync::Arc;
-use std::time::Duration;
-use relay_core_tauri::RelayCoreState;
-use relay_core_runtime::{ProxyConfig, ProxySpawnResult, ProxyStopResult, RuntimeLifecyclePhase};
 use relay_core_lib::interceptor::NoOpInterceptor;
-use tokio::sync::mpsc;
+use relay_core_runtime::{ProxyConfig, ProxySpawnResult, ProxyStopResult, RuntimeLifecyclePhase};
+use relay_core_tauri::RelayCoreState;
+use std::sync::Arc;
 use std::sync::Once;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 static INIT: Once = Once::new();
 
 fn init_crypto() {
     INIT.call_once(|| {
-        rustls::crypto::ring::default_provider().install_default().ok();
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
     });
 }
 
@@ -66,20 +68,26 @@ async fn test_proxy_lifecycle_10x() {
 
         println!("Iteration {}: Stopping proxy...", i);
         assert_eq!(
-            state.core.stop_proxy().expect("stop request should succeed"),
+            state
+                .core
+                .stop_proxy()
+                .expect("stop request should succeed"),
             ProxyStopResult::Stopping
         );
-        assert_eq!(state.core.lifecycle().phase, RuntimeLifecyclePhase::Stopping);
+        assert_eq!(
+            state.core.lifecycle().phase,
+            RuntimeLifecyclePhase::Stopping
+        );
 
         let _ = handle.await;
-        
+
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(state.core.lifecycle().phase, RuntimeLifecyclePhase::Stopped);
         match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
             Ok(_) => println!("Port {} released successfully.", port),
             Err(e) => panic!("Port {} failed to release: {}", port, e),
         }
-        
+
         println!("Iteration {} completed successfully.\n", i);
     }
 }

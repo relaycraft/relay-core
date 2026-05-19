@@ -1,5 +1,5 @@
-use axum::{routing::get, Json, Router};
-use serde_json::{json, Value};
+use axum::{Json, Router, routing::get};
+use serde_json::{Value, json};
 
 /// GET /api/v1/version
 pub fn router() -> Router {

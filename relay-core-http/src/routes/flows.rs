@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use crate::server::HttpApiContext;
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use relay_core_api::flow::Layer;
+use relay_core_api::har::flow_to_har_entry;
 use relay_core_api::modification::FlowQuery;
 use relay_core_api::modification::FlowSummary;
-use relay_core_api::har::flow_to_har_entry;
-use crate::server::HttpApiContext;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub fn router(ctx: Arc<HttpApiContext>) -> Router {
     Router::new()
@@ -89,22 +89,33 @@ async fn replay_flow(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let flow = ctx.flows.get_flow(&id).await
+    let flow = ctx
+        .flows
+        .get_flow(&id)
+        .await
         .ok_or((StatusCode::NOT_FOUND, format!("Flow {} not found", id)))?;
 
     let (method, url, headers, body) = match &flow.layer {
         Layer::Http(http) => {
             let method = http.request.method.clone();
             let url = http.request.url.to_string();
-            let headers: Vec<(String, String)> = http.request.headers.iter()
-                .filter(|(k, _)| !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection"))
+            let headers: Vec<(String, String)> = http
+                .request
+                .headers
+                .iter()
+                .filter(|(k, _)| {
+                    !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection")
+                })
                 .cloned()
                 .collect();
             let body = http.request.body.clone();
             (method, url, headers, body)
         }
         _ => {
-            return Err((StatusCode::BAD_REQUEST, "Replay only supports HTTP flows".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Replay only supports HTTP flows".to_string(),
+            ));
         }
     };
 
@@ -114,7 +125,9 @@ async fn replay_flow(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut req = client.request(
-        method.parse::<reqwest::Method>().map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid method: {}", e)))?,
+        method
+            .parse::<reqwest::Method>()
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid method: {}", e)))?,
         &url,
     );
 
@@ -126,14 +139,22 @@ async fn replay_flow(
         req = req.body(body_data.content.clone());
     }
 
-    let resp = req.send().await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Replay request failed: {}", e)))?;
+    let resp = req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Replay request failed: {}", e),
+        )
+    })?;
 
     let status = resp.status().as_u16();
-    let resp_headers: Vec<(String, String)> = resp.headers().iter()
+    let resp_headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
         .collect();
-    let resp_body = resp.text().await
+    let resp_body = resp
+        .text()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({
@@ -149,8 +170,7 @@ async fn get_flow_har(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let flow = ctx.flows.get_flow(&id).await
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let flow = ctx.flows.get_flow(&id).await.ok_or(StatusCode::NOT_FOUND)?;
     let entry = flow_to_har_entry(&flow);
     let har = serde_json::json!({
         "log": {

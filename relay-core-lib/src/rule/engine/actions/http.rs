@@ -1,9 +1,9 @@
-use crate::rule::model::{Action, BodySource, TerminalReason};
-use crate::rule::engine::executor::ExecutionContext;
-use crate::rule::engine::actions::utils::{substitute_variables, resolve_body_source};
-use crate::rule::engine::actions::transform::apply_transform;
 use crate::rule::engine::actions::ActionOutcome;
-use relay_core_api::flow::{Cookie, Flow, Layer, HttpResponse, ResponseTiming};
+use crate::rule::engine::actions::transform::apply_transform;
+use crate::rule::engine::actions::utils::{resolve_body_source, substitute_variables};
+use crate::rule::engine::executor::ExecutionContext;
+use crate::rule::model::{Action, BodySource, TerminalReason};
+use relay_core_api::flow::{Cookie, Flow, HttpResponse, Layer, ResponseTiming};
 use url::Url;
 
 fn status_text_for(code: u16) -> String {
@@ -82,39 +82,43 @@ pub async fn execute(
         Action::SetRequestUrl { url } => {
             let val = substitute_variables(url, flow, ctx, None);
             if let Ok(new_url) = Url::parse(&val)
-                && let Layer::Http(http) = &mut flow.layer {
-                    http.request.url = new_url;
-                }
+                && let Layer::Http(http) = &mut flow.layer
+            {
+                http.request.url = new_url;
+            }
             ActionOutcome::Continue
         }
         Action::SetRequestBody { body } => {
             if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await
-                && let Layer::Http(http) = &mut flow.layer {
-                    http.request.body = Some(body_data);
-                }
+                && let Layer::Http(http) = &mut flow.layer
+            {
+                http.request.body = Some(body_data);
+            }
             ActionOutcome::Continue
         }
 
         // --- Response Modification Actions ---
         Action::SetResponseStatus { status } => {
             if let Layer::Http(http) = &mut flow.layer
-                && let Some(res) = &mut http.response {
-                    res.status = *status;
-                }
+                && let Some(res) = &mut http.response
+            {
+                res.status = *status;
+            }
             ActionOutcome::Continue
         }
         Action::SetResponseBody { body } => {
             if let Some(body_data) = resolve_body_source(body, ctx.policy.as_deref()).await
                 && let Layer::Http(http) = &mut flow.layer
-                     && let Some(res) = &mut http.response {
-                         res.body = Some(body_data);
-                     }
+                && let Some(res) = &mut http.response
+            {
+                res.body = Some(body_data);
+            }
             ActionOutcome::Continue
         }
         Action::Redirect { location, status } => {
             let val = substitute_variables(location, flow, ctx, None);
             let headers = vec![("Location".to_string(), val)];
-            
+
             let res = HttpResponse {
                 status: *status,
                 status_text: "Redirect".to_string(),
@@ -125,8 +129,8 @@ pub async fn execute(
                 timing: ResponseTiming {
                     time_to_first_byte: Some(0),
                     time_to_last_byte: Some(0),
-                connect_time_ms: None,
-                ssl_time_ms: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
             };
 
@@ -154,12 +158,12 @@ pub async fn execute(
             // First pass: find existing value to use as {{previous}}
             let mut old_val = None;
             if let Layer::Http(http) = &flow.layer {
-                 for (k, v) in &http.request.headers {
-                     if k.eq_ignore_ascii_case(name) {
-                         old_val = Some(v.clone());
-                         break;
-                     }
-                 }
+                for (k, v) in &http.request.headers {
+                    if k.eq_ignore_ascii_case(name) {
+                        old_val = Some(v.clone());
+                        break;
+                    }
+                }
             }
 
             // Compute new value
@@ -182,7 +186,8 @@ pub async fn execute(
         }
         Action::DeleteRequestHeader { name } => {
             if let Layer::Http(http) = &mut flow.layer {
-                http.request.headers
+                http.request
+                    .headers
                     .retain(|(k, _)| !k.eq_ignore_ascii_case(name));
             }
             ActionOutcome::Continue
@@ -192,68 +197,79 @@ pub async fn execute(
         Action::AddResponseHeader { name, value } => {
             let val = substitute_variables(value, flow, ctx, None);
             if let Layer::Http(http) = &mut flow.layer
-                && let Some(res) = &mut http.response {
-                    res.headers.push((name.clone(), val));
-                }
+                && let Some(res) = &mut http.response
+            {
+                res.headers.push((name.clone(), val));
+            }
             ActionOutcome::Continue
         }
-        Action::UpdateResponseHeader { name, value, add_if_missing } => {
+        Action::UpdateResponseHeader {
+            name,
+            value,
+            add_if_missing,
+        } => {
             // First pass: find existing value
             let mut old_val = None;
             if let Layer::Http(http) = &flow.layer
-                 && let Some(res) = &http.response {
-                     for (k, v) in &res.headers {
-                         if k.eq_ignore_ascii_case(name) {
-                             old_val = Some(v.clone());
-                             break;
-                         }
-                     }
-                 }
-            
+                && let Some(res) = &http.response
+            {
+                for (k, v) in &res.headers {
+                    if k.eq_ignore_ascii_case(name) {
+                        old_val = Some(v.clone());
+                        break;
+                    }
+                }
+            }
+
             // Compute new value
             let new_val = substitute_variables(value, flow, ctx, old_val.as_deref());
 
             // Second pass: apply change
             if let Layer::Http(http) = &mut flow.layer
-                && let Some(res) = &mut http.response {
-                    let mut found = false;
-                    for (k, v) in res.headers.iter_mut() {
-                        if k.eq_ignore_ascii_case(name) {
-                            *v = new_val.clone();
-                            found = true;
-                        }
-                    }
-                    if !found && *add_if_missing {
-                        res.headers.push((name.clone(), new_val));
+                && let Some(res) = &mut http.response
+            {
+                let mut found = false;
+                for (k, v) in res.headers.iter_mut() {
+                    if k.eq_ignore_ascii_case(name) {
+                        *v = new_val.clone();
+                        found = true;
                     }
                 }
+                if !found && *add_if_missing {
+                    res.headers.push((name.clone(), new_val));
+                }
+            }
             ActionOutcome::Continue
         }
-         Action::DeleteResponseHeader { name } => {
+        Action::DeleteResponseHeader { name } => {
             if let Layer::Http(http) = &mut flow.layer
-                 && let Some(res) = &mut http.response {
-                    res.headers
-                    .retain(|(k, _)| !k.eq_ignore_ascii_case(name));
-                 }
+                && let Some(res) = &mut http.response
+            {
+                res.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+            }
             ActionOutcome::Continue
         }
-        
-        // --- Terminal Actions ---
-        Action::MockResponse { status, headers, body } => {
-             let body_data = if let Some(source) = body {
-                 resolve_body_source(source, ctx.policy.as_deref()).await
-             } else {
-                 None
-             };
 
-             if let Layer::Http(http) = &mut flow.layer {
-                 let mut res_headers = Vec::new();
-                 for (k, v) in headers {
-                     res_headers.push((k.clone(), v.clone()));
-                 }
-                 let cookies = parse_response_cookies(&res_headers);
-                 
-                 http.response = Some(HttpResponse {
+        // --- Terminal Actions ---
+        Action::MockResponse {
+            status,
+            headers,
+            body,
+        } => {
+            let body_data = if let Some(source) = body {
+                resolve_body_source(source, ctx.policy.as_deref()).await
+            } else {
+                None
+            };
+
+            if let Layer::Http(http) = &mut flow.layer {
+                let mut res_headers = Vec::new();
+                for (k, v) in headers {
+                    res_headers.push((k.clone(), v.clone()));
+                }
+                let cookies = parse_response_cookies(&res_headers);
+
+                http.response = Some(HttpResponse {
                     status: *status,
                     status_text: status_text_for(*status),
                     version: "HTTP/1.1".to_string(),
@@ -263,18 +279,18 @@ pub async fn execute(
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
-                connect_time_ms: None,
-                ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
-                 });
-             } else if let Layer::WebSocket(ws) = &mut flow.layer {
-                 let mut res_headers = Vec::new();
-                 for (k, v) in headers {
-                     res_headers.push((k.clone(), v.clone()));
-                 }
-                 let cookies = parse_response_cookies(&res_headers);
-                 
-                 ws.handshake_response = HttpResponse {
+                });
+            } else if let Layer::WebSocket(ws) = &mut flow.layer {
+                let mut res_headers = Vec::new();
+                for (k, v) in headers {
+                    res_headers.push((k.clone(), v.clone()));
+                }
+                let cookies = parse_response_cookies(&res_headers);
+
+                ws.handshake_response = HttpResponse {
                     status: *status,
                     status_text: status_text_for(*status),
                     version: "HTTP/1.1".to_string(),
@@ -284,19 +300,21 @@ pub async fn execute(
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
-                connect_time_ms: None,
-                ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
-                 };
-             }
-             ActionOutcome::Terminated(TerminalReason::Mock)
+                };
+            }
+            ActionOutcome::Terminated(TerminalReason::Mock)
         }
         Action::MapLocal { path, content_type } => {
-            let body_data = resolve_body_source(&BodySource::File(path.clone()), ctx.policy.as_deref()).await;
-            
+            let body_data =
+                resolve_body_source(&BodySource::File(path.clone()), ctx.policy.as_deref()).await;
+
             if let Some(body) = body_data {
-                 if let Layer::Http(http) = &mut flow.layer {
-                    let headers = content_type.as_ref()
+                if let Layer::Http(http) = &mut flow.layer {
+                    let headers = content_type
+                        .as_ref()
                         .map(|ct| vec![("Content-Type".to_string(), ct.clone())])
                         .unwrap_or_default();
 
@@ -310,32 +328,34 @@ pub async fn execute(
                         timing: ResponseTiming {
                             time_to_first_byte: Some(0),
                             time_to_last_byte: Some(0),
-                connect_time_ms: None,
-                ssl_time_ms: None,
+                            connect_time_ms: None,
+                            ssl_time_ms: None,
                         },
-                     });
+                    });
                 }
                 ActionOutcome::Terminated(TerminalReason::Mock)
             } else {
                 ActionOutcome::Failed(format!("Failed to load local file: {}", path))
             }
         }
-        
+
         // --- Transformation Actions ---
         Action::TransformRequestBody { transform } => {
-             if let Layer::Http(http) = &mut flow.layer
-                 && let Some(body) = &mut http.request.body {
-                     apply_transform(body, transform);
-                 }
-             ActionOutcome::Continue
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(body) = &mut http.request.body
+            {
+                apply_transform(body, transform);
+            }
+            ActionOutcome::Continue
         }
         Action::TransformResponseBody { transform } => {
-             if let Layer::Http(http) = &mut flow.layer
-                 && let Some(res) = &mut http.response
-                     && let Some(body) = &mut res.body {
-                         apply_transform(body, transform);
-                     }
-             ActionOutcome::Continue
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(res) = &mut http.response
+                && let Some(body) = &mut res.body
+            {
+                apply_transform(body, transform);
+            }
+            ActionOutcome::Continue
         }
 
         _ => ActionOutcome::Failed(format!("Action {:?} not supported in http handler", action)),
@@ -350,7 +370,9 @@ mod tests {
     use crate::rule::engine::state::InMemoryRuleStateStore;
     use crate::rule::model::{Action, RuleTraceSummary};
     use chrono::Utc;
-    use relay_core_api::flow::{Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol};
+    use relay_core_api::flow::{
+        Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use url::Url;

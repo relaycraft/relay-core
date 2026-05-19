@@ -6,7 +6,7 @@
 ///
 /// Run:
 ///   cargo bench --package relay-core-lib -- rule_engine
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use relay_core_api::flow::{
     BodyData, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
@@ -62,10 +62,12 @@ fn make_flow(url: &str) -> Flow {
                     size: 1024,
                     content: "x".repeat(1024),
                 }),
-                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
                 cookies: vec![],
             }),
             error: None,
@@ -115,9 +117,7 @@ fn bench_single_matching_rule(c: &mut Criterion) {
     let flow = make_flow("http://example.com/api/data");
 
     c.bench_function("rule_engine/1_rule_match", |b| {
-        b.iter(|| {
-            engine.has_rules_for_stage(black_box(RuleStage::RequestHeaders))
-        });
+        b.iter(|| engine.has_rules_for_stage(black_box(RuleStage::RequestHeaders)));
     });
 
     let _ = (engine, flow);
@@ -128,14 +128,18 @@ fn bench_rule_count_scaling(c: &mut Criterion) {
 
     for n in [1usize, 5, 10, 25, 50] {
         let rules: Vec<Rule> = (0..n)
-            .map(|i| make_rule(&format!("r{}", i), &format!("/path/{}", i), add_header_action()))
+            .map(|i| {
+                make_rule(
+                    &format!("r{}", i),
+                    &format!("/path/{}", i),
+                    add_header_action(),
+                )
+            })
             .collect();
         let engine = RuleEngine::new(rules, vec![], None, None);
 
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                engine.has_rules_for_stage(black_box(RuleStage::RequestHeaders))
-            });
+            b.iter(|| engine.has_rules_for_stage(black_box(RuleStage::RequestHeaders)));
         });
     }
     group.finish();

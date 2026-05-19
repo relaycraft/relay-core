@@ -1,22 +1,27 @@
-use std::sync::Arc;
-use relay_core_api::flow::{Flow, FlowUpdate, BodyData, Direction, Layer, HttpLayer, HttpRequest, HttpResponse, NetworkInfo, ResponseTiming, TransportProtocol};
-use relay_core_api::modification::FlowQuery;
-use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch, RedactionPolicy, RedactionPolicyPatch};
-use relay_core_lib::rule::Rule;
-use relay_core_lib::rule::{RuleStage, RuleTermination, Filter, StringMatcher};
 use crate::audit::{AuditActor, AuditEventKind, AuditOutcome};
-use crate::services::{
-    FlowReadService, FlowEventHub, RuleService, InterceptService,
-    PolicyService, AuditService, RuntimeStatusService,
-};
+use crate::rule::{InterceptRuleConfig, MockResponseRuleConfig};
 #[cfg(feature = "script")]
 use crate::services::ScriptService;
-use crate::rule::{InterceptRuleConfig, MockResponseRuleConfig};
-use crate::{CoreState, CoreAuditQuery};
+use crate::services::{
+    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
+    RuntimeStatusService,
+};
+use crate::{CoreAuditQuery, CoreState};
+use chrono::Utc;
+use relay_core_api::flow::{
+    BodyData, Direction, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse, Layer,
+    NetworkInfo, ResponseTiming, TransportProtocol,
+};
+use relay_core_api::modification::FlowQuery;
+use relay_core_api::policy::{
+    ProxyPolicy, ProxyPolicyPatch, RedactionPolicy, RedactionPolicyPatch,
+};
+use relay_core_lib::rule::Rule;
+use relay_core_lib::rule::{Filter, RuleStage, RuleTermination, StringMatcher};
 use serde_json::json;
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
-use chrono::Utc;
 
 fn sample_flow(host: &str, path: &str) -> Flow {
     Flow {
@@ -91,10 +96,12 @@ async fn flow_read_service_trait_dispatches_to_core_state() {
     let loaded = service.get_flow(&flow_id).await;
     assert!(loaded.is_some());
 
-    let results = service.search_flows(FlowQuery {
-        host: Some("trait-test.example.com".to_string()),
-        ..Default::default()
-    }).await;
+    let results = service
+        .search_flows(FlowQuery {
+            host: Some("trait-test.example.com".to_string()),
+            ..Default::default()
+        })
+        .await;
     assert!(!results.is_empty());
 }
 
@@ -246,7 +253,9 @@ async fn intercept_service_trait_resolves_with_audit() {
         .await;
     assert!(result.is_err());
 
-    let intercepted = service.is_flow_intercepted("no-such-flow".to_string()).await;
+    let intercepted = service
+        .is_flow_intercepted("no-such-flow".to_string())
+        .await;
     assert!(!intercepted);
 }
 

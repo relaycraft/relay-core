@@ -1,11 +1,14 @@
-use std::path::PathBuf;
 use anyhow::Result;
-use relay_core_runtime::rule::InterceptRule;
 use relay_core_api::flow::Flow;
+use relay_core_runtime::rule::InterceptRule;
+use std::path::PathBuf;
 
 pub fn load_rules(path: &PathBuf) -> Result<Vec<InterceptRule>> {
     let content = std::fs::read_to_string(path)?;
-    let rules: Vec<InterceptRule> = if path.extension().is_some_and(|ext| ext == "yaml" || ext == "yml") {
+    let rules: Vec<InterceptRule> = if path
+        .extension()
+        .is_some_and(|ext| ext == "yaml" || ext == "yml")
+    {
         serde_yaml::from_str(&content)?
     } else {
         serde_json::from_str(&content)?

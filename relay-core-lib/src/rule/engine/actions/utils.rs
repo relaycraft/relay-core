@@ -1,12 +1,15 @@
-use crate::rule::model::BodySource;
 use crate::rule::engine::executor::ExecutionContext;
-use relay_core_api::flow::{BodyData, Flow, Layer};
-use relay_core_api::policy::ProxyPolicy;
+use crate::rule::model::BodySource;
 use crate::utils::path::PathSanitizer;
 use chrono::Utc;
+use relay_core_api::flow::{BodyData, Flow, Layer};
+use relay_core_api::policy::ProxyPolicy;
 use uuid::Uuid;
 
-pub async fn resolve_body_source(source: &BodySource, policy: Option<&ProxyPolicy>) -> Option<BodyData> {
+pub async fn resolve_body_source(
+    source: &BodySource,
+    policy: Option<&ProxyPolicy>,
+) -> Option<BodyData> {
     match source {
         BodySource::Text(t) => Some(BodyData {
             encoding: "utf-8".to_string(),
@@ -19,50 +22,52 @@ pub async fn resolve_body_source(source: &BodySource, policy: Option<&ProxyPolic
             size: b.len() as u64, // Approximate
         }),
         BodySource::File(path) => {
-             let root = if let Some(p) = policy {
-                 if let Some(r) = &p.sandbox_root {
-                     r.clone()
-                 } else {
-                     std::env::current_dir().unwrap_or_default()
-                 }
-             } else {
-                 std::env::current_dir().unwrap_or_default()
-             };
+            let root = if let Some(p) = policy {
+                if let Some(r) = &p.sandbox_root {
+                    r.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default()
+                }
+            } else {
+                std::env::current_dir().unwrap_or_default()
+            };
 
-             let sanitizer = PathSanitizer::new(root);
-             if let Ok(canon_path) = sanitizer.sanitize(path) {
-                 // Check file size limit
-                 if let Ok(metadata) = tokio::fs::metadata(&canon_path).await {
-                     let max_bytes = policy.map(|p| p.max_local_file_bytes).unwrap_or(10 * 1024 * 1024);
-                     if metadata.len() > max_bytes as u64 {
-                         // File too large
-                         return None;
-                     }
-                 }
+            let sanitizer = PathSanitizer::new(root);
+            if let Ok(canon_path) = sanitizer.sanitize(path) {
+                // Check file size limit
+                if let Ok(metadata) = tokio::fs::metadata(&canon_path).await {
+                    let max_bytes = policy
+                        .map(|p| p.max_local_file_bytes)
+                        .unwrap_or(10 * 1024 * 1024);
+                    if metadata.len() > max_bytes as u64 {
+                        // File too large
+                        return None;
+                    }
+                }
 
-                 if let Ok(bytes) = tokio::fs::read(&canon_path).await {
-                     // Try to parse as UTF-8
-                     if let Ok(text) = String::from_utf8(bytes.clone()) {
-                         Some(BodyData {
+                if let Ok(bytes) = tokio::fs::read(&canon_path).await {
+                    // Try to parse as UTF-8
+                    if let Ok(text) = String::from_utf8(bytes.clone()) {
+                        Some(BodyData {
                             encoding: "utf-8".to_string(),
                             content: text,
                             size: bytes.len() as u64,
                         })
-                     } else {
-                         // Fallback to Base64
-                         use data_encoding::BASE64;
-                         Some(BodyData {
+                    } else {
+                        // Fallback to Base64
+                        use data_encoding::BASE64;
+                        Some(BodyData {
                             encoding: "base64".to_string(),
                             content: BASE64.encode(&bytes),
                             size: bytes.len() as u64,
                         })
-                     }
-                 } else {
-                     None
-                 }
-             } else {
-                 None
-             }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
     }
 }
@@ -373,7 +378,10 @@ mod tests {
         .expect("binary file should still be loadable");
         assert_eq!(out.encoding, "base64");
         assert_eq!(out.size, 4);
-        assert!(!out.content.is_empty(), "base64 payload should not be empty");
+        assert!(
+            !out.content.is_empty(),
+            "base64 payload should not be empty"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

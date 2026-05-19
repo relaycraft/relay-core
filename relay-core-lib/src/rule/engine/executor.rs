@@ -1,14 +1,16 @@
-use crate::rule::model::{Rule, RuleGroup, RuleStage, RuleOutcome, RuleExecutionEvent, RuleTermination, RuleTraceSummary};
-use crate::rule::engine::compiler;
-use crate::rule::engine::compiled::CompiledRule;
-use crate::rule::engine::matcher;
-use crate::rule::engine::validator;
 use crate::rule::engine::actions;
-use crate::rule::engine::state::{RuleStateStore, InMemoryRuleStateStore};
+use crate::rule::engine::compiled::CompiledRule;
+use crate::rule::engine::compiler;
+use crate::rule::engine::matcher;
+use crate::rule::engine::state::{InMemoryRuleStateStore, RuleStateStore};
+use crate::rule::engine::validator;
+use crate::rule::model::{
+    Rule, RuleExecutionEvent, RuleGroup, RuleOutcome, RuleStage, RuleTermination, RuleTraceSummary,
+};
 use relay_core_api::flow::Flow;
+use relay_core_api::policy::ProxyPolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
-use relay_core_api::policy::ProxyPolicy;
 
 pub struct ExecutionContext {
     pub trace: Vec<RuleExecutionEvent>,
@@ -26,14 +28,19 @@ pub struct RuleEngine {
 }
 
 impl RuleEngine {
-    pub fn new(rules: Vec<Rule>, rule_groups: Vec<RuleGroup>, policy: Option<Arc<ProxyPolicy>>, state_store: Option<Arc<dyn RuleStateStore>>) -> Self {
+    pub fn new(
+        rules: Vec<Rule>,
+        rule_groups: Vec<RuleGroup>,
+        policy: Option<Arc<ProxyPolicy>>,
+        state_store: Option<Arc<dyn RuleStateStore>>,
+    ) -> Self {
         let mut all_rules = Vec::new();
-        
+
         // Flatten rules
         for rule in rules {
             all_rules.push(rule);
         }
-        
+
         // Flatten rule groups
         for group in rule_groups {
             if group.active {
@@ -42,35 +49,35 @@ impl RuleEngine {
                 }
             }
         }
-        
+
         // Sort by priority (descending)
         all_rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
-        
+
         // Compile all rules
-        let compiled_rules = all_rules.into_iter()
-            .map(compiler::compile_rule)
-            .collect();
-            
-        Self { 
-            compiled_rules, 
+        let compiled_rules = all_rules.into_iter().map(compiler::compile_rule).collect();
+
+        Self {
+            compiled_rules,
             policy,
-            state_store: state_store.unwrap_or_else(|| Arc::new(InMemoryRuleStateStore::new()))
+            state_store: state_store.unwrap_or_else(|| Arc::new(InMemoryRuleStateStore::new())),
         }
     }
 
     pub fn has_rules_for_stage(&self, stage: RuleStage) -> bool {
-        self.compiled_rules.iter().any(|r| r.original.active && r.original.stage == stage)
+        self.compiled_rules
+            .iter()
+            .any(|r| r.original.active && r.original.stage == stage)
     }
 
     pub async fn execute(&self, stage: RuleStage, flow: &mut Flow) -> ExecutionContext {
-        let mut ctx = ExecutionContext { 
+        let mut ctx = ExecutionContext {
             trace: vec![],
             variables: HashMap::new(),
             policy: self.policy.clone(),
             summary: RuleTraceSummary::NoMatch,
             state_store: self.state_store.clone(),
         };
-        
+
         let mut terminated = false;
         let mut modified_rules = Vec::new();
 
@@ -84,10 +91,10 @@ impl RuleEngine {
             if rule.stage != stage {
                 continue;
             }
-            
+
             // Validate filter stage (using pre-compiled filter)
             if !validator::validate_filter_stage(&compiled_rule.filter, &stage) {
-                 ctx.trace.push(RuleExecutionEvent {
+                ctx.trace.push(RuleExecutionEvent {
                     rule_id: rule.id.clone(),
                     stage: stage.clone(),
                     matched: false,
@@ -96,17 +103,20 @@ impl RuleEngine {
                 });
                 continue;
             }
-            
+
             // Validate action stage
             let mut actions_valid = true;
             for action in &rule.actions {
                 if !validator::validate_action_stage(action, &stage) {
-                     ctx.trace.push(RuleExecutionEvent {
+                    ctx.trace.push(RuleExecutionEvent {
                         rule_id: rule.id.clone(),
                         stage: stage.clone(),
                         matched: false,
                         duration_us: 0,
-                        outcome: RuleOutcome::Failed(format!("Action {:?} not allowed in stage {:?}", action, stage)),
+                        outcome: RuleOutcome::Failed(format!(
+                            "Action {:?} not allowed in stage {:?}",
+                            action, stage
+                        )),
                     });
                     actions_valid = false;
                     break;
@@ -119,74 +129,84 @@ impl RuleEngine {
             // Match (using pre-compiled filter)
             let start = std::time::Instant::now();
             let matched = matcher::matches(&compiled_rule.filter, flow);
-            
+
             if matched {
-                 let timeout_ms = rule.constraints.as_ref().and_then(|c| c.timeout_ms);
-                 
-                 let action_execution = async {
-                     let mut rule_outcome = RuleOutcome::MatchedAndExecuted;
-                     let mut rule_terminated = false;
-                     
-                     for action in &rule.actions {
+                let timeout_ms = rule.constraints.as_ref().and_then(|c| c.timeout_ms);
+
+                let action_execution = async {
+                    let mut rule_outcome = RuleOutcome::MatchedAndExecuted;
+                    let mut rule_terminated = false;
+
+                    for action in &rule.actions {
                         match actions::execute_action(action, flow, &mut ctx).await {
-                            actions::ActionOutcome::Continue => {},
+                            actions::ActionOutcome::Continue => {}
                             actions::ActionOutcome::Terminated(reason) => {
-                                 rule_outcome = RuleOutcome::MatchedAndTerminated;
-                                 ctx.summary = RuleTraceSummary::Terminated { 
-                                     rule_id: rule.id.clone(), 
-                                     reason 
-                                 };
-                                 rule_terminated = true;
-                                 break; 
-                            },
+                                rule_outcome = RuleOutcome::MatchedAndTerminated;
+                                ctx.summary = RuleTraceSummary::Terminated {
+                                    rule_id: rule.id.clone(),
+                                    reason,
+                                };
+                                rule_terminated = true;
+                                break;
+                            }
                             actions::ActionOutcome::Failed(err) => {
-                                 rule_outcome = RuleOutcome::Failed(err);
-                                 break;
+                                rule_outcome = RuleOutcome::Failed(err);
+                                break;
                             }
                         }
-                     }
-                     (rule_outcome, rule_terminated)
-                 };
+                    }
+                    (rule_outcome, rule_terminated)
+                };
 
-                 let (rule_outcome, rule_terminated) = if let Some(ms) = timeout_ms {
-                     match tokio::time::timeout(std::time::Duration::from_millis(ms), action_execution).await {
-                         Ok(res) => res,
-                         Err(_) => (RuleOutcome::Failed(format!("Rule execution timed out after {}ms", ms)), false)
-                     }
-                 } else {
-                     action_execution.await
-                 };
-                 
-                 if rule_terminated {
-                     terminated = true;
-                 }
-                 
-                 ctx.trace.push(RuleExecutionEvent {
+                let (rule_outcome, rule_terminated) = if let Some(ms) = timeout_ms {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(ms),
+                        action_execution,
+                    )
+                    .await
+                    {
+                        Ok(res) => res,
+                        Err(_) => (
+                            RuleOutcome::Failed(format!("Rule execution timed out after {}ms", ms)),
+                            false,
+                        ),
+                    }
+                } else {
+                    action_execution.await
+                };
+
+                if rule_terminated {
+                    terminated = true;
+                }
+
+                ctx.trace.push(RuleExecutionEvent {
                     rule_id: rule.id.clone(),
                     stage: stage.clone(),
                     matched: true,
                     duration_us: start.elapsed().as_micros() as u64,
                     outcome: rule_outcome.clone(),
                 });
-                
+
                 if matches!(rule_outcome, RuleOutcome::MatchedAndExecuted) {
-                     modified_rules.push(rule.id.clone());
+                    modified_rules.push(rule.id.clone());
                 }
 
                 if terminated {
                     break;
                 }
-                
+
                 if let RuleTermination::Stop = rule.termination {
                     break;
                 }
             }
         }
-        
+
         if !terminated && !modified_rules.is_empty() {
-            ctx.summary = RuleTraceSummary::Modified { rule_ids: modified_rules };
+            ctx.summary = RuleTraceSummary::Modified {
+                rule_ids: modified_rules,
+            };
         }
-        
+
         ctx
     }
 }
@@ -194,11 +214,14 @@ impl RuleEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rule::model::{Action, Filter, Rule, RuleStage, RuleTermination, RuleOutcome, StringMatcher, BodySource, RuleConstraints};
-    use relay_core_api::flow::{Flow, Layer, NetworkInfo, TransportProtocol, HttpRequest};
-    use uuid::Uuid;
+    use crate::rule::model::{
+        Action, BodySource, Filter, Rule, RuleConstraints, RuleOutcome, RuleStage, RuleTermination,
+        StringMatcher,
+    };
     use chrono::Utc;
+    use relay_core_api::flow::{Flow, HttpRequest, Layer, NetworkInfo, TransportProtocol};
     use url::Url;
+    use uuid::Uuid;
 
     fn create_test_flow() -> Flow {
         Flow {
@@ -244,7 +267,7 @@ mod tests {
             termination: RuleTermination::Continue,
             filter: Filter::All,
             actions: vec![
-                Action::Delay { ms: 200 } // Delay 200ms
+                Action::Delay { ms: 200 }, // Delay 200ms
             ],
             constraints: Some(RuleConstraints {
                 timeout_ms: Some(50), // Timeout 50ms
@@ -253,10 +276,10 @@ mod tests {
 
         let engine = RuleEngine::new(vec![rule], vec![], None, None);
         let mut flow = create_test_flow();
-        
+
         // Execute in RequestHeaders stage
         let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
-        
+
         // Expect 1 trace entry with Failed outcome due to timeout
         assert_eq!(ctx.trace.len(), 1);
         if let RuleOutcome::Failed(msg) = &ctx.trace[0].outcome {
@@ -282,16 +305,20 @@ mod tests {
 
         let engine = RuleEngine::new(vec![rule], vec![], None, None);
         let mut flow = create_test_flow();
-        
+
         // Execute in Connect stage
         let ctx = engine.execute(RuleStage::Connect, &mut flow).await;
-        
+
         // Expect 1 trace entry with Failed outcome
         assert_eq!(ctx.trace.len(), 1);
         if let RuleOutcome::Failed(msg) = &ctx.trace[0].outcome {
             assert!(msg.contains("Filter invalid"));
         } else {
-            assert!(false, "Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
+            assert!(
+                false,
+                "Expected Failed outcome, got {:?}",
+                ctx.trace[0].outcome
+            );
         }
     }
 
@@ -306,24 +333,30 @@ mod tests {
             termination: RuleTermination::Continue,
             filter: Filter::All, // Valid filter
             actions: vec![
-                Action::SetResponseBody { body: BodySource::Text("foo".to_string()) } // Invalid action in Connect
+                Action::SetResponseBody {
+                    body: BodySource::Text("foo".to_string()),
+                }, // Invalid action in Connect
             ],
             constraints: None,
         };
 
         let engine = RuleEngine::new(vec![rule], vec![], None, None);
         let mut flow = create_test_flow();
-        
+
         // Execute in Connect stage
         let ctx = engine.execute(RuleStage::Connect, &mut flow).await;
-        
+
         // Expect 1 trace entry with Failed outcome
         assert_eq!(ctx.trace.len(), 1);
         if let RuleOutcome::Failed(msg) = &ctx.trace[0].outcome {
             assert!(msg.contains("Action"));
             assert!(msg.contains("not allowed"));
         } else {
-            assert!(false, "Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
+            assert!(
+                false,
+                "Expected Failed outcome, got {:?}",
+                ctx.trace[0].outcome
+            );
         }
     }
 
@@ -400,6 +433,9 @@ mod tests {
         assert_eq!(ctx.trace.len(), 2);
         assert_eq!(ctx.trace[0].rule_id, "high-pri");
         assert_eq!(ctx.trace[1].rule_id, "low-pri");
-        assert_eq!(flow.tags, vec!["order:high".to_string(), "order:low".to_string()]);
+        assert_eq!(
+            flow.tags,
+            vec!["order:high".to_string(), "order:low".to_string()]
+        );
     }
 }

@@ -1,7 +1,7 @@
+use crate::CoreState;
 use async_trait::async_trait;
 use relay_core_api::flow::Flow;
 use relay_core_api::modification::{FlowQuery, FlowSummary};
-use crate::CoreState;
 
 #[async_trait]
 pub trait FlowReadService: Send + Sync {

@@ -12,7 +12,11 @@ pub use relay_core_api::modification::{FlowQuery, FlowSummary};
 /// 其他值返回 Continue。
 ///
 /// 如果 Flow 的 Layer 不支持（Tcp/Unknown 等），同样返回 Continue。
-pub fn apply_flow_modification(flow: &Flow, phase: &str, mods: FlowModification) -> InterceptionResult {
+pub fn apply_flow_modification(
+    flow: &Flow,
+    phase: &str,
+    mods: FlowModification,
+) -> InterceptionResult {
     if phase.starts_with("request") {
         let mut req = match &flow.layer {
             Layer::Http(h) => h.request.clone(),
@@ -49,10 +53,12 @@ pub fn apply_flow_modification(flow: &Flow, phase: &str, mods: FlowModification)
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
-                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
                 cookies: vec![],
             }),
             Layer::WebSocket(ws) => ws.handshake_response.clone(),
@@ -83,7 +89,10 @@ pub fn apply_flow_modification(flow: &Flow, phase: &str, mods: FlowModification)
 ///
 /// 仅修改 message_content；其余字段（方向、opcode、时间戳等）保持不变。
 /// 若 modification 不含 message_content，则原样返回消息。
-pub fn apply_ws_modification(message: &WebSocketMessage, mods: FlowModification) -> InterceptionResult {
+pub fn apply_ws_modification(
+    message: &WebSocketMessage,
+    mods: FlowModification,
+) -> InterceptionResult {
     let mut new_msg = message.clone();
     if let Some(content) = mods.message_content {
         new_msg.content.size = content.len() as u64;
@@ -147,10 +156,12 @@ mod tests {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
-                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
                 cookies: vec![],
             });
         }
@@ -188,10 +199,12 @@ mod tests {
                     version: "HTTP/1.1".to_string(),
                     headers: vec![],
                     body: None,
-                    timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                    timing: ResponseTiming {
+                        time_to_first_byte: None,
+                        time_to_last_byte: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
+                    },
                     cookies: vec![],
                 },
                 messages: vec![],
@@ -234,7 +247,11 @@ mod tests {
         if let InterceptionResult::ModifiedRequest(req) = result {
             assert_eq!(req.method, "POST");
             assert_eq!(req.url.as_str(), "http://example.com/v2/api");
-            assert!(req.headers.iter().any(|(k, v)| k == "X-Custom" && v == "123"));
+            assert!(
+                req.headers
+                    .iter()
+                    .any(|(k, v)| k == "X-Custom" && v == "123")
+            );
             assert_eq!(req.body.unwrap().content, "new-body");
         } else {
             panic!("expected ModifiedRequest");
@@ -294,7 +311,10 @@ mod tests {
         let flow = make_http_flow_with_response("http://example.com/api");
         let mods = FlowModification {
             status_code: Some(404),
-            response_headers: Some(HashMap::from([("Content-Type".to_string(), "application/json".to_string())])),
+            response_headers: Some(HashMap::from([(
+                "Content-Type".to_string(),
+                "application/json".to_string(),
+            )])),
             response_body: Some("{\"error\": \"not found\"}".to_string()),
             ..Default::default()
         };
@@ -303,7 +323,11 @@ mod tests {
 
         if let InterceptionResult::ModifiedResponse(res) = result {
             assert_eq!(res.status, 404);
-            assert!(res.headers.iter().any(|(k, v)| k == "Content-Type" && v == "application/json"));
+            assert!(
+                res.headers
+                    .iter()
+                    .any(|(k, v)| k == "Content-Type" && v == "application/json")
+            );
             assert_eq!(res.body.unwrap().content, "{\"error\": \"not found\"}");
         } else {
             panic!("expected ModifiedResponse");

@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use super::{make_tool, ok_json, ok_text, require_str};
 use crate::server::ProbeContext;
-use relay_core_runtime::audit::AuditActor;
-use relay_core_runtime::rule::InterceptRuleConfig;
 use relay_core_api::modification::FlowModification;
 use relay_core_api::rule::RuleTermination;
+use relay_core_runtime::audit::AuditActor;
+use relay_core_runtime::rule::InterceptRuleConfig;
 use rmcp::model::{Content, Tool};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use std::sync::Arc;
 use uuid::Uuid;
-use super::{make_tool, ok_json, ok_text, require_str};
 
 pub fn set_intercept_schema() -> Tool {
     make_tool(
@@ -72,7 +72,10 @@ pub fn resume_flow_schema() -> Tool {
 
 pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
-    let phase = args.get("phase").and_then(Value::as_str).unwrap_or("request");
+    let phase = args
+        .get("phase")
+        .and_then(Value::as_str)
+        .unwrap_or("request");
 
     let rule_id = Uuid::new_v4().to_string();
     ctx.rules
@@ -96,7 +99,10 @@ pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<C
             },
         )
         .await?;
-    ok_text(format!("Intercept breakpoint set (rule_id: {}). Waiting for matching request…", rule_id))
+    ok_text(format!(
+        "Intercept breakpoint set (rule_id: {}). Waiting for matching request…",
+        rule_id
+    ))
 }
 
 pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, String> {
@@ -105,7 +111,11 @@ pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Conte
 
 pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let key = require_str(&args, "key")?.to_string();
-    let action = args.get("action").and_then(Value::as_str).unwrap_or("continue").to_string();
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("continue")
+        .to_string();
 
     let mods = FlowModification::from_json_value(&args).into_option();
     ctx.intercepts
@@ -117,8 +127,8 @@ pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
 #[cfg(test)]
 mod tests {
     use super::get_pending_intercepts;
-    use relay_core_runtime::CoreState;
     use crate::server::ProbeContext;
+    use relay_core_runtime::CoreState;
     use std::sync::Arc;
 
     #[tokio::test]

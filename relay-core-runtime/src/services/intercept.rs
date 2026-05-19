@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-use tokio::sync::oneshot;
-use relay_core_api::modification::FlowModification;
-use relay_core_lib::InterceptionResult;
 use crate::audit::AuditActor;
 use crate::{CoreInterceptSnapshot, CoreState};
+use async_trait::async_trait;
+use relay_core_api::modification::FlowModification;
+use relay_core_lib::InterceptionResult;
+use tokio::sync::oneshot;
 
 #[async_trait]
 pub trait InterceptService: Send + Sync {

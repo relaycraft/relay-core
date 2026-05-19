@@ -1,39 +1,39 @@
-use tokio::sync::{mpsc, oneshot};
-use relay_core_lib::InterceptionResult;
 use relay_core_api::flow::WebSocketMessage;
+use relay_core_lib::InterceptionResult;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum InterceptBrokerMessage {
-    RegisterIntercept { 
-        key: String, 
-        tx: oneshot::Sender<InterceptionResult> 
+    RegisterIntercept {
+        key: String,
+        tx: oneshot::Sender<InterceptionResult>,
     },
     ResolveIntercept {
         key: String,
         result: InterceptionResult,
-        respond_to: oneshot::Sender<Result<(), String>> 
+        respond_to: oneshot::Sender<Result<(), String>>,
     },
     GetPendingIntercept {
         key: String,
-        respond_to: oneshot::Sender<bool>
+        respond_to: oneshot::Sender<bool>,
     },
     GetPendingInterceptByFlowId {
         flow_id: String,
-        respond_to: oneshot::Sender<bool>
+        respond_to: oneshot::Sender<bool>,
     },
     GetPendingWebSocketMessage {
         key: String,
-        respond_to: oneshot::Sender<Option<WebSocketMessage>>
+        respond_to: oneshot::Sender<Option<WebSocketMessage>>,
     },
     SetPendingWebSocketMessage {
         key: String,
-        message: WebSocketMessage
+        message: WebSocketMessage,
     },
     GetMetrics {
-        respond_to: oneshot::Sender<(usize, usize, Option<u64>, Option<u64>)> // pending_intercepts, pending_ws_messages, oldest_intercept_age_ms, oldest_ws_message_age_ms
-    }
+        respond_to: oneshot::Sender<(usize, usize, Option<u64>, Option<u64>)>, // pending_intercepts, pending_ws_messages, oldest_intercept_age_ms, oldest_ws_message_age_ms
+    },
 }
 
 pub struct InterceptBrokerActor {
@@ -55,8 +55,10 @@ impl InterceptBrokerActor {
 
     fn cleanup(&mut self) {
         let now = Instant::now();
-        self.pending_intercepts.retain(|_, (_, time)| now.duration_since(*time) < self.ttl);
-        self.pending_ws_messages.retain(|_, (_, time)| now.duration_since(*time) < self.ttl);
+        self.pending_intercepts
+            .retain(|_, (_, time)| now.duration_since(*time) < self.ttl);
+        self.pending_ws_messages
+            .retain(|_, (_, time)| now.duration_since(*time) < self.ttl);
     }
 
     pub async fn run(mut self) {
@@ -75,7 +77,7 @@ impl InterceptBrokerActor {
                             InterceptBrokerMessage::ResolveIntercept { key, result, respond_to } => {
                                 // Remove related pending messages
                                 self.pending_ws_messages.remove(&key);
-                                
+
                                 if let Some((tx, _)) = self.pending_intercepts.remove(&key) {
                                     let _ = tx.send(result);
                                     let _ = respond_to.send(Ok(()));

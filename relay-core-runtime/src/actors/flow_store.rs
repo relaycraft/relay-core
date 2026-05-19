@@ -1,18 +1,31 @@
-use tokio::sync::{mpsc, oneshot};
-use relay_core_api::flow::{Flow, WebSocketMessage, BodyData, Direction, Layer};
+use lru::LruCache;
+use relay_core_api::flow::{BodyData, Direction, Flow, Layer, WebSocketMessage};
 use relay_core_api::modification::{FlowQuery, FlowSummary};
 use relay_core_storage::store::Store;
-use lru::LruCache;
 use std::num::NonZeroUsize;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum FlowStoreMessage {
     UpsertFlow(Box<Flow>),
-    AppendWebSocketMessage { flow_id: String, message: WebSocketMessage },
-    UpdateHttpBody { flow_id: String, body: BodyData, direction: Direction },
-    GetFlow { id: String, respond_to: oneshot::Sender<Option<Flow>> },
+    AppendWebSocketMessage {
+        flow_id: String,
+        message: WebSocketMessage,
+    },
+    UpdateHttpBody {
+        flow_id: String,
+        body: BodyData,
+        direction: Direction,
+    },
+    GetFlow {
+        id: String,
+        respond_to: oneshot::Sender<Option<Flow>>,
+    },
     GetMetrics(oneshot::Sender<(usize, usize)>), // total_processed, current_in_memory
-    SearchFlows { query: FlowQuery, respond_to: oneshot::Sender<Vec<FlowSummary>> },
+    SearchFlows {
+        query: FlowQuery,
+        respond_to: oneshot::Sender<Vec<FlowSummary>>,
+    },
 }
 
 pub struct FlowStoreActor {
@@ -52,10 +65,10 @@ impl FlowStoreActor {
                     self.total_processed += 1;
                     self.persist_flow(&flow).await;
                     self.flows.put(flow.id.to_string(), *flow);
-                },
+                }
                 FlowStoreMessage::AppendWebSocketMessage { flow_id, message } => {
                     let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
-                         if let relay_core_api::flow::Layer::WebSocket(ws) = &mut flow.layer {
+                        if let relay_core_api::flow::Layer::WebSocket(ws) = &mut flow.layer {
                             if ws.messages.len() >= 2000 {
                                 ws.messages.remove(0);
                             }
@@ -67,15 +80,19 @@ impl FlowStoreActor {
                     };
                     if let Some(flow) = updated {
                         self.persist_flow(&flow).await;
-                    } 
-                },
-                FlowStoreMessage::UpdateHttpBody { flow_id, body, direction } => {
+                    }
+                }
+                FlowStoreMessage::UpdateHttpBody {
+                    flow_id,
+                    body,
+                    direction,
+                } => {
                     let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
                         if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
                             match direction {
                                 Direction::ClientToServer => {
                                     http.request.body = Some(body);
-                                },
+                                }
                                 Direction::ServerToClient => {
                                     if let Some(res) = &mut http.response {
                                         res.body = Some(body);
@@ -90,24 +107,27 @@ impl FlowStoreActor {
                     if let Some(flow) = updated {
                         self.persist_flow(&flow).await;
                     }
-                },
+                }
                 FlowStoreMessage::GetFlow { id, respond_to } => {
                     let _ = respond_to.send(self.flows.get(&id).cloned());
-                },
+                }
                 FlowStoreMessage::GetMetrics(respond_to) => {
                     let _ = respond_to.send((self.total_processed, self.flows.len()));
-                },
+                }
                 FlowStoreMessage::SearchFlows { query, respond_to } => {
                     let limit = query.limit.unwrap_or(50).min(200);
                     let offset = query.offset.unwrap_or(0);
-                    let mut results: Vec<FlowSummary> = self.flows.iter()
+                    let mut results: Vec<FlowSummary> = self
+                        .flows
+                        .iter()
                         .filter(|(_, flow)| flow_matches_query(flow, &query))
                         .map(|(_, flow)| flow_to_summary(flow))
                         .collect();
                     results.sort_by_key(|r| std::cmp::Reverse(r.start_time_ms));
-                    let results: Vec<FlowSummary> = results.into_iter().skip(offset).take(limit).collect();
+                    let results: Vec<FlowSummary> =
+                        results.into_iter().skip(offset).take(limit).collect();
                     let _ = respond_to.send(results);
-                },
+                }
             }
         }
     }
@@ -126,7 +146,11 @@ fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
             )
         }
         Layer::WebSocket(ws) => (
-            ws.handshake_request.url.host_str().unwrap_or("").to_string(),
+            ws.handshake_request
+                .url
+                .host_str()
+                .unwrap_or("")
+                .to_string(),
             ws.handshake_request.url.path().to_string(),
             ws.handshake_request.method.clone(),
             Some(ws.handshake_response.status),
@@ -136,21 +160,41 @@ fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
     };
 
     if let Some(h) = &query.host
-        && !host_str.contains(h.as_str()) { return false; }
+        && !host_str.contains(h.as_str())
+    {
+        return false;
+    }
     if let Some(p) = &query.path_contains
-        && !path_str.contains(p.as_str()) { return false; }
+        && !path_str.contains(p.as_str())
+    {
+        return false;
+    }
     if let Some(m) = &query.method
-        && !method_str.eq_ignore_ascii_case(m) { return false; }
+        && !method_str.eq_ignore_ascii_case(m)
+    {
+        return false;
+    }
     if let Some(min) = query.status_min
-        && status.is_none_or(|s| s < min) { return false; }
+        && status.is_none_or(|s| s < min)
+    {
+        return false;
+    }
     if let Some(max) = query.status_max
-        && status.is_none_or(|s| s > max) { return false; }
+        && status.is_none_or(|s| s > max)
+    {
+        return false;
+    }
     if let Some(ws_only) = query.is_websocket
-        && is_ws != ws_only { return false; }
+        && is_ws != ws_only
+    {
+        return false;
+    }
     if let Some(err_only) = query.has_error {
         // has_error: status >= 500 or flow has "error" tag
         let is_err = status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error");
-        if err_only != is_err { return false; }
+        if err_only != is_err {
+            return false;
+        }
     }
     true
 }
@@ -168,17 +212,28 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
         Layer::WebSocket(ws) => (
             ws.handshake_request.method.clone(),
             ws.handshake_request.url.to_string(),
-            ws.handshake_request.url.host_str().unwrap_or("").to_string(),
+            ws.handshake_request
+                .url
+                .host_str()
+                .unwrap_or("")
+                .to_string(),
             ws.handshake_request.url.path().to_string(),
             Some(ws.handshake_response.status),
             true,
         ),
-        _ => ("UNKNOWN".to_string(), String::new(), String::new(), String::new(), None, false),
+        _ => (
+            "UNKNOWN".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            false,
+        ),
     };
 
-    let duration_ms = flow.end_time.map(|e| {
-        (e - flow.start_time).num_milliseconds().max(0) as u64
-    });
+    let duration_ms = flow
+        .end_time
+        .map(|e| (e - flow.start_time).num_milliseconds().max(0) as u64);
 
     let has_error = status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error");
 

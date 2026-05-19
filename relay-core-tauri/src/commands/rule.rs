@@ -1,20 +1,20 @@
-use tauri::State;
 use crate::RelayCoreState;
 use crate::interceptor::InterceptRule;
 use relay_core_runtime::audit::AuditActor;
 use serde_json::json;
+use tauri::State;
 
 #[tauri::command]
 pub async fn set_intercept_rule(
     state: State<'_, RelayCoreState>,
-    rule: InterceptRule
+    rule: InterceptRule,
 ) -> Result<String, String> {
     set_intercept_rule_impl(&state, rule).await
 }
 
 pub async fn set_intercept_rule_impl(
     state: &RelayCoreState,
-    rule: InterceptRule
+    rule: InterceptRule,
 ) -> Result<String, String> {
     let rule_id = rule.id.clone();
     state
@@ -26,15 +26,15 @@ pub async fn set_intercept_rule_impl(
             rule,
         )
         .await?;
-    
+
     Ok("Rule updated".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::set_intercept_rule_impl;
-    use crate::interceptor::InterceptRule;
     use crate::RelayCoreState;
+    use crate::interceptor::InterceptRule;
     use relay_core_lib::rule::{Action, Filter, Rule, RuleStage, RuleTermination, StringMatcher};
 
     #[tokio::test]
@@ -108,9 +108,19 @@ mod tests {
         let res = set_intercept_rule_impl(&state, legacy).await;
         assert!(res.is_ok());
 
-        let mut ids: Vec<String> = state.ctx.rules.get_rules().await.into_iter().map(|r| r.id).collect();
+        let mut ids: Vec<String> = state
+            .ctx
+            .rules
+            .get_rules()
+            .await
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         ids.sort();
-        assert_eq!(ids, vec!["legacy-keep".to_string(), "manual-rule".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["legacy-keep".to_string(), "manual-rule".to_string()]
+        );
     }
 
     #[tokio::test]

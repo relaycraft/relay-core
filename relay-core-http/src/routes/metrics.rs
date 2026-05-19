@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::server::HttpApiContext;
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -10,8 +10,8 @@ use relay_core_runtime::{
     CoreAuditQuery, CoreAuditSnapshot, CoreMetrics, CoreStatusSnapshot,
     audit::{AuditActor, AuditEventKind, AuditOutcome},
 };
-use crate::server::HttpApiContext;
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// GET /api/v1/metrics
 pub fn router(ctx: Arc<HttpApiContext>) -> Router {
@@ -59,7 +59,10 @@ async fn get_audit(
     let query = CoreAuditQuery {
         since_ms: params.since_ms,
         until_ms: params.until_ms,
-        actor: params.actor.as_deref().and_then(|v| v.parse::<AuditActor>().ok()),
+        actor: params
+            .actor
+            .as_deref()
+            .and_then(|v| v.parse::<AuditActor>().ok()),
         kind: params
             .kind
             .as_deref()

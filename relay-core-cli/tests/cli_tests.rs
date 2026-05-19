@@ -44,7 +44,7 @@ fn test_ca_init() {
 fn test_rules_validate_success() {
     let dir = tempdir().unwrap();
     let rule_path = dir.path().join("valid_rule.yaml");
-    
+
     // Create a simple valid rule (Must be a list)
     let content = r#"
 - id: "test-rule-1"
@@ -66,7 +66,7 @@ fn test_rules_validate_success() {
 fn test_rules_validate_fail() {
     let dir = tempdir().unwrap();
     let rule_path = dir.path().join("invalid_rule.yaml");
-    
+
     // Create an invalid rule (malformed YAML)
     let content = r#"
 name: "Test Rule"

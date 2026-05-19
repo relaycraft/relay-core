@@ -20,47 +20,47 @@
 //! use relay_core_runtime::audit::AuditActor;
 //! ```
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
-use relay_core_api::flow::{Flow, WebSocketMessage, FlowUpdate, BodyData, Direction, Layer};
-#[cfg(feature = "script")]
-use relay_core_script::ScriptInterceptor;
-use relay_core_lib::interceptor::{Interceptor, CompositeInterceptor};
-use relay_core_lib::tls::CertificateAuthority;
-use relay_core_lib::capture::{TcpCaptureSource, TransparentTcpCaptureSource, OriginalDstProvider};
-use relay_core_lib::capture::udp::UdpProxy;
+use relay_core_api::flow::{BodyData, Direction, Flow, FlowUpdate, Layer, WebSocketMessage};
+use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch, RedactionPolicy};
 #[cfg(all(target_os = "linux", feature = "transparent-linux"))]
 use relay_core_lib::capture::LinuxOriginalDstProvider;
 #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
 use relay_core_lib::capture::MacOsOriginalDstProvider;
 #[cfg(target_os = "windows")]
 use relay_core_lib::capture::WindowsOriginalDstProvider;
-use tokio::net::TcpListener;
+use relay_core_lib::capture::udp::UdpProxy;
+use relay_core_lib::capture::{OriginalDstProvider, TcpCaptureSource, TransparentTcpCaptureSource};
+use relay_core_lib::interceptor::{CompositeInterceptor, Interceptor};
+use relay_core_lib::tls::CertificateAuthority;
+#[cfg(feature = "script")]
+use relay_core_script::ScriptInterceptor;
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::net::SocketAddr;
-use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch, RedactionPolicy};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use tracing::error;
 
-use relay_core_lib::rule::Rule;
-use relay_core_lib::rule::engine::RuleEngine;
+use crate::audit::{AuditActor, AuditEvent, AuditEventKind, AuditOutcome};
 use crate::rule::{
     InterceptRule, InterceptRuleConfig, MockResponseRuleConfig, build_intercept_rules,
     build_mock_response_rule,
 };
-use relay_core_storage::store::{AuditEventRecord, Store};
 use relay_core_api::modification::{FlowQuery, FlowSummary};
+use relay_core_lib::rule::Rule;
+use relay_core_lib::rule::engine::RuleEngine;
+use relay_core_storage::store::{AuditEventRecord, Store};
 use serde_json::json;
-use crate::audit::{AuditActor, AuditEvent, AuditEventKind, AuditOutcome};
 
-pub mod audit;
-pub mod rule;
 pub mod actors;
+pub mod audit;
 pub mod interceptors;
 pub mod modification;
+pub mod rule;
 pub mod services;
 
 // ── Re-exports for user convenience ──
@@ -287,7 +287,7 @@ impl CoreState {
                         tracing::error!("Failed to init store: {}", e);
                     }
                     Some(s)
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to connect to store: {}", e);
                     None
@@ -308,14 +308,16 @@ impl CoreState {
         let (rule_tx, rule_rx) = mpsc::channel(100);
         let rule_actor = RuleStoreActor::new(rule_rx, store.clone());
         tokio::spawn(rule_actor.run());
-        
+
         let (policy_tx, _) = watch::channel(ProxyPolicy::default());
         let (flow_broadcast_tx, _) = broadcast::channel(1000);
         let (audit_broadcast_tx, _) = broadcast::channel(256);
         let (lifecycle_tx, _) = watch::channel(RuntimeLifecycle::created());
 
         #[cfg(feature = "script")]
-        let script_interceptor = ScriptInterceptor::new().await.expect("Failed to initialize ScriptInterceptor");
+        let script_interceptor = ScriptInterceptor::new()
+            .await
+            .expect("Failed to initialize ScriptInterceptor");
         Self {
             flow_store: flow_tx,
             intercept_broker: intercept_tx,
@@ -336,19 +338,32 @@ impl CoreState {
             shutdown_tx: Mutex::new(None),
         }
     }
-    
+
     pub async fn get_metrics(&self) -> CoreMetrics {
         let (flow_tx, flow_rx) = oneshot::channel();
-        let _ = self.flow_store.send(FlowStoreMessage::GetMetrics(flow_tx)).await;
+        let _ = self
+            .flow_store
+            .send(FlowStoreMessage::GetMetrics(flow_tx))
+            .await;
         let (flows_total, flows_in_memory) = flow_rx.await.unwrap_or((0, 0));
 
         let (int_tx, int_rx) = oneshot::channel();
-        let _ = self.intercept_broker.send(InterceptBrokerMessage::GetMetrics { respond_to: int_tx }).await;
-        let (intercepts_pending, ws_pending_messages, oldest_intercept_age_ms, oldest_ws_message_age_ms) =
-            int_rx.await.unwrap_or((0, 0, None, None));
+        let _ = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::GetMetrics { respond_to: int_tx })
+            .await;
+        let (
+            intercepts_pending,
+            ws_pending_messages,
+            oldest_intercept_age_ms,
+            oldest_ws_message_age_ms,
+        ) = int_rx.await.unwrap_or((0, 0, None, None));
 
         let (rule_tx, rule_rx) = oneshot::channel();
-        let _ = self.rule_store.send(RuleStoreMessage::GetMetrics(rule_tx)).await;
+        let _ = self
+            .rule_store
+            .send(RuleStoreMessage::GetMetrics(rule_tx))
+            .await;
         let rule_exec_errors = rule_rx.await.unwrap_or(0);
 
         CoreMetrics {
@@ -445,7 +460,13 @@ impl CoreState {
                     .map(|v| &event.actor == v)
                     .unwrap_or(true)
             })
-            .filter(|event| query.kind.as_ref().map(|v| &event.kind == v).unwrap_or(true))
+            .filter(|event| {
+                query
+                    .kind
+                    .as_ref()
+                    .map(|v| &event.kind == v)
+                    .unwrap_or(true)
+            })
             .filter(|event| {
                 query
                     .outcome
@@ -460,7 +481,14 @@ impl CoreState {
 
     pub async fn get_flow(&self, id: String) -> Option<Flow> {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.flow_store.send(FlowStoreMessage::GetFlow { id: id.clone(), respond_to: tx }).await {
+        if let Err(e) = self
+            .flow_store
+            .send(FlowStoreMessage::GetFlow {
+                id: id.clone(),
+                respond_to: tx,
+            })
+            .await
+        {
             error!("Failed to send GetFlow request: {}", e);
             if let Some(store) = &self.store {
                 return store
@@ -472,10 +500,13 @@ impl CoreState {
             }
             return None;
         }
-        let flow = rx.await.map_err(|e| {
-            error!("Failed to receive Flow response: {}", e);
-            e
-        }).unwrap_or(None);
+        let flow = rx
+            .await
+            .map_err(|e| {
+                error!("Failed to receive Flow response: {}", e);
+                e
+            })
+            .unwrap_or(None);
         if let Some(flow) = flow {
             return Some(redact_flow(flow, &self.current_redaction_policy()));
         }
@@ -497,10 +528,12 @@ impl CoreState {
             error!("Failed to send GetRules request: {}", e);
             return Vec::new();
         }
-        rx.await.map_err(|e| {
-            error!("Failed to receive Rules response: {}", e);
-            e
-        }).unwrap_or_default()
+        rx.await
+            .map_err(|e| {
+                error!("Failed to receive Rules response: {}", e);
+                e
+            })
+            .unwrap_or_default()
     }
 
     pub async fn set_rules(&self, rules: Vec<Rule>) {
@@ -527,7 +560,8 @@ impl CoreState {
         let mut rules = self.get_rules().await;
         rules.retain(|existing| existing.id != rule_id);
         rules.push(rule);
-        self.set_rules_from(actor, operation, target, details, rules).await
+        self.set_rules_from(actor, operation, target, details, rules)
+            .await
     }
 
     pub async fn delete_rule_from(
@@ -587,10 +621,18 @@ impl CoreState {
     ) -> Result<(), String> {
         let rule_id = rule.id.clone();
         let mut rules = self.get_rules().await;
-        rules.retain(|existing| existing.id != rule_id && !existing.id.starts_with(&format!("{}-", rule_id)));
+        rules.retain(|existing| {
+            existing.id != rule_id && !existing.id.starts_with(&format!("{}-", rule_id))
+        });
         rules.extend(rule.to_rules());
-        self.set_rules_from(actor, "rule.intercept_legacy_upsert", target, details, rules)
-            .await
+        self.set_rules_from(
+            actor,
+            "rule.intercept_legacy_upsert",
+            target,
+            details,
+            rules,
+        )
+        .await
     }
 
     pub async fn set_rules_from(
@@ -602,7 +644,11 @@ impl CoreState {
         rules: Vec<Rule>,
     ) -> Result<(), String> {
         let rule_count = rules.len();
-        if let Err(e) = self.rule_store.send(RuleStoreMessage::SetRules(rules)).await {
+        if let Err(e) = self
+            .rule_store
+            .send(RuleStoreMessage::SetRules(rules))
+            .await
+        {
             error!("Failed to send SetRules request: {}", e);
             self.record_audit_event(AuditEvent::new(
                 actor,
@@ -643,14 +689,20 @@ impl CoreState {
 
     pub async fn get_rule_engine(&self) -> Arc<RuleEngine> {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.rule_store.send(RuleStoreMessage::GetRuleEngine(tx)).await {
+        if let Err(e) = self
+            .rule_store
+            .send(RuleStoreMessage::GetRuleEngine(tx))
+            .await
+        {
             error!("Failed to send GetRuleEngine request: {}", e);
             return Arc::new(RuleEngine::new(Vec::new(), Vec::new(), None, None));
         }
-        rx.await.map_err(|e| {
-            error!("Failed to receive RuleEngine response: {}", e);
-            e
-        }).unwrap_or_else(|_| Arc::new(RuleEngine::new(Vec::new(), Vec::new(), None, None)))
+        rx.await
+            .map_err(|e| {
+                error!("Failed to receive RuleEngine response: {}", e);
+                e
+            })
+            .unwrap_or_else(|_| Arc::new(RuleEngine::new(Vec::new(), Vec::new(), None, None)))
     }
 
     pub fn update_policy(&self, policy: ProxyPolicy) {
@@ -688,14 +740,30 @@ impl CoreState {
     }
 
     pub async fn register_intercept(&self, key: String, tx: oneshot::Sender<InterceptionResult>) {
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::RegisterIntercept { key, tx }).await {
-             error!("Failed to send RegisterIntercept request: {}", e);
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::RegisterIntercept { key, tx })
+            .await
+        {
+            error!("Failed to send RegisterIntercept request: {}", e);
         }
     }
 
-    pub async fn resolve_intercept(&self, key: String, result: InterceptionResult) -> Result<(), String> {
+    pub async fn resolve_intercept(
+        &self,
+        key: String,
+        result: InterceptionResult,
+    ) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::ResolveIntercept { key, result, respond_to: tx }).await {
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::ResolveIntercept {
+                key,
+                result,
+                respond_to: tx,
+            })
+            .await
+        {
             error!("Failed to send ResolveIntercept request: {}", e);
             return Err(e.to_string());
         }
@@ -704,44 +772,75 @@ impl CoreState {
 
     pub async fn get_pending_ws_message(&self, key: String) -> Option<WebSocketMessage> {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::GetPendingWebSocketMessage { key, respond_to: tx }).await {
-             error!("Failed to send GetPendingWebSocketMessage request: {}", e);
-             return None;
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::GetPendingWebSocketMessage {
+                key,
+                respond_to: tx,
+            })
+            .await
+        {
+            error!("Failed to send GetPendingWebSocketMessage request: {}", e);
+            return None;
         }
-        rx.await.map_err(|e| {
-             error!("Failed to receive WebSocketMessage response: {}", e);
-             e
-        }).unwrap_or(None)
+        rx.await
+            .map_err(|e| {
+                error!("Failed to receive WebSocketMessage response: {}", e);
+                e
+            })
+            .unwrap_or(None)
     }
 
     pub async fn set_pending_ws_message(&self, key: String, message: WebSocketMessage) {
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::SetPendingWebSocketMessage { key, message }).await {
-             error!("Failed to send SetPendingWebSocketMessage request: {}", e);
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::SetPendingWebSocketMessage { key, message })
+            .await
+        {
+            error!("Failed to send SetPendingWebSocketMessage request: {}", e);
         }
     }
 
     pub async fn is_intercept_pending(&self, key: String) -> bool {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::GetPendingIntercept { key, respond_to: tx }).await {
-             error!("Failed to send GetPendingIntercept request: {}", e);
-             return false;
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::GetPendingIntercept {
+                key,
+                respond_to: tx,
+            })
+            .await
+        {
+            error!("Failed to send GetPendingIntercept request: {}", e);
+            return false;
         }
-        rx.await.map_err(|e| {
-             error!("Failed to receive PendingIntercept response: {}", e);
-             e
-        }).unwrap_or(false)
+        rx.await
+            .map_err(|e| {
+                error!("Failed to receive PendingIntercept response: {}", e);
+                e
+            })
+            .unwrap_or(false)
     }
 
     pub async fn is_flow_intercepted(&self, flow_id: String) -> bool {
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.intercept_broker.send(InterceptBrokerMessage::GetPendingInterceptByFlowId { flow_id, respond_to: tx }).await {
+        if let Err(e) = self
+            .intercept_broker
+            .send(InterceptBrokerMessage::GetPendingInterceptByFlowId {
+                flow_id,
+                respond_to: tx,
+            })
+            .await
+        {
             error!("Failed to send GetPendingInterceptByFlowId request: {}", e);
             return false;
         }
-        rx.await.map_err(|e| {
-            error!("Failed to receive PendingInterceptByFlowId response: {}", e);
-            e
-        }).unwrap_or(false)
+        rx.await
+            .map_err(|e| {
+                error!("Failed to receive PendingInterceptByFlowId response: {}", e);
+                e
+            })
+            .unwrap_or(false)
     }
 
     pub fn upsert_flow(&self, flow: Box<Flow>) {
@@ -753,14 +852,21 @@ impl CoreState {
     }
 
     pub fn append_ws_message(&self, flow_id: String, message: WebSocketMessage) {
-        if let Err(e) = self.flow_store.try_send(FlowStoreMessage::AppendWebSocketMessage { flow_id, message }) {
+        if let Err(e) = self
+            .flow_store
+            .try_send(FlowStoreMessage::AppendWebSocketMessage { flow_id, message })
+        {
             error!("FlowStore dropped WS message: {}", e);
             self.flows_dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub fn update_http_body(&self, flow_id: String, body: BodyData, direction: Direction) {
-        if let Err(e) = self.flow_store.try_send(FlowStoreMessage::UpdateHttpBody { flow_id, body, direction }) {
+        if let Err(e) = self.flow_store.try_send(FlowStoreMessage::UpdateHttpBody {
+            flow_id,
+            body,
+            direction,
+        }) {
             error!("FlowStore dropped HTTP body: {}", e);
             self.flows_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -807,7 +913,10 @@ impl CoreState {
             ));
         }
 
-        let mut guard = self.shutdown_tx.lock().map_err(|_| "shutdown state poisoned".to_string())?;
+        let mut guard = self
+            .shutdown_tx
+            .lock()
+            .map_err(|_| "shutdown state poisoned".to_string())?;
         *guard = Some(shutdown_tx);
         drop(guard);
 
@@ -821,7 +930,10 @@ impl CoreState {
     }
 
     pub fn stop_proxy(&self) -> Result<ProxyStopResult, String> {
-        let mut guard = self.shutdown_tx.lock().map_err(|_| "shutdown state poisoned".to_string())?;
+        let mut guard = self
+            .shutdown_tx
+            .lock()
+            .map_err(|_| "shutdown state poisoned".to_string())?;
         let Some(tx) = guard.take() else {
             return Ok(ProxyStopResult::NotRunning);
         };
@@ -858,7 +970,14 @@ impl CoreState {
                 .collect();
         }
         let (tx, rx) = oneshot::channel();
-        if let Err(e) = self.flow_store.send(FlowStoreMessage::SearchFlows { query, respond_to: tx }).await {
+        if let Err(e) = self
+            .flow_store
+            .send(FlowStoreMessage::SearchFlows {
+                query,
+                respond_to: tx,
+            })
+            .await
+        {
             error!("Failed to send SearchFlows request: {}", e);
             return Vec::new();
         }
@@ -1119,7 +1238,8 @@ impl CoreState {
     ) -> Result<(), String> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         self.prepare_start(config.port, shutdown_tx)?;
-        self.run_proxy(config, sink, extra_interceptor, shutdown_rx).await
+        self.run_proxy(config, sink, extra_interceptor, shutdown_rx)
+            .await
     }
 
     async fn run_proxy(
@@ -1133,9 +1253,10 @@ impl CoreState {
         let state = self.clone();
 
         if let Some(parent) = config.ca_cert_path.parent()
-            && !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
 
         let ca = CertificateAuthority::load_or_create(&config.ca_cert_path, &config.ca_key_path)
             .map_err(|e| format!("Failed to load/create CA: {}", e))?;
@@ -1150,7 +1271,9 @@ impl CoreState {
         #[cfg(not(feature = "script"))]
         let mut interceptors: Vec<Arc<dyn Interceptor>> = vec![];
 
-        interceptors.push(Arc::new(interceptors::metrics::MetricsInterceptor::new(self.clone())));
+        interceptors.push(Arc::new(interceptors::metrics::MetricsInterceptor::new(
+            self.clone(),
+        )));
 
         if let Some(interceptor) = extra_interceptor {
             interceptors.push(interceptor);
@@ -1248,10 +1371,13 @@ impl CoreState {
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    let filter = "outbound and !loopback and (tcp.DstPort == 80 or tcp.DstPort == 443)".to_string();
+                    let filter =
+                        "outbound and !loopback and (tcp.DstPort == 80 or tcp.DstPort == 443)"
+                            .to_string();
                     let port = config.port;
                     tokio::spawn(async move {
-                        relay_core_lib::capture::windows::start_windivert_capture(filter, port).await;
+                        relay_core_lib::capture::windows::start_windivert_capture(filter, port)
+                            .await;
                     });
 
                     Arc::new(WindowsOriginalDstProvider::new(addrs))
@@ -1314,7 +1440,10 @@ impl CoreState {
 fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUpdate {
     match update {
         FlowUpdate::Full(flow) => FlowUpdate::Full(Box::new(redact_flow(*flow, redaction))),
-        FlowUpdate::WebSocketMessage { flow_id, mut message } => {
+        FlowUpdate::WebSocketMessage {
+            flow_id,
+            mut message,
+        } => {
             message.content = redact_body(message.content, redaction);
             FlowUpdate::WebSocketMessage { flow_id, message }
         }
@@ -1339,7 +1468,10 @@ fn redact_flow(mut flow: Flow, redaction: &RedactionPolicy) -> Flow {
             redact_http_request(&mut http.request, redaction);
             if let Some(response) = &mut http.response {
                 redact_headers(&mut response.headers, redaction);
-                response.body = response.body.take().map(|body| redact_body(body, redaction));
+                response.body = response
+                    .body
+                    .take()
+                    .map(|body| redact_body(body, redaction));
             }
         }
         Layer::WebSocket(ws) => {
@@ -1367,7 +1499,10 @@ fn redact_flow_summary(mut summary: FlowSummary, redaction: &RedactionPolicy) ->
     summary
 }
 
-fn redact_http_request(request: &mut relay_core_api::flow::HttpRequest, redaction: &RedactionPolicy) {
+fn redact_http_request(
+    request: &mut relay_core_api::flow::HttpRequest,
+    redaction: &RedactionPolicy,
+) {
     redact_headers(&mut request.headers, redaction);
     redact_query_pairs(&mut request.query, redaction);
     request.url = redact_url(&request.url, redaction);
@@ -1567,13 +1702,16 @@ mod tests {
             .join("target")
             .join("test-dbs");
         std::fs::create_dir_all(&db_dir).expect("create test db dir");
-        let db_path = db_dir.join(format!("relay-core-runtime-test-{}-{}-{}.db", pid, nanos, seq));
+        let db_path = db_dir.join(format!(
+            "relay-core-runtime-test-{}-{}-{}.db",
+            pid, nanos, seq
+        ));
         format!("sqlite://{}?mode=rwc", db_path.display())
     }
 
     fn sample_http_flow(host: &str, path: &str, method: &str, status: u16, ts: i64) -> Flow {
-        let start_time = chrono::DateTime::<Utc>::from_timestamp_millis(ts)
-            .expect("timestamp should be valid");
+        let start_time =
+            chrono::DateTime::<Utc>::from_timestamp_millis(ts).expect("timestamp should be valid");
         let request_url =
             Url::parse(&format!("http://{}{}", host, path)).expect("url should parse");
         Flow {
@@ -1622,8 +1760,8 @@ mod tests {
     }
 
     fn sample_sensitive_http_flow(ts: i64) -> Flow {
-        let start_time = chrono::DateTime::<Utc>::from_timestamp_millis(ts)
-            .expect("timestamp should be valid");
+        let start_time =
+            chrono::DateTime::<Utc>::from_timestamp_millis(ts).expect("timestamp should be valid");
         let request_url = Url::parse("http://api.example.com/private?token=abc123&ok=1")
             .expect("url should parse");
         Flow {
@@ -1646,7 +1784,10 @@ mod tests {
                     url: request_url,
                     version: "HTTP/1.1".to_string(),
                     headers: vec![
-                        ("Authorization".to_string(), "Bearer secret-token".to_string()),
+                        (
+                            "Authorization".to_string(),
+                            "Bearer secret-token".to_string(),
+                        ),
                         ("X-Normal".to_string(), "visible".to_string()),
                     ],
                     cookies: vec![],
@@ -1766,7 +1907,11 @@ mod tests {
         let rules = state.get_rules().await;
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].name, "second");
-        let event = state.recent_audit_events().last().cloned().expect("audit event");
+        let event = state
+            .recent_audit_events()
+            .last()
+            .cloned()
+            .expect("audit event");
         assert_eq!(event.details["operation"], "rule.upsert");
         assert_eq!(event.details["details"]["tool"], "set_rule");
     }
@@ -1815,7 +1960,11 @@ mod tests {
         let rules = state.get_rules().await;
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "api-mock-1");
-        let event = state.recent_audit_events().last().cloned().expect("audit event");
+        let event = state
+            .recent_audit_events()
+            .last()
+            .cloned()
+            .expect("audit event");
         assert_eq!(event.details["operation"], "rule.mock_create");
         assert_eq!(event.details["details"]["route"], "/api/v1/mock");
     }
@@ -1848,7 +1997,11 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "intercept-1");
         assert_eq!(rules[0].name, "api-intercept:example.com");
-        let event = state.recent_audit_events().last().cloned().expect("audit event");
+        let event = state
+            .recent_audit_events()
+            .last()
+            .cloned()
+            .expect("audit event");
         assert_eq!(event.details["operation"], "rule.intercept_create");
         assert_eq!(event.details["details"]["route"], "/api/v1/intercepts");
     }
@@ -1893,7 +2046,11 @@ mod tests {
         let rules = state.get_rules().await;
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "legacy-1");
-        let event = state.recent_audit_events().last().cloned().expect("audit event");
+        let event = state
+            .recent_audit_events()
+            .last()
+            .cloned()
+            .expect("audit event");
         assert_eq!(event.details["operation"], "rule.intercept_legacy_upsert");
         assert_eq!(event.details["details"]["command"], "set_intercept_rule");
     }
@@ -1918,7 +2075,12 @@ mod tests {
         assert_eq!(event.kind, AuditEventKind::InterceptResolved);
         assert_eq!(event.outcome, AuditOutcome::Failed);
         assert_eq!(event.details["action"], "drop");
-        assert!(event.details["error"].as_str().unwrap_or_default().contains("Interception not found"));
+        assert!(
+            event.details["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Interception not found")
+        );
     }
 
     #[tokio::test]
@@ -1989,8 +2151,14 @@ mod tests {
         .with_udp_tproxy_port(Some(15000));
 
         assert_eq!(config.port, 8080);
-        assert_eq!(config.ca_cert_path, std::path::PathBuf::from("/tmp/ca_cert.pem"));
-        assert_eq!(config.ca_key_path, std::path::PathBuf::from("/tmp/ca_key.pem"));
+        assert_eq!(
+            config.ca_cert_path,
+            std::path::PathBuf::from("/tmp/ca_cert.pem")
+        );
+        assert_eq!(
+            config.ca_key_path,
+            std::path::PathBuf::from("/tmp/ca_key.pem")
+        );
         assert!(config.transparent);
         assert_eq!(config.udp_tproxy_port, Some(15000));
     }
@@ -2003,7 +2171,8 @@ mod tests {
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("relaycraft-runtime-config-{}", unique));
 
-        let config = ProxyConfig::from_app_data_dir(dir.clone(), 8899).expect("config should build");
+        let config =
+            ProxyConfig::from_app_data_dir(dir.clone(), 8899).expect("config should build");
 
         assert!(dir.exists());
         assert_eq!(config.port, 8899);
@@ -2273,7 +2442,13 @@ mod tests {
     #[tokio::test]
     async fn get_flow_falls_back_to_store_after_lru_eviction() {
         let state = CoreState::new(Some(sqlite_url())).await;
-        let first_flow = sample_http_flow("persist.example.com", "/first", "GET", 200, 1_700_000_010_000);
+        let first_flow = sample_http_flow(
+            "persist.example.com",
+            "/first",
+            "GET",
+            200,
+            1_700_000_010_000,
+        );
         let first_id = first_flow.id.to_string();
         state.upsert_flow(Box::new(first_flow));
         for i in 0..240 {
@@ -2380,11 +2555,7 @@ mod tests {
             .map(|(_, v)| v.as_str());
         assert_eq!(req_query_token, Some("[REDACTED]"));
 
-        let req_body = http
-            .request
-            .body
-            .as_ref()
-            .map(|b| b.content.as_str());
+        let req_body = http.request.body.as_ref().map(|b| b.content.as_str());
         assert_eq!(req_body, Some("[REDACTED]"));
 
         let response = http.response.expect("response should exist");

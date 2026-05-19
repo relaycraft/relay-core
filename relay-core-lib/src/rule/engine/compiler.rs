@@ -1,8 +1,8 @@
+use crate::rule::engine::compiled::{CompiledFilter, CompiledRule, CompiledStringMatcher};
 use crate::rule::model::{Filter, Rule, StringMatcher};
-use crate::rule::engine::compiled::{CompiledRule, CompiledFilter, CompiledStringMatcher};
+use glob::Pattern;
 use ipnetwork::IpNetwork;
 use regex::Regex;
-use glob::Pattern;
 use std::str::FromStr;
 
 pub fn compile_rule(rule: Rule) -> CompiledRule {
@@ -16,7 +16,9 @@ pub fn compile_rule(rule: Rule) -> CompiledRule {
 pub fn compile_filter(filter: &Filter) -> CompiledFilter {
     match filter {
         Filter::All => CompiledFilter::All,
-        Filter::SrcIp(cidr) => IpNetwork::from_str(cidr).map(CompiledFilter::SrcIp).unwrap_or(CompiledFilter::Invalid),
+        Filter::SrcIp(cidr) => IpNetwork::from_str(cidr)
+            .map(CompiledFilter::SrcIp)
+            .unwrap_or(CompiledFilter::Invalid),
         Filter::DstPort(p) => CompiledFilter::DstPort(*p),
         Filter::Protocol(p) => CompiledFilter::Protocol(p.clone()),
         Filter::TransparentMode(enabled) => CompiledFilter::TransparentMode(*enabled),
@@ -47,7 +49,11 @@ pub fn compile_matcher(matcher: &StringMatcher) -> CompiledStringMatcher {
         StringMatcher::Contains(s) => CompiledStringMatcher::Contains(s.clone()),
         StringMatcher::Prefix(s) => CompiledStringMatcher::Prefix(s.clone()),
         StringMatcher::Suffix(s) => CompiledStringMatcher::Suffix(s.clone()),
-        StringMatcher::Regex(s) => Regex::new(s).map(CompiledStringMatcher::Regex).unwrap_or(CompiledStringMatcher::Invalid),
-        StringMatcher::Glob(s) => Pattern::new(s).map(CompiledStringMatcher::Glob).unwrap_or(CompiledStringMatcher::Invalid),
+        StringMatcher::Regex(s) => Regex::new(s)
+            .map(CompiledStringMatcher::Regex)
+            .unwrap_or(CompiledStringMatcher::Invalid),
+        StringMatcher::Glob(s) => Pattern::new(s)
+            .map(CompiledStringMatcher::Glob)
+            .unwrap_or(CompiledStringMatcher::Invalid),
     }
 }

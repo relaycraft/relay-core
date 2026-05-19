@@ -5,19 +5,18 @@ use tokio::sync::broadcast;
 use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
 use relay_core_runtime::services::{
-    FlowReadService, FlowEventHub, RuleService, InterceptService,
-    AuditService, RuntimeStatusService, PolicyService, ScriptService,
+    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
+    RuntimeStatusService, ScriptService,
 };
 use rmcp::{
-    ServerHandler,
+    ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Implementation,
-        ListResourcesResult, ListResourceTemplatesResult, ListToolsResult,
-        PaginatedRequestParams, RawResourceTemplate, ReadResourceRequestParams,
-        ReadResourceResult, ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, Implementation, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResourceTemplate,
+        ReadResourceRequestParams, ReadResourceResult, ResourceUpdatedNotificationParam,
+        ServerCapabilities, ServerInfo,
     },
     service::{NotificationContext, RequestContext, RoleServer},
-    ErrorData,
 };
 
 use crate::resources;
@@ -97,25 +96,26 @@ impl ProbeServer {
     }
 
     /// 启动实时订阅循环：监听 broadcast，在有新流量时通知 MCP 客户端刷新资源。
-    pub async fn run_subscription_loop(
-        ctx: Arc<ProbeContext>,
-        peer: rmcp::Peer<RoleServer>,
-    ) {
+    pub async fn run_subscription_loop(ctx: Arc<ProbeContext>, peer: rmcp::Peer<RoleServer>) {
         let mut rx: broadcast::Receiver<FlowUpdate> = ctx.flow_events.subscribe_flow_updates();
         loop {
             match rx.recv().await {
                 Ok(FlowUpdate::Full(flow)) => {
                     let flow_id = flow.id.to_string();
-                    let _ = peer.notify_resource_updated(
-                        ResourceUpdatedNotificationParam::new(format!("flows://{}", flow_id))
-                    ).await;
+                    let _ =
+                        peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(
+                            format!("flows://{}", flow_id),
+                        ))
+                        .await;
                     let _ = peer.notify_resource_list_changed().await;
                 }
-                Ok(FlowUpdate::WebSocketMessage { flow_id, .. }) |
-                Ok(FlowUpdate::HttpBody { flow_id, .. }) => {
-                    let _ = peer.notify_resource_updated(
-                        ResourceUpdatedNotificationParam::new(format!("flows://{}", flow_id))
-                    ).await;
+                Ok(FlowUpdate::WebSocketMessage { flow_id, .. })
+                | Ok(FlowUpdate::HttpBody { flow_id, .. }) => {
+                    let _ =
+                        peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(
+                            format!("flows://{}", flow_id),
+                        ))
+                        .await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!("probe subscriber lagged, dropped {} updates", n);
@@ -134,7 +134,10 @@ impl ServerHandler for ProbeServer {
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(Implementation::new("relay-core-probe", env!("CARGO_PKG_VERSION")))
+        .with_server_info(Implementation::new(
+            "relay-core-probe",
+            env!("CARGO_PKG_VERSION"),
+        ))
         .with_instructions(format!(
             "relay-core traffic proxy probe (tool-contract-version: {}). \
             Use tools to search/inspect flows, manage interception rules, \
@@ -155,7 +158,9 @@ impl ServerHandler for ProbeServer {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(resources::static_resource_list()))
+        Ok(ListResourcesResult::with_all_items(
+            resources::static_resource_list(),
+        ))
     }
 
     async fn list_resource_templates(
@@ -177,7 +182,8 @@ impl ServerHandler for ProbeServer {
         request: ReadResourceRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        let contents = resources::read_resource(&self.ctx, &request.uri).await
+        let contents = resources::read_resource(&self.ctx, &request.uri)
+            .await
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(ReadResourceResult::new(contents))
     }
@@ -196,10 +202,12 @@ impl ServerHandler for ProbeServer {
         _ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         use serde_json::Value;
-        let args = request.arguments
+        let args = request
+            .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
-        let content = tools::dispatch(&self.ctx, &request.name, args).await
+        let content = tools::dispatch(&self.ctx, &request.name, args)
+            .await
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(CallToolResult::success(content))
     }

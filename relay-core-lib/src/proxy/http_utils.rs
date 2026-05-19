@@ -1,24 +1,24 @@
-use std::net::SocketAddr;
-use hyper::{Response, Request, StatusCode};
-use hyper::body::Bytes;
-use hyper::header::{HeaderName, HeaderValue};
-use http_body_util::{Full, BodyExt};
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_rustls::HttpsConnector;
-use relay_core_api::flow::{
-    BodyData, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, TransportProtocol,
-    WebSocketLayer, Cookie,
-};
-use relay_core_api::policy::ProxyPolicy;
 use crate::capture::loop_detection::LoopDetector;
-use uuid::Uuid;
+use crate::interceptor::HttpBody;
+use crate::proxy::body_codec::process_body;
 use chrono::Utc;
-use url::Url;
 use cookie::Cookie as CookieCrate;
 use data_encoding::BASE64;
-use crate::proxy::body_codec::process_body;
-use crate::interceptor::HttpBody;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{HeaderName, HeaderValue};
+use hyper::{Request, Response, StatusCode};
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
+use relay_core_api::flow::{
+    BodyData, Cookie, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
+    TransportProtocol, WebSocketLayer,
+};
+use relay_core_api::policy::ProxyPolicy;
+use std::net::SocketAddr;
+use url::Url;
+use uuid::Uuid;
 
 pub type HttpsClient = Client<HttpsConnector<HttpConnector>, HttpBody>;
 
@@ -35,20 +35,22 @@ pub struct RequestMeta {
 pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
     let method = req.method().to_string();
     let mut url_str = req.uri().to_string();
-    
+
     // Attempt to construct absolute URL if relative
     if Url::parse(&url_str).is_err()
-        && let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok()) {
-             let scheme = if is_mitm { "https" } else { "http" };
-             let new_url = format!("{}://{}{}", scheme, host, url_str);
-             if Url::parse(&new_url).is_ok() {
-                 url_str = new_url;
-             }
+        && let Some(host) = req.headers().get("Host").and_then(|v| v.to_str().ok())
+    {
+        let scheme = if is_mitm { "https" } else { "http" };
+        let new_url = format!("{}://{}{}", scheme, host, url_str);
+        if Url::parse(&new_url).is_ok() {
+            url_str = new_url;
         }
+    }
 
     let version = format!("{:?}", req.version());
-    
-    let headers: Vec<(String, String)> = req.headers()
+
+    let headers: Vec<(String, String)> = req
+        .headers()
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
@@ -61,19 +63,20 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
 
     let mut cookies = Vec::new();
     if let Some(cookie_header) = req.headers().get(hyper::header::COOKIE)
-        && let Ok(cookie_str) = cookie_header.to_str() {
-             for c in CookieCrate::split_parse(cookie_str).flatten() {
-                 cookies.push(Cookie {
-                     name: c.name().to_string(),
-                     value: c.value().to_string(),
-                     path: None,
-                     domain: None,
-                     expires: None,
-                     http_only: None,
-                     secure: None,
-                 });
-             }
+        && let Ok(cookie_str) = cookie_header.to_str()
+    {
+        for c in CookieCrate::split_parse(cookie_str).flatten() {
+            cookies.push(Cookie {
+                name: c.name().to_string(),
+                value: c.value().to_string(),
+                path: None,
+                domain: None,
+                expires: None,
+                http_only: None,
+                secure: None,
+            });
         }
+    }
 
     RequestMeta {
         method,
@@ -106,7 +109,7 @@ pub fn create_initial_flow(
 ) -> Flow {
     let flow_id = Uuid::new_v4();
     let start_time = Utc::now();
-    
+
     let network_info = NetworkInfo {
         client_ip: client_addr.ip().to_string(),
         client_port: client_addr.port(),
@@ -125,7 +128,7 @@ pub fn create_initial_flow(
         headers: meta.headers,
         cookies: meta.cookies,
         query: meta.query,
-        body: req_body, 
+        body: req_body,
     };
 
     let mut flow = if is_websocket {
@@ -143,10 +146,12 @@ pub fn create_initial_flow(
                     headers: vec![],
                     cookies: vec![],
                     body: None,
-                    timing: relay_core_api::flow::ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                    timing: relay_core_api::flow::ResponseTiming {
+                        time_to_first_byte: None,
+                        time_to_last_byte: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
+                    },
                 },
                 messages: vec![],
                 closed: false,
@@ -181,26 +186,42 @@ pub fn create_error_response(status: StatusCode, message: impl Into<Bytes>) -> R
     Response::builder()
         .status(status)
         .body(Full::new(message.into()).map_err(|e| e.into()).boxed())
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("Internal Error")).map_err(|e| e.into()).boxed()))
+        .unwrap_or_else(|_| {
+            Response::new(
+                Full::new(Bytes::from("Internal Error"))
+                    .map_err(|e| e.into())
+                    .boxed(),
+            )
+        })
 }
 
 pub fn mock_to_response(mock: HttpResponse) -> Response<HttpBody> {
-     let mut builder = Response::builder()
-        .status(StatusCode::from_u16(mock.status).unwrap_or(StatusCode::OK));
-        
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(mock.status).unwrap_or(StatusCode::OK));
+
     for (k, v) in mock.headers {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(&v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(&v),
+        ) {
             builder = builder.header(name, val);
         }
     }
-    
+
     let body = if let Some(b) = mock.body {
         Bytes::from(b.content)
     } else {
         Bytes::new()
     };
-    
-    builder.body(Full::new(body).map_err(|e| e.into()).boxed()).unwrap_or_else(|_| create_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build mock response"))
+
+    builder
+        .body(Full::new(body).map_err(|e| e.into()).boxed())
+        .unwrap_or_else(|_| {
+            create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build mock response",
+            )
+        })
 }
 
 #[allow(clippy::result_large_err)]
@@ -214,42 +235,48 @@ pub fn build_forward_request(
     let current_req = if let Layer::Http(http) = &flow.layer {
         &http.request
     } else {
-        return Err(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Invalid Flow Layer State"));
+        return Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid Flow Layer State",
+        ));
     };
 
-    let mut forward_req_builder = Request::builder()
-        .method(current_req.method.as_str());
+    let mut forward_req_builder = Request::builder().method(current_req.method.as_str());
 
     // Determine upstream URI
     let mut target_url = current_req.url.clone();
-    
+
     // Transparent Proxy Routing Logic
     if policy.transparent_enabled
-        && let Some(addr) = target_addr {
-            flow.tags.push("transparent".to_string());
-            
-            // Update Flow Network Info
-            flow.network.server_ip = addr.ip().to_string();
-            flow.network.server_port = addr.port();
+        && let Some(addr) = target_addr
+    {
+        flow.tags.push("transparent".to_string());
 
-            // Loop Detection
-            if loop_detector.would_loop(addr) {
-                if let Layer::Http(http) = &mut flow.layer {
-                    http.error = Some("Loop Detected".to_string());
-                }
-                return Err(create_error_response(StatusCode::LOOP_DETECTED, "Loop Detected"));
-            }
+        // Update Flow Network Info
+        flow.network.server_ip = addr.ip().to_string();
+        flow.network.server_port = addr.port();
 
-            // Rewrite URI to use target IP
-            if target_url.set_ip_host(addr.ip()).is_ok() {
-                 target_url.set_port(Some(addr.port())).ok();
+        // Loop Detection
+        if loop_detector.would_loop(addr) {
+            if let Layer::Http(http) = &mut flow.layer {
+                http.error = Some("Loop Detected".to_string());
             }
-
-            // Update scheme if MITM
-            if flow.network.tls && target_url.scheme() == "http" {
-                target_url.set_scheme("https").ok();
-            }
+            return Err(create_error_response(
+                StatusCode::LOOP_DETECTED,
+                "Loop Detected",
+            ));
         }
+
+        // Rewrite URI to use target IP
+        if target_url.set_ip_host(addr.ip()).is_ok() {
+            target_url.set_port(Some(addr.port())).ok();
+        }
+
+        // Update scheme if MITM
+        if flow.network.tls && target_url.scheme() == "http" {
+            target_url.set_scheme("https").ok();
+        }
+    }
 
     forward_req_builder = forward_req_builder.uri(target_url.as_str());
 
@@ -259,14 +286,20 @@ pub fn build_forward_request(
             continue;
         }
 
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             forward_req_builder = forward_req_builder.header(name, val);
         }
     }
 
     match forward_req_builder.body(body) {
         Ok(req) => Ok(req),
-        Err(e) => Err(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build forward request: {}", e))),
+        Err(e) => Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to build forward request: {}", e),
+        )),
     }
 }
 
@@ -280,20 +313,22 @@ pub fn update_flow_with_response_headers(
     for (k, v) in headers.iter() {
         if k == hyper::header::SET_COOKIE
             && let Ok(v_str) = v.to_str()
-                && let Ok(c) = CookieCrate::parse(v_str) {
-                    response_cookies.push(Cookie {
-                        name: c.name().to_string(),
-                        value: c.value().to_string(),
-                        path: c.path().map(|s| s.to_string()),
-                        domain: c.domain().map(|s| s.to_string()),
-                        expires: c.expires().map(|e| format!("{:?}", e)),
-                        http_only: c.http_only(),
-                        secure: c.secure(),
-                    });
-                }
+            && let Ok(c) = CookieCrate::parse(v_str)
+        {
+            response_cookies.push(Cookie {
+                name: c.name().to_string(),
+                value: c.value().to_string(),
+                path: c.path().map(|s| s.to_string()),
+                domain: c.domain().map(|s| s.to_string()),
+                expires: c.expires().map(|e| format!("{:?}", e)),
+                http_only: c.http_only(),
+                secure: c.secure(),
+            });
+        }
     }
 
-    let resp_headers_vec: Vec<(String, String)> = headers.iter()
+    let resp_headers_vec: Vec<(String, String)> = headers
+        .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
@@ -315,26 +350,27 @@ pub fn update_flow_with_response_headers(
     match &mut flow.layer {
         Layer::Http(http) => {
             http.response = Some(http_response);
-        },
+        }
         Layer::WebSocket(ws) => {
             ws.handshake_response = http_response;
-        },
+        }
         _ => {}
     }
 }
 
-pub fn update_flow_with_response_body(
-    flow: &mut Flow,
-    body_bytes: Bytes,
-) {
+pub fn update_flow_with_response_body(flow: &mut Flow, body_bytes: Bytes) {
     let headers = match &flow.layer {
-        Layer::Http(http) => http.response.as_ref().map(|r| r.headers.clone()).unwrap_or_default(),
+        Layer::Http(http) => http
+            .response
+            .as_ref()
+            .map(|r| r.headers.clone())
+            .unwrap_or_default(),
         Layer::WebSocket(ws) => ws.handshake_response.headers.clone(),
         _ => Vec::new(),
     };
 
     let (resp_encoding, resp_content) = process_body(&body_bytes, &headers);
-    
+
     let body_data = BodyData {
         encoding: resp_encoding,
         content: resp_content,
@@ -346,10 +382,10 @@ pub fn update_flow_with_response_body(
             if let Some(resp) = &mut http.response {
                 resp.body = Some(body_data);
             }
-        },
+        }
         Layer::WebSocket(ws) => {
             ws.handshake_response.body = Some(body_data);
-        },
+        }
         _ => {}
     }
 }
@@ -365,7 +401,11 @@ pub fn update_flow_with_response(
     update_flow_with_response_body(flow, body_bytes);
 }
 
-pub fn build_client_response_from_flow(flow: &Flow, default_version: hyper::Version, strict_mode: bool) -> Result<Response<Full<Bytes>>, String> {
+pub fn build_client_response_from_flow(
+    flow: &Flow,
+    default_version: hyper::Version,
+    strict_mode: bool,
+) -> Result<Response<Full<Bytes>>, String> {
     if let Layer::Http(http) = &flow.layer {
         if let Some(response) = &http.response {
             let status = match StatusCode::from_u16(response.status) {
@@ -378,19 +418,21 @@ pub fn build_client_response_from_flow(flow: &Flow, default_version: hyper::Vers
                 }
             };
 
-            let mut builder = Response::builder()
-                .status(status)
-                .version(default_version); // TODO: Parse version from flow string if needed
+            let mut builder = Response::builder().status(status).version(default_version); // TODO: Parse version from flow string if needed
 
             for (k, v) in &response.headers {
                 // Filter out transport-level headers that might conflict with the new body
-                if k.eq_ignore_ascii_case("content-length") 
-                    || k.eq_ignore_ascii_case("transfer-encoding") 
-                    || k.eq_ignore_ascii_case("connection") {
+                if k.eq_ignore_ascii_case("content-length")
+                    || k.eq_ignore_ascii_case("transfer-encoding")
+                    || k.eq_ignore_ascii_case("connection")
+                {
                     continue;
                 }
 
-                if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                if let (Ok(name), Ok(val)) = (
+                    HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(v),
+                ) {
                     builder = builder.header(name, val);
                 } else if strict_mode {
                     return Err(format!("Invalid header: {}: {}", k, v));
@@ -398,25 +440,26 @@ pub fn build_client_response_from_flow(flow: &Flow, default_version: hyper::Vers
             }
 
             let body_bytes = if let Some(b) = &response.body {
-                 if b.encoding == "base64" {
+                if b.encoding == "base64" {
                     match BASE64.decode(b.content.as_bytes()) {
                         Ok(bytes) => Bytes::from(bytes),
                         Err(_e) => {
                             // Fallback
-                            Bytes::from(b.content.clone()) 
+                            Bytes::from(b.content.clone())
                         }
                     }
-                 } else {
+                } else {
                     Bytes::from(b.content.clone())
-                 }
+                }
             } else {
                 Bytes::new()
             };
 
-            builder.body(Full::new(body_bytes))
+            builder
+                .body(Full::new(body_bytes))
                 .map_err(|e| format!("Failed to build response: {}", e))
         } else {
-             Err("No response in flow".to_string())
+            Err("No response in flow".to_string())
         }
     } else {
         Err("Not HTTP layer".to_string())
@@ -476,8 +519,8 @@ mod tests {
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
-            connect_time_ms: None,
-            ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
                 }),
                 error: None,
@@ -517,7 +560,10 @@ mod tests {
             .expect("response should build");
         assert_eq!(resp.version(), Version::HTTP_11);
         assert_eq!(resp.status(), StatusCode::CREATED);
-        assert_eq!(resp.headers().get("x-test").and_then(|v| v.to_str().ok()), Some("1"));
+        assert_eq!(
+            resp.headers().get("x-test").and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
         assert!(
             resp.headers().get("content-length").is_none(),
             "content-length should be stripped from forwarded mock response"

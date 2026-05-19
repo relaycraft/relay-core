@@ -1,16 +1,19 @@
 use crate::args::TransparentAction;
 #[cfg(target_os = "macos")]
-use std::process::Command;
-#[cfg(target_os = "macos")]
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use std::io::Write;
-
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
     match action {
-        TransparentAction::Generate { port, output, interface } => {
+        TransparentAction::Generate {
+            port,
+            output,
+            interface,
+        } => {
             let config = generate_pf_config(port, &interface);
             if let Some(path) = output {
                 std::fs::write(&path, &config)
@@ -27,34 +30,35 @@ pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
             }
 
             let config = generate_pf_config(port, &interface);
-            
+
             // Write config to temporary file
             let mut temp = tempfile::Builder::new()
                 .prefix("relay_pf_")
                 .suffix(".conf")
                 .tempfile()?;
-            
+
             temp.write_all(config.as_bytes())?;
             let temp_path = temp.path().to_owned();
-            
+
             // Load rules
             // pfctl -a relaycraft -f /tmp/relay_pf_XXXX.conf
             let status = Command::new("pfctl")
                 .args(["-a", "relaycraft", "-f", temp_path.to_str().unwrap()])
                 .status()
                 .context("Failed to execute pfctl")?;
-            
+
             if !status.success() {
                 anyhow::bail!("pfctl failed to load rules");
             }
-            
+
             // Enable PF if not enabled
             // pfctl -e
-            let _ = Command::new("pfctl")
-                .arg("-e")
-                .output(); // Ignore error if already enabled
+            let _ = Command::new("pfctl").arg("-e").output(); // Ignore error if already enabled
 
-            println!("Transparent proxy rules loaded (redirecting TCP to port {} on {}).", port, interface);
+            println!(
+                "Transparent proxy rules loaded (redirecting TCP to port {} on {}).",
+                port, interface
+            );
         }
         TransparentAction::Unload => {
             if !is_root() {
@@ -67,8 +71,8 @@ pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
                 .args(["-a", "relaycraft", "-F", "all"])
                 .status()
                 .context("Failed to execute pfctl")?;
-            
-             if !status.success() {
+
+            if !status.success() {
                 anyhow::bail!("pfctl failed to unload rules");
             }
             println!("Transparent proxy rules unloaded.");
@@ -80,7 +84,7 @@ pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
                 .args(["-a", "relaycraft", "-s", "rules"])
                 .output()
                 .context("Failed to execute pfctl")?;
-            
+
             if output.status.success() {
                 let rules = String::from_utf8_lossy(&output.stdout);
                 if rules.trim().is_empty() {
@@ -90,7 +94,7 @@ pub fn handle_transparent_command(action: TransparentAction) -> Result<()> {
                     println!("{}", rules);
                 }
             } else {
-                 println!("Failed to check status. Are you root?");
+                println!("Failed to check status. Are you root?");
             }
         }
     }
@@ -118,8 +122,6 @@ fn is_root() -> bool {
     Command::new("id")
         .arg("-u")
         .output()
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout).trim() == "0"
-        })
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim() == "0")
         .unwrap_or(false)
 }

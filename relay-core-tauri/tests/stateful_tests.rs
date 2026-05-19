@@ -1,14 +1,17 @@
+use chrono::Utc;
 use relay_core_api::flow::{
     Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
     TransportProtocol, WebSocketLayer,
 };
-use relay_core_lib::rule::model::{Rule, RuleStage, Action, Filter, RuleTermination, RuleOutcome, TerminalReason, RuleTraceSummary, StringMatcher};
 use relay_core_lib::rule::engine::RuleEngine;
 use relay_core_lib::rule::engine::state::InMemoryRuleStateStore;
+use relay_core_lib::rule::model::{
+    Action, Filter, Rule, RuleOutcome, RuleStage, RuleTermination, RuleTraceSummary, StringMatcher,
+    TerminalReason,
+};
+use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
-use std::collections::HashMap;
-use chrono::Utc;
 use uuid::Uuid;
 
 fn create_test_flow(url: &str) -> Flow {
@@ -67,7 +70,7 @@ fn create_ws_flow(url: &str) -> Flow {
                 time_to_first_byte: None,
                 time_to_last_byte: None,
                 connect_time_ms: None,
-                ssl_time_ms: None
+                ssl_time_ms: None,
             },
         },
         messages: vec![],
@@ -90,13 +93,11 @@ async fn test_rate_limit_action() {
         priority: 100,
         termination: RuleTermination::Continue,
         filter: Filter::All, // Match everything
-        actions: vec![
-            Action::RateLimit {
-                key: "ip:{{client.ip}}".to_string(), // Spec-compliant variable syntax
-                limit: 2,
-                window_ms: 1000,
-            }
-        ],
+        actions: vec![Action::RateLimit {
+            key: "ip:{{client.ip}}".to_string(), // Spec-compliant variable syntax
+            limit: 2,
+            window_ms: 1000,
+        }],
         constraints: None,
     };
 
@@ -105,7 +106,7 @@ async fn test_rate_limit_action() {
 
     // 4. Execution Loop
     let mut flow = create_test_flow("http://example.com");
-    
+
     // First request - should pass (count = 1)
     let ctx1 = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
     println!("Ctx1 summary: {:?}", ctx1.summary);
@@ -123,15 +124,15 @@ async fn test_rate_limit_action() {
     // Third request - should fail (count = 3 > 2)
     let ctx3 = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
     println!("Ctx3 summary: {:?}", ctx3.summary);
-    
+
     match ctx3.summary {
         RuleTraceSummary::Terminated { rule_id, reason } => {
             assert_eq!(rule_id, "rate-limit-rule");
             match reason {
-                TerminalReason::RateLimited => {}, // OK
+                TerminalReason::RateLimited => {} // OK
                 _ => panic!("Wrong terminal reason: {:?}", reason),
             }
-        },
+        }
         _ => panic!("Third request should be terminated, got {:?}", ctx3.summary),
     }
 }
@@ -481,7 +482,10 @@ async fn test_map_remote_websocket_preserve_host_keeps_handshake_host() {
     let Layer::WebSocket(ws) = &flow.layer else {
         panic!("expected websocket flow");
     };
-    assert_eq!(ws.handshake_request.url.as_str(), "wss://mirror.example.com/chat");
+    assert_eq!(
+        ws.handshake_request.url.as_str(),
+        "wss://mirror.example.com/chat"
+    );
     let host = ws
         .handshake_request
         .headers
@@ -715,7 +719,10 @@ async fn test_map_remote_with_stop_prevents_lower_priority_rule_execution() {
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("X-Should-Not-Exist"));
-    assert!(!blocked, "lower-priority rule should not execute after Stop");
+    assert!(
+        !blocked,
+        "lower-priority rule should not execute after Stop"
+    );
 }
 
 #[tokio::test]
@@ -1107,7 +1114,10 @@ async fn test_map_remote_http_preserve_host_does_not_insert_when_missing() {
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("host"));
-    assert!(!has_host, "preserve_host=true should not inject missing Host");
+    assert!(
+        !has_host,
+        "preserve_host=true should not inject missing Host"
+    );
 }
 
 #[tokio::test]
@@ -1144,5 +1154,8 @@ async fn test_map_remote_websocket_preserve_host_does_not_insert_when_missing() 
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("host"));
-    assert!(!has_host, "preserve_host=true should not inject missing Host");
+    assert!(
+        !has_host,
+        "preserve_host=true should not inject missing Host"
+    );
 }

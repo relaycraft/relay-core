@@ -43,8 +43,8 @@
 /// require a version bump — consumers must ignore unknown tools/params.
 pub const TOOL_CONTRACT_VERSION: u32 = 1;
 
+pub mod resources;
 pub mod server;
 pub mod tools;
-pub mod resources;
 
-pub use server::{ProbeServer, ProbeConfig, ProbeTransport};
+pub use server::{ProbeConfig, ProbeServer, ProbeTransport};

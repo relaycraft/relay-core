@@ -40,7 +40,7 @@ pub enum Commands {
         #[cfg(feature = "script")]
         #[arg(long)]
         script: Option<PathBuf>,
-        
+
         /// Enable script file watching
         #[cfg(feature = "script")]
         #[arg(long)]
@@ -109,7 +109,7 @@ pub enum Commands {
     Intercept {
         #[command(subcommand)]
         action: InterceptAction,
-        
+
         /// Control API URL
         #[arg(long, default_value = "http://127.0.0.1:8081")]
         control_url: String,
@@ -129,7 +129,7 @@ pub enum Commands {
     Proxy {
         #[command(subcommand)]
         action: TransparentAction,
-    }
+    },
 }
 
 #[cfg(any(feature = "transparent-linux", feature = "transparent-macos"))]
@@ -140,7 +140,7 @@ pub enum TransparentAction {
         /// Proxy port
         #[arg(long, default_value = "8080")]
         port: u16,
-        
+
         /// Output file path (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -182,7 +182,7 @@ pub enum RulesAction {
     Print {
         /// Path to rules file
         file: PathBuf,
-        
+
         /// Output format (json, yaml)
         #[arg(long, default_value = "yaml")]
         format: String,
@@ -191,11 +191,11 @@ pub enum RulesAction {
     Test {
         /// Path to rules file
         file: PathBuf,
-        
+
         /// Path to sample flow JSON
         #[arg(long)]
         flow: PathBuf,
-    }
+    },
 }
 
 #[cfg(feature = "script")]
@@ -210,13 +210,12 @@ pub enum ScriptsAction {
     RunOnce {
         /// Path to script file
         file: PathBuf,
-        
+
         /// Path to sample flow JSON
         #[arg(long)]
         flow: PathBuf,
-    }
+    },
 }
-
 
 #[derive(Subcommand)]
 pub enum CaAction {
@@ -229,17 +228,17 @@ pub enum CaAction {
         /// Path to CA key
         #[arg(long, default_value = "ca_key.pem")]
         key: PathBuf,
-        
+
         /// Force regenerate even if exists
         #[arg(long)]
         force: bool,
     },
     /// Export CA certificate
     Export {
-         /// Path to CA certificate
+        /// Path to CA certificate
         #[arg(long, default_value = "ca_cert.pem")]
         cert: PathBuf,
-        
+
         /// Output file path (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -261,5 +260,5 @@ pub enum CaAction {
         /// Path to CA certificate
         #[arg(long, default_value = "ca_cert.pem")]
         cert: PathBuf,
-    }
+    },
 }

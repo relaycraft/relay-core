@@ -10,10 +10,9 @@ const COMMANDS: &[&str] = &[
     "set_intercept_rule",
     "load_script",
     "get_ca_cert_path",
-    "install_ca_cert"
+    "install_ca_cert",
 ];
 
 fn main() {
-    tauri_plugin::Builder::new(COMMANDS)
-        .build();
+    tauri_plugin::Builder::new(COMMANDS).build();
 }

@@ -1,5 +1,5 @@
 use crate::flow::{Flow, Layer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Convert a Flow to a HAR 1.2 entry.
 /// Used by both the HTTP API and MCP probe for consistent output.
@@ -10,14 +10,25 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
         _ => return json!({ "request": {}, "response": {}, "timings": {} }),
     };
 
-    let req_headers: Vec<Value> = request.headers.iter()
-        .map(|(k, v)| json!({ "name": k, "value": v })).collect();
-    let req_query: Vec<Value> = request.query.iter()
-        .map(|(k, v)| json!({ "name": k, "value": v })).collect();
-    let req_cookies: Vec<Value> = request.cookies.iter()
-        .map(|c| json!({ "name": c.name, "value": c.value })).collect();
+    let req_headers: Vec<Value> = request
+        .headers
+        .iter()
+        .map(|(k, v)| json!({ "name": k, "value": v }))
+        .collect();
+    let req_query: Vec<Value> = request
+        .query
+        .iter()
+        .map(|(k, v)| json!({ "name": k, "value": v }))
+        .collect();
+    let req_cookies: Vec<Value> = request
+        .cookies
+        .iter()
+        .map(|c| json!({ "name": c.name, "value": c.value }))
+        .collect();
 
-    let req_content_type = request.headers.iter()
+    let req_content_type = request
+        .headers
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
         .map(|(_, v)| v.clone());
 
@@ -32,27 +43,44 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
         "bodySize": request.body.as_ref().map(|b| b.size).unwrap_or(0),
     });
     if let Some(body) = &request.body
-        && !body.content.is_empty() {
-            req_json["postData"] = json!({
-                "mimeType": req_content_type.unwrap_or_default(),
-                "text": body.content,
-            });
+        && !body.content.is_empty()
+    {
+        req_json["postData"] = json!({
+            "mimeType": req_content_type.unwrap_or_default(),
+            "text": body.content,
+        });
     }
 
-    let resp_headers: Vec<Value> = response.map(|r| r.headers.iter()
-        .map(|(k, v)| json!({ "name": k, "value": v })).collect()).unwrap_or_default();
-    let resp_cookies: Vec<Value> = response.map(|r| r.cookies.iter()
-        .map(|c| json!({ "name": c.name, "value": c.value })).collect()).unwrap_or_default();
+    let resp_headers: Vec<Value> = response
+        .map(|r| {
+            r.headers
+                .iter()
+                .map(|(k, v)| json!({ "name": k, "value": v }))
+                .collect()
+        })
+        .unwrap_or_default();
+    let resp_cookies: Vec<Value> = response
+        .map(|r| {
+            r.cookies
+                .iter()
+                .map(|c| json!({ "name": c.name, "value": c.value }))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut resp_json = json!({});
     let mut timings = json!({ "send": 0, "wait": 0, "receive": 0, "connect": -1, "ssl": -1, "dns": -1, "blocked": -1 });
 
     if let Some(resp) = response {
-        let resp_content_type = resp.headers.iter()
+        let resp_content_type = resp
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
-        let redirect_url = resp.headers.iter()
+        let redirect_url = resp
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("location"))
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
@@ -77,11 +105,16 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
         let ttlbs = resp.timing.time_to_last_byte.unwrap_or(0);
         let wait = resp.timing.time_to_first_byte.unwrap_or(0);
         timings["receive"] = json!(ttlbs.saturating_sub(wait));
-        if let Some(c) = resp.timing.connect_time_ms { timings["connect"] = json!(c); }
-        if let Some(s) = resp.timing.ssl_time_ms { timings["ssl"] = json!(s); }
+        if let Some(c) = resp.timing.connect_time_ms {
+            timings["connect"] = json!(c);
+        }
+        if let Some(s) = resp.timing.ssl_time_ms {
+            timings["ssl"] = json!(s);
+        }
     }
 
-    let total_time = response.map(|r| r.timing.time_to_last_byte.unwrap_or(0))
+    let total_time = response
+        .map(|r| r.timing.time_to_last_byte.unwrap_or(0))
         .unwrap_or(0);
 
     json!({
@@ -100,7 +133,13 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
     })
 }
 
-fn har_headers_size(headers: &[(String, String)], method: &str, path: &str, query: Option<&str>, version: &str) -> u64 {
+fn har_headers_size(
+    headers: &[(String, String)],
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    version: &str,
+) -> u64 {
     let start_line = if method.is_empty() {
         version.len() + 1 + 3 + 1 + 3 + 2
     } else {

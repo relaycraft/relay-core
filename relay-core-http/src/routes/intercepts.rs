@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use crate::server::HttpApiContext;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
 };
 use relay_core_api::modification::FlowModification;
-use relay_core_runtime::{CoreInterceptSnapshot, audit::AuditActor};
 use relay_core_runtime::rule::InterceptRuleConfig;
-use crate::server::HttpApiContext;
+use relay_core_runtime::{CoreInterceptSnapshot, audit::AuditActor};
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn router(ctx: Arc<HttpApiContext>) -> Router {
@@ -92,9 +92,13 @@ async fn resume_flow(
     Path(key): Path<String>,
     Json(req): Json<ResumeRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let ResumeRequest { action, modifications } = req;
+    let ResumeRequest {
+        action,
+        modifications,
+    } = req;
     let mods = modifications.into_option();
-    ctx.intercepts.resolve_intercept_with_modifications_from(AuditActor::Http, key.clone(), &action, mods)
+    ctx.intercepts
+        .resolve_intercept_with_modifications_from(AuditActor::Http, key.clone(), &action, mods)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 

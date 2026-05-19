@@ -21,66 +21,62 @@ pub fn matches(filter: &CompiledFilter, flow: &Flow) -> bool {
         CompiledFilter::TransparentMode(enabled) => {
             flow.tags.contains(&"transparent".to_string()) == *enabled
         }
-        CompiledFilter::Url(matcher) => {
-            match &flow.layer {
-                Layer::Http(http) => match_string(matcher, http.request.url.as_str()),
-                Layer::WebSocket(ws) => match_string(matcher, ws.handshake_request.url.as_str()),
-                _ => false,
+        CompiledFilter::Url(matcher) => match &flow.layer {
+            Layer::Http(http) => match_string(matcher, http.request.url.as_str()),
+            Layer::WebSocket(ws) => match_string(matcher, ws.handshake_request.url.as_str()),
+            _ => false,
+        },
+        CompiledFilter::Host(matcher) => match &flow.layer {
+            Layer::Http(http) => http
+                .request
+                .url
+                .host_str()
+                .map(|h| match_string(matcher, h))
+                .unwrap_or(false),
+            Layer::WebSocket(ws) => ws
+                .handshake_request
+                .url
+                .host_str()
+                .map(|h| match_string(matcher, h))
+                .unwrap_or(false),
+            _ => false,
+        },
+        CompiledFilter::Path(matcher) => match &flow.layer {
+            Layer::Http(http) => match_string(matcher, http.request.url.path()),
+            Layer::WebSocket(ws) => match_string(matcher, ws.handshake_request.url.path()),
+            _ => false,
+        },
+        CompiledFilter::Method(matcher) => match &flow.layer {
+            Layer::Http(http) => match_string(matcher, &http.request.method),
+            Layer::WebSocket(ws) => match_string(matcher, &ws.handshake_request.method),
+            _ => false,
+        },
+        CompiledFilter::RequestHeader { name, value } => match &flow.layer {
+            Layer::Http(http) => match_header(&http.request.headers, name, value),
+            Layer::WebSocket(ws) => match_header(&ws.handshake_request.headers, name, value),
+            _ => false,
+        },
+        CompiledFilter::ResponseHeader { name, value } => match &flow.layer {
+            Layer::Http(http) => {
+                if let Some(res) = &http.response {
+                    match_header(&res.headers, name, value)
+                } else {
+                    false
+                }
             }
-        }
-        CompiledFilter::Host(matcher) => {
-            match &flow.layer {
-                Layer::Http(http) => http.request.url.host_str().map(|h| match_string(matcher, h)).unwrap_or(false),
-                Layer::WebSocket(ws) => ws.handshake_request.url.host_str().map(|h| match_string(matcher, h)).unwrap_or(false),
-                _ => false,
+            Layer::WebSocket(ws) => match_header(&ws.handshake_response.headers, name, value),
+            _ => false,
+        },
+        CompiledFilter::StatusCode(code) => match &flow.layer {
+            Layer::Http(http) => {
+                if let Some(res) = &http.response {
+                    res.status == *code
+                } else {
+                    false
+                }
             }
-        }
-        CompiledFilter::Path(matcher) => {
-            match &flow.layer {
-                Layer::Http(http) => match_string(matcher, http.request.url.path()),
-                Layer::WebSocket(ws) => match_string(matcher, ws.handshake_request.url.path()),
-                _ => false,
-            }
-        }
-        CompiledFilter::Method(matcher) => {
-            match &flow.layer {
-                Layer::Http(http) => match_string(matcher, &http.request.method),
-                Layer::WebSocket(ws) => match_string(matcher, &ws.handshake_request.method),
-                _ => false,
-            }
-        }
-        CompiledFilter::RequestHeader { name, value } => {
-            match &flow.layer {
-                Layer::Http(http) => match_header(&http.request.headers, name, value),
-                Layer::WebSocket(ws) => match_header(&ws.handshake_request.headers, name, value),
-                _ => false,
-            }
-        }
-        CompiledFilter::ResponseHeader { name, value } => {
-            match &flow.layer {
-                Layer::Http(http) => {
-                    if let Some(res) = &http.response {
-                        match_header(&res.headers, name, value)
-                    } else {
-                        false
-                    }
-                },
-                Layer::WebSocket(ws) => match_header(&ws.handshake_response.headers, name, value),
-                _ => false,
-            }
-        }
-        CompiledFilter::StatusCode(code) => {
-            match &flow.layer {
-                Layer::Http(http) => {
-                    if let Some(res) = &http.response {
-                        res.status == *code
-                    } else {
-                        false
-                    }
-                },
-                Layer::WebSocket(ws) => ws.handshake_response.status == *code,
-                _ => false,
-            }
+            Layer::WebSocket(ws) => ws.handshake_response.status == *code,
+            _ => false,
         },
         CompiledFilter::ResponseBody(matcher) => {
             if let Layer::Http(http) = &flow.layer {
@@ -96,7 +92,7 @@ pub fn matches(filter: &CompiledFilter, flow: &Flow) -> bool {
             } else {
                 false
             }
-        },
+        }
         CompiledFilter::WebSocketMessage(matcher) => {
             if let Layer::WebSocket(ws) = &flow.layer {
                 if let Some(msg) = ws.messages.last() {
@@ -107,7 +103,7 @@ pub fn matches(filter: &CompiledFilter, flow: &Flow) -> bool {
             } else {
                 false
             }
-        },
+        }
         CompiledFilter::And(filters) => filters.iter().all(|f| matches(f, flow)),
         CompiledFilter::Or(filters) => filters.iter().any(|f| matches(f, flow)),
         CompiledFilter::Not(filter) => !matches(filter, flow),

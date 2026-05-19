@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use tokio::sync::broadcast;
 use crate::audit::AuditEvent;
 use crate::{CoreAuditQuery, CoreAuditSnapshot, CoreState};
+use async_trait::async_trait;
+use tokio::sync::broadcast;
 
 #[async_trait]
 pub trait AuditService: Send + Sync {

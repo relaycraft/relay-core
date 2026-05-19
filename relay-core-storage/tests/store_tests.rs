@@ -44,7 +44,10 @@ async fn test_rule_crud_and_replace() {
     assert_eq!(rules[0].0, "rule-1");
     assert_eq!(rules[1].0, "rule-2");
 
-    store.delete_rule("rule-1").await.expect("delete rule-1 failed");
+    store
+        .delete_rule("rule-1")
+        .await
+        .expect("delete rule-1 failed");
     let rules = store.load_rules().await.expect("load after delete failed");
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].0, "rule-2");
@@ -118,7 +121,10 @@ async fn test_replace_rules_with_empty_clears_table() {
         .await
         .expect("replace with empty failed");
     let rules = store.load_rules().await.expect("load rules failed");
-    assert!(rules.is_empty(), "replace with empty should clear all rules");
+    assert!(
+        rules.is_empty(),
+        "replace with empty should clear all rules"
+    );
 }
 
 #[tokio::test]
@@ -159,11 +165,18 @@ async fn test_concurrent_rule_writes() {
     }
 
     for handle in handles {
-        handle.await.expect("task join failed").expect("save rule failed");
+        handle
+            .await
+            .expect("task join failed")
+            .expect("save rule failed");
     }
 
     let rules = store.load_rules().await.expect("load rules failed");
-    assert_eq!(rules.len(), 20, "all concurrently written rules should exist");
+    assert_eq!(
+        rules.len(),
+        20,
+        "all concurrently written rules should exist"
+    );
 }
 
 #[tokio::test]
@@ -181,15 +194,20 @@ async fn test_concurrent_upsert_same_rule_id_keeps_single_record() {
     }
 
     for handle in handles {
-        handle.await.expect("task join failed").expect("save rule failed");
+        handle
+            .await
+            .expect("task join failed")
+            .expect("save rule failed");
     }
 
     let rules = store.load_rules().await.expect("load rules failed");
-    assert_eq!(rules.len(), 1, "same id concurrent upsert should keep one row");
+    assert_eq!(
+        rules.len(),
+        1,
+        "same id concurrent upsert should keep one row"
+    );
     assert_eq!(rules[0].0, "rule-shared");
-    let idx = rules[0].1["idx"]
-        .as_u64()
-        .expect("idx should be numeric");
+    let idx = rules[0].1["idx"].as_u64().expect("idx should be numeric");
     assert!(idx < 16, "final idx should come from one concurrent writer");
 }
 
@@ -223,7 +241,10 @@ async fn test_concurrent_save_flow_same_id_only_one_succeeds() {
         let store = Arc::clone(&store);
         handles.push(tokio::spawn(async move {
             store
-                .save_flow("flow-shared", &json!({"idx": i, "url":"http://example.com"}))
+                .save_flow(
+                    "flow-shared",
+                    &json!({"idx": i, "url":"http://example.com"}),
+                )
                 .await
         }));
     }

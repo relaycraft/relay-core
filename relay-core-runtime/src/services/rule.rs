@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::Value;
-use relay_core_lib::rule::Rule;
-use relay_core_lib::rule::engine::RuleEngine;
+use crate::CoreState;
 use crate::audit::AuditActor;
 use crate::rule::{InterceptRuleConfig, MockResponseRuleConfig};
-use crate::CoreState;
+use async_trait::async_trait;
+use relay_core_lib::rule::Rule;
+use relay_core_lib::rule::engine::RuleEngine;
+use serde_json::Value;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait RuleService: Send + Sync {

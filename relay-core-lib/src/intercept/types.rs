@@ -1,8 +1,8 @@
-use relay_core_api::flow::{Flow, HttpRequest, HttpResponse, WebSocketMessage, Layer};
 use async_trait::async_trait;
-use http_body_util::combinators::BoxBody;
 use bytes::Bytes;
 use http::Response;
+use http_body_util::combinators::BoxBody;
+use relay_core_api::flow::{Flow, HttpRequest, HttpResponse, Layer, WebSocketMessage};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type HttpBody = BoxBody<Bytes, BoxError>;
@@ -61,9 +61,17 @@ pub trait Interceptor: Send + Sync {
     }
 
     /// Called after full response (including body) is received.
-    async fn on_response(&self, flow: &mut Flow, body: HttpBody) -> Result<ResponseAction, BoxError>;
+    async fn on_response(
+        &self,
+        flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError>;
 
-    async fn on_websocket_message(&self, flow: &mut Flow, message: WebSocketMessage) -> Result<WebSocketMessageAction, BoxError>;
+    async fn on_websocket_message(
+        &self,
+        flow: &mut Flow,
+        message: WebSocketMessage,
+    ) -> Result<WebSocketMessageAction, BoxError>;
 }
 
 // Default implementation that does nothing
@@ -71,15 +79,27 @@ pub struct NoOpInterceptor;
 
 #[async_trait]
 impl Interceptor for NoOpInterceptor {
-    async fn on_request(&self, _flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
         Ok(RequestAction::Continue(body))
     }
 
-    async fn on_response(&self, _flow: &mut Flow, body: HttpBody) -> Result<ResponseAction, BoxError> {
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
         Ok(ResponseAction::Continue(body))
     }
 
-    async fn on_websocket_message(&self, _flow: &mut Flow, message: WebSocketMessage) -> Result<WebSocketMessageAction, BoxError> {
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: WebSocketMessage,
+    ) -> Result<WebSocketMessageAction, BoxError> {
         Ok(WebSocketMessageAction::Continue(message))
     }
 }
@@ -102,7 +122,7 @@ impl Interceptor for CompositeInterceptor {
         let mut final_result = InterceptionResult::Continue;
         for interceptor in &self.interceptors {
             match interceptor.on_request_headers(flow).await {
-                InterceptionResult::Continue => {},
+                InterceptionResult::Continue => {}
                 InterceptionResult::ModifiedRequest(req) => {
                     // Update flow so next interceptor sees it
                     match &mut flow.layer {
@@ -111,11 +131,15 @@ impl Interceptor for CompositeInterceptor {
                         _ => {}
                     }
                     final_result = InterceptionResult::ModifiedRequest(req);
-                },
+                }
                 // Short-circuiting results
                 InterceptionResult::Drop => return InterceptionResult::Drop,
-                InterceptionResult::MockResponse(res) => return InterceptionResult::MockResponse(res),
-                InterceptionResult::ModifiedResponse(res) => return InterceptionResult::ModifiedResponse(res),
+                InterceptionResult::MockResponse(res) => {
+                    return InterceptionResult::MockResponse(res);
+                }
+                InterceptionResult::ModifiedResponse(res) => {
+                    return InterceptionResult::ModifiedResponse(res);
+                }
                 _ => {}
             }
         }
@@ -124,12 +148,12 @@ impl Interceptor for CompositeInterceptor {
 
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
         let mut current_body = body;
-        
+
         for interceptor in &self.interceptors {
             match interceptor.on_request(flow, current_body).await? {
                 RequestAction::Continue(new_body) => {
                     current_body = new_body;
-                },
+                }
                 RequestAction::Drop => return Ok(RequestAction::Drop),
                 RequestAction::MockResponse(res) => return Ok(RequestAction::MockResponse(res)),
             }
@@ -141,7 +165,7 @@ impl Interceptor for CompositeInterceptor {
         let mut final_result = InterceptionResult::Continue;
         for interceptor in &self.interceptors {
             match interceptor.on_response_headers(flow).await {
-                InterceptionResult::Continue => {},
+                InterceptionResult::Continue => {}
                 InterceptionResult::ModifiedResponse(res) => {
                     // Update flow so next interceptor sees it
                     match &mut flow.layer {
@@ -150,38 +174,53 @@ impl Interceptor for CompositeInterceptor {
                         _ => {}
                     }
                     final_result = InterceptionResult::ModifiedResponse(res);
-                },
+                }
                 // Short-circuiting results
                 InterceptionResult::Drop => return InterceptionResult::Drop,
-                InterceptionResult::MockResponse(res) => return InterceptionResult::MockResponse(res),
+                InterceptionResult::MockResponse(res) => {
+                    return InterceptionResult::MockResponse(res);
+                }
                 _ => {}
             }
         }
         final_result
     }
 
-    async fn on_response(&self, flow: &mut Flow, body: HttpBody) -> Result<ResponseAction, BoxError> {
+    async fn on_response(
+        &self,
+        flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
         let mut current_body = body;
-        
+
         for interceptor in &self.interceptors {
             match interceptor.on_response(flow, current_body).await? {
                 ResponseAction::Continue(new_body) => {
                     current_body = new_body;
-                },
+                }
                 ResponseAction::Drop => return Ok(ResponseAction::Drop),
-                ResponseAction::ModifiedResponse(res) => return Ok(ResponseAction::ModifiedResponse(res)),
+                ResponseAction::ModifiedResponse(res) => {
+                    return Ok(ResponseAction::ModifiedResponse(res));
+                }
             }
         }
         Ok(ResponseAction::Continue(current_body))
     }
 
-    async fn on_websocket_message(&self, flow: &mut Flow, message: WebSocketMessage) -> Result<WebSocketMessageAction, BoxError> {
+    async fn on_websocket_message(
+        &self,
+        flow: &mut Flow,
+        message: WebSocketMessage,
+    ) -> Result<WebSocketMessageAction, BoxError> {
         let mut current_message = message;
         for interceptor in &self.interceptors {
-            match interceptor.on_websocket_message(flow, current_message).await? {
+            match interceptor
+                .on_websocket_message(flow, current_message)
+                .await?
+            {
                 WebSocketMessageAction::Continue(msg) => {
                     current_message = msg;
-                },
+                }
                 WebSocketMessageAction::Drop => return Ok(WebSocketMessageAction::Drop),
             }
         }

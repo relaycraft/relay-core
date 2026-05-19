@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use crate::server::ProbeContext;
 use relay_core_api::modification::FlowQuery;
 use rmcp::model::{AnnotateAble, RawResource, Resource, ResourceContents};
+use std::sync::Arc;
 
 /// 返回静态资源列表（非模板化的固定 URI）
 pub fn static_resource_list() -> Vec<Resource> {
@@ -52,7 +52,13 @@ pub async fn read_resource(
 }
 
 async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
-    let summaries = ctx.flows.search_flows(FlowQuery { limit: Some(50), ..Default::default() }).await;
+    let summaries = ctx
+        .flows
+        .search_flows(FlowQuery {
+            limit: Some(50),
+            ..Default::default()
+        })
+        .await;
 
     let mut md = String::from("# Recent Flows\n\n");
     if summaries.is_empty() {
@@ -62,12 +68,24 @@ async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, St
         md.push_str("|-------------|--------|-----|--------|----------|------|\n");
         for s in &summaries {
             let id_short = &s.id[..8.min(s.id.len())];
-            let status = s.status.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
-            let dur = s.duration_ms.map(|d| format!("{}ms", d)).unwrap_or_else(|| "-".to_string());
+            let status = s
+                .status
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let dur = s
+                .duration_ms
+                .map(|d| format!("{}ms", d))
+                .unwrap_or_else(|| "-".to_string());
             let tags = s.tags.join(", ");
-            let url = if s.url.len() > 60 { format!("{}…", &s.url[..60]) } else { s.url.clone() };
-            md.push_str(&format!("| {}… | {} | {} | {} | {} | {} |\n",
-                id_short, s.method, url, status, dur, tags));
+            let url = if s.url.len() > 60 {
+                format!("{}…", &s.url[..60])
+            } else {
+                s.url.clone()
+            };
+            md.push_str(&format!(
+                "| {}… | {} | {} | {} | {} | {} |\n",
+                id_short, s.method, url, status, dur, tags
+            ));
         }
         md.push_str(&format!("\n_Total: {} flows_\n", summaries.len()));
     }
@@ -78,9 +96,11 @@ async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, St
 async fn flow_detail(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, String> {
     match ctx.flows.get_flow(id).await {
         Some(flow) => {
-            let json = serde_json::to_string_pretty(&flow)
-                .map_err(|e| e.to_string())?;
-            Ok(vec![ResourceContents::text(json, format!("flows://{}", id))])
+            let json = serde_json::to_string_pretty(&flow).map_err(|e| e.to_string())?;
+            Ok(vec![ResourceContents::text(
+                json,
+                format!("flows://{}", id),
+            )])
         }
         None => Err(format!("Flow not found: {}", id)),
     }
@@ -93,12 +113,14 @@ async fn rules_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, St
 }
 
 async fn proxy_status(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
-    let json = serde_json::to_string_pretty(&ctx.status.status_report().await).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&ctx.status.status_report().await)
+        .map_err(|e| e.to_string())?;
     Ok(vec![ResourceContents::text(json, "proxy://status")])
 }
 
 async fn recent_audit(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, String> {
-    let json = serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| e.to_string())?;
+    let json =
+        serde_json::to_string_pretty(&ctx.audit.audit_snapshot(50)).map_err(|e| e.to_string())?;
     Ok(vec![ResourceContents::text(json, "audit://recent")])
 }
 
@@ -137,14 +159,17 @@ If you're using relay-core-probe as a library, pass the CA cert path to CoreStat
 ## Verify
 After installation, visit https://example.com — the flow should appear in search_flows.
 "#;
-    Ok(vec![ResourceContents::text(guide.to_string(), "ca://install")])
+    Ok(vec![ResourceContents::text(
+        guide.to_string(),
+        "ca://install",
+    )])
 }
 
 #[cfg(test)]
 mod tests {
     use super::read_resource;
-    use relay_core_runtime::CoreState;
     use crate::server::ProbeContext;
+    use relay_core_runtime::CoreState;
     use std::sync::Arc;
 
     #[tokio::test]

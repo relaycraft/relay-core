@@ -1,16 +1,16 @@
+use chrono::Utc;
+use relay_core_api::flow::{Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol};
+use relay_core_api::policy::ProxyPolicy;
+use relay_core_lib::rule::engine::RuleEngine;
 use relay_core_lib::rule::model::{
     Action, BodySource, Filter, Rule, RuleOutcome, RuleStage, RuleTermination, RuleTraceSummary,
 };
-use relay_core_lib::rule::engine::RuleEngine;
-use relay_core_api::policy::ProxyPolicy;
-use relay_core_api::flow::{Flow, Layer, HttpLayer, HttpRequest, NetworkInfo, TransportProtocol};
-use chrono::Utc;
-use uuid::Uuid;
-use url::Url;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::fs;
 use std::io::Write;
+use std::sync::Arc;
+use url::Url;
+use uuid::Uuid;
 
 // Helper to create a dummy flow
 fn create_test_flow(url: &str, method: &str) -> Flow {
@@ -74,12 +74,12 @@ async fn test_sandbox_allows_valid_file_in_action() {
     });
 
     let action = Action::SetRequestBody {
-        body: BodySource::File(file_path.to_str().unwrap().to_string())
+        body: BodySource::File(file_path.to_str().unwrap().to_string()),
     };
 
     let engine = create_rule(action, policy);
     let mut flow = create_test_flow("http://example.com", "POST");
-    
+
     engine.execute(RuleStage::RequestHeaders, &mut flow).await;
 
     if let Layer::Http(http) = &flow.layer {
@@ -93,7 +93,7 @@ async fn test_sandbox_allows_valid_file_in_action() {
     } else {
         panic!("Invalid layer");
     }
-    
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -101,7 +101,7 @@ async fn test_sandbox_allows_valid_file_in_action() {
 async fn test_map_local_respects_sandbox_and_size_limit() {
     let temp_dir = std::env::temp_dir().join(Uuid::new_v4().to_string());
     fs::create_dir_all(&temp_dir).unwrap();
-    
+
     // 1. Create a large file
     let large_file = temp_dir.join("large.txt");
     let limit = 100;
@@ -126,14 +126,19 @@ async fn test_map_local_respects_sandbox_and_size_limit() {
     };
     let engine_large = create_rule(action_large, policy.clone());
     let mut flow_large = create_test_flow("http://example.com", "GET");
-    
+
     // We need to check the outcome, but engine.execute consumes the result internally?
     // Wait, engine.execute returns `RuleTraceSummary`.
     // Let's check if the flow response is set.
-    engine_large.execute(RuleStage::RequestHeaders, &mut flow_large).await;
-    
+    engine_large
+        .execute(RuleStage::RequestHeaders, &mut flow_large)
+        .await;
+
     if let Layer::Http(http) = &flow_large.layer {
-        assert!(http.response.is_none(), "Response should NOT be set for large file MapLocal");
+        assert!(
+            http.response.is_none(),
+            "Response should NOT be set for large file MapLocal"
+        );
     }
 
     // Case B: Normal file should succeed
@@ -144,10 +149,15 @@ async fn test_map_local_respects_sandbox_and_size_limit() {
     let engine_normal = create_rule(action_normal, policy.clone());
     let mut flow_normal = create_test_flow("http://example.com", "GET");
 
-    engine_normal.execute(RuleStage::RequestHeaders, &mut flow_normal).await;
+    engine_normal
+        .execute(RuleStage::RequestHeaders, &mut flow_normal)
+        .await;
 
     if let Layer::Http(http) = &flow_normal.layer {
-        assert!(http.response.is_some(), "Response SHOULD be set for normal file MapLocal");
+        assert!(
+            http.response.is_some(),
+            "Response SHOULD be set for normal file MapLocal"
+        );
         let res = http.response.as_ref().unwrap();
         assert_eq!(res.status, 200);
         assert_eq!(res.body.as_ref().unwrap().content, "normal");
@@ -160,7 +170,7 @@ async fn test_map_local_respects_sandbox_and_size_limit() {
 async fn test_sandbox_rejects_path_traversal() {
     let temp_dir = std::env::temp_dir().join(Uuid::new_v4().to_string());
     fs::create_dir_all(&temp_dir).unwrap();
-    
+
     // Create a file outside the sandbox (in parent of temp_dir, which is likely allowed by OS but logically outside sandbox)
     // Actually, to be safe and cross-platform, we create a nested structure:
     // /tmp/uuid/root/  <- sandbox root
@@ -176,18 +186,21 @@ async fn test_sandbox_rejects_path_traversal() {
     });
 
     let action = Action::SetRequestBody {
-        body: BodySource::File("../outside.txt".to_string())
+        body: BodySource::File("../outside.txt".to_string()),
     };
 
     let engine = create_rule(action, policy);
     let mut flow = create_test_flow("http://example.com", "POST");
-    
+
     engine.execute(RuleStage::RequestHeaders, &mut flow).await;
 
     if let Layer::Http(http) = &flow.layer {
-        assert!(http.request.body.is_none(), "Body should NOT be set for traversal");
+        assert!(
+            http.request.body.is_none(),
+            "Body should NOT be set for traversal"
+        );
     }
-    
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -196,7 +209,7 @@ async fn test_sandbox_rejects_large_file() {
     let temp_dir = std::env::temp_dir().join(Uuid::new_v4().to_string());
     fs::create_dir_all(&temp_dir).unwrap();
     let file_path = temp_dir.join("large.txt");
-    
+
     // Create a file slightly larger than limit (e.g., limit 100 bytes)
     let limit = 100;
     let content = vec![b'a'; limit + 10];
@@ -212,18 +225,21 @@ async fn test_sandbox_rejects_large_file() {
     });
 
     let action = Action::SetRequestBody {
-        body: BodySource::File(file_path.to_str().unwrap().to_string())
+        body: BodySource::File(file_path.to_str().unwrap().to_string()),
     };
 
     let engine = create_rule(action, policy);
     let mut flow = create_test_flow("http://example.com", "POST");
-    
+
     engine.execute(RuleStage::RequestHeaders, &mut flow).await;
 
     if let Layer::Http(http) = &flow.layer {
-        assert!(http.request.body.is_none(), "Body should NOT be set for large file");
+        assert!(
+            http.request.body.is_none(),
+            "Body should NOT be set for large file"
+        );
     }
-    
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -287,7 +303,10 @@ async fn test_set_request_body_traversal_is_noop_and_continues() {
         "SetRequestBody uses Continue on unreadable file and should not fail the rule"
     );
     if let Layer::Http(http) = &flow.layer {
-        assert!(http.request.body.is_none(), "request body should remain empty");
+        assert!(
+            http.request.body.is_none(),
+            "request body should remain empty"
+        );
     }
 
     let _ = fs::remove_dir_all(&temp_dir);

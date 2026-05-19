@@ -1,17 +1,20 @@
-use relay_core_api::flow::{Flow, Layer, NetworkInfo, TransportProtocol, HttpLayer, HttpRequest, HttpResponse, BodyData, ResponseTiming, WebSocketLayer, WebSocketMessage, Direction};
-use relay_core_tauri::transport::{FlowIndex, FlowDetail};
-use relay_core_tauri::commands::Modification;
 use chrono::Utc;
-use uuid::Uuid;
-use url::Url;
+use relay_core_api::flow::{
+    BodyData, Direction, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
+    ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
+};
+use relay_core_tauri::commands::Modification;
+use relay_core_tauri::transport::{FlowDetail, FlowIndex};
 use std::collections::HashMap;
+use url::Url;
+use uuid::Uuid;
 
 #[test]
 fn test_flow_to_flow_index_conversion() {
     // 1. Create a sample Flow (HTTP)
     let flow_id = Uuid::new_v4();
     let now = Utc::now();
-    
+
     let flow = Flow {
         id: flow_id,
         start_time: now,
@@ -86,7 +89,7 @@ fn test_flow_to_flow_index_conversion() {
     // 4. Verify JSON Serialization (CamelCase check)
     let json = serde_json::to_string(&index).unwrap();
     println!("FlowIndex JSON: {}", json);
-    
+
     assert!(json.contains("\"msgTs\""));
     assert!(json.contains("\"httpVersion\""));
     assert!(json.contains("\"contentType\""));
@@ -114,22 +117,38 @@ fn test_modification_deserialization() {
     }"#;
 
     // 2. Deserialize
-    let modification: Modification = serde_json::from_str(json_payload).expect("Failed to deserialize Modification");
+    let modification: Modification =
+        serde_json::from_str(json_payload).expect("Failed to deserialize Modification");
 
     // 3. Verify Fields
     assert_eq!(modification.method.as_deref(), Some("POST"));
-    assert_eq!(modification.url.as_deref(), Some("http://example.com/modified"));
-    
+    assert_eq!(
+        modification.url.as_deref(),
+        Some("http://example.com/modified")
+    );
+
     let req_headers = modification.request_headers.as_ref().unwrap();
-    assert_eq!(req_headers.get("X-Custom-Header").map(|s| s.as_str()), Some("ModifiedValue"));
-    
-    assert_eq!(modification.request_body.as_deref(), Some("new-body-content"));
+    assert_eq!(
+        req_headers.get("X-Custom-Header").map(|s| s.as_str()),
+        Some("ModifiedValue")
+    );
+
+    assert_eq!(
+        modification.request_body.as_deref(),
+        Some("new-body-content")
+    );
     assert_eq!(modification.status_code, Some(201));
-    
+
     let resp_headers = modification.response_headers.as_ref().unwrap();
-    assert_eq!(resp_headers.get("Content-Type").map(|s| s.as_str()), Some("text/plain"));
-    
-    assert_eq!(modification.response_body.as_deref(), Some("response-modified"));
+    assert_eq!(
+        resp_headers.get("Content-Type").map(|s| s.as_str()),
+        Some("text/plain")
+    );
+
+    assert_eq!(
+        modification.response_body.as_deref(),
+        Some("response-modified")
+    );
 }
 
 #[test]
@@ -139,7 +158,8 @@ fn test_partial_modification_deserialization() {
         "statusCode": 404
     }"#;
 
-    let modification: Modification = serde_json::from_str(json_payload).expect("Failed to deserialize Partial Modification");
+    let modification: Modification =
+        serde_json::from_str(json_payload).expect("Failed to deserialize Partial Modification");
 
     assert_eq!(modification.status_code, Some(404));
     assert!(modification.method.is_none());
@@ -181,10 +201,12 @@ fn test_websocket_flow_to_detail_conversion() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
-                timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
-            },
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
                 cookies: vec![],
             },
             messages: vec![
@@ -192,14 +214,22 @@ fn test_websocket_flow_to_detail_conversion() {
                     id: Uuid::new_v4(),
                     timestamp: now,
                     direction: Direction::ClientToServer,
-                    content: BodyData { encoding: "text".to_string(), content: "Hello Server".to_string(), size: 12 },
+                    content: BodyData {
+                        encoding: "text".to_string(),
+                        content: "Hello Server".to_string(),
+                        size: 12,
+                    },
                     opcode: "Text".to_string(),
                 },
                 WebSocketMessage {
                     id: Uuid::new_v4(),
                     timestamp: now,
                     direction: Direction::ServerToClient,
-                    content: BodyData { encoding: "text".to_string(), content: "Hello Client".to_string(), size: 12 },
+                    content: BodyData {
+                        encoding: "text".to_string(),
+                        content: "Hello Client".to_string(),
+                        size: 12,
+                    },
                     opcode: "Text".to_string(),
                 },
             ],
@@ -215,7 +245,7 @@ fn test_websocket_flow_to_detail_conversion() {
     assert_eq!(detail._rc.is_websocket, true);
     assert_eq!(detail._rc.websocket_frame_count, 2);
     assert_eq!(detail._rc.websocket_messages.len(), 2);
-    
+
     let msg1 = &detail._rc.websocket_messages[0];
     assert_eq!(msg1.from_client, true);
     assert_eq!(msg1.content, "Hello Server");
@@ -224,7 +254,7 @@ fn test_websocket_flow_to_detail_conversion() {
     let msg2 = &detail._rc.websocket_messages[1];
     assert_eq!(msg2.from_client, false);
     assert_eq!(msg2.content, "Hello Client");
-    
+
     // Check JSON serialization for camelCase and special renames
     let json = serde_json::to_string(&detail).unwrap();
     println!("FlowDetail JSON: {}", json);
@@ -239,9 +269,13 @@ fn test_websocket_modification_deserialization() {
         "messageContent": "new-ws-message"
     }"#;
 
-    let modification: Modification = serde_json::from_str(json_payload).expect("Failed to deserialize WS Modification");
+    let modification: Modification =
+        serde_json::from_str(json_payload).expect("Failed to deserialize WS Modification");
 
-    assert_eq!(modification.message_content.as_deref(), Some("new-ws-message"));
+    assert_eq!(
+        modification.message_content.as_deref(),
+        Some("new-ws-message")
+    );
     assert!(modification.method.is_none());
 }
 
@@ -280,7 +314,10 @@ fn test_flow_to_flow_index_without_response_defaults() {
 
     let index: FlowIndex = FlowIndex::from(flow);
     assert_eq!(index.status, 0, "missing response should map to status=0");
-    assert_eq!(index.content_type, "", "missing response should have empty content type");
+    assert_eq!(
+        index.content_type, "",
+        "missing response should have empty content type"
+    );
     assert_eq!(index.size, 0, "missing response body size should be zero");
     assert!(!index.has_response_body);
 }
@@ -380,7 +417,10 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                 method: "POST".to_string(),
                 url: Url::parse("http://example.com/upload").unwrap(),
                 version: "HTTP/1.1".to_string(),
-                headers: vec![("Content-Type".to_string(), "application/octet-stream".to_string())],
+                headers: vec![(
+                    "Content-Type".to_string(),
+                    "application/octet-stream".to_string(),
+                )],
                 body: Some(BodyData {
                     encoding: "base64".to_string(),
                     content: "AQID".to_string(),
@@ -393,7 +433,10 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                 status: 200,
                 status_text: "OK".to_string(),
                 version: "HTTP/1.1".to_string(),
-                headers: vec![("Content-Type".to_string(), "application/octet-stream".to_string())],
+                headers: vec![(
+                    "Content-Type".to_string(),
+                    "application/octet-stream".to_string(),
+                )],
                 body: Some(BodyData {
                     encoding: "base64".to_string(),
                     content: "BAUG".to_string(),

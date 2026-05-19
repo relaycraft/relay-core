@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use super::{make_tool, ok_text, require_str};
 use crate::server::ProbeContext;
 use relay_core_runtime::audit::AuditActor;
 use rmcp::model::{Content, Tool};
-use serde_json::{json, Value};
-use super::{make_tool, require_str, ok_text};
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub fn set_script_schema() -> Tool {
     make_tool(

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// 流量搜索条件，所有字段可选，多条件为 AND 关系。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,23 +74,34 @@ impl FlowModification {
     }
 
     pub fn into_option(self) -> Option<Self> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self)
-        }
+        if self.is_empty() { None } else { Some(self) }
     }
 
     pub fn from_json_value(value: &Value) -> Self {
         Self {
-            method: value.get("method").and_then(Value::as_str).map(str::to_string),
+            method: value
+                .get("method")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             url: value.get("url").and_then(Value::as_str).map(str::to_string),
             request_headers: string_map_from_json(value.get("request_headers")),
-            request_body: value.get("request_body").and_then(Value::as_str).map(str::to_string),
-            status_code: value.get("status_code").and_then(Value::as_u64).map(|code| code as u16),
+            request_body: value
+                .get("request_body")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            status_code: value
+                .get("status_code")
+                .and_then(Value::as_u64)
+                .map(|code| code as u16),
             response_headers: string_map_from_json(value.get("response_headers")),
-            response_body: value.get("response_body").and_then(Value::as_str).map(str::to_string),
-            message_content: value.get("message_content").and_then(Value::as_str).map(str::to_string),
+            response_body: value
+                .get("response_body")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            message_content: value
+                .get("message_content")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }
     }
 }

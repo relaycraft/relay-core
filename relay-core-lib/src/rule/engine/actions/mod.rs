@@ -1,11 +1,11 @@
 pub mod common;
 pub mod http;
-pub mod ws;
 pub mod transform;
 pub mod utils;
+pub mod ws;
 
-use crate::rule::model::{Action, TerminalReason};
 use crate::rule::engine::executor::ExecutionContext;
+use crate::rule::model::{Action, TerminalReason};
 use relay_core_api::flow::Flow;
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,8 @@ pub async fn execute_action(
         | Action::TransformRequestBody { .. }
         | Action::TransformResponseBody { .. } => http::execute(action, flow, ctx).await,
 
-        Action::MockWebSocketMessage { .. }
-        | Action::DropWebSocketMessage => ws::execute(action, flow).await,
+        Action::MockWebSocketMessage { .. } | Action::DropWebSocketMessage => {
+            ws::execute(action, flow).await
+        }
     }
 }

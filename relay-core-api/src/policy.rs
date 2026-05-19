@@ -117,20 +117,20 @@ pub struct ProxyPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TransparentLogLevel {
-    Silent,   // No logging
-    Info,     // Log connections only
-    Debug,    // Log with destination details
-    Trace,    // Full packet-level logging (expensive)
+    Silent, // No logging
+    Info,   // Log connections only
+    Debug,  // Log with destination details
+    Trace,  // Full packet-level logging (expensive)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QuicMode {
     /// Force clients to use HTTP/1.1 or HTTP/2
     Downgrade,
-    
+
     /// Pass through QUIC traffic without inspection
     Passthrough,
-    
+
     /// [EXPERIMENTAL] Full HTTP/3 MITM
     #[cfg(feature = "quic_mitm_experimental")]
     ExperimentalMitm,
@@ -151,8 +151,8 @@ impl Default for ProxyPolicy {
             max_retries: 3,
             sandbox_root: None,
             max_local_file_bytes: 10 * 1024 * 1024, // 10MB
-            max_body_size: 10 * 1024 * 1024, // 10MB
-            request_timeout_ms: 30_000, // 30 seconds
+            max_body_size: 10 * 1024 * 1024,        // 10MB
+            request_timeout_ms: 30_000,             // 30 seconds
             transparent_enabled: false,
             transparent_require_original_dst: true,
             transparent_allow_host_fallback: false,
@@ -190,13 +190,27 @@ impl ProxyPolicy {
     }
 }
 
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
-fn default_max_retries() -> u8 { 3 }
-fn default_max_file_bytes() -> usize { 10 * 1024 * 1024 }
-fn default_max_body_bytes() -> usize { 10 * 1024 * 1024 }
-fn default_request_timeout_ms() -> u64 { 30_000 }
-fn default_transparent_log_level() -> TransparentLogLevel { TransparentLogLevel::Info }
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
+fn default_max_retries() -> u8 {
+    3
+}
+fn default_max_file_bytes() -> usize {
+    10 * 1024 * 1024
+}
+fn default_max_body_bytes() -> usize {
+    10 * 1024 * 1024
+}
+fn default_request_timeout_ms() -> u64 {
+    30_000
+}
+fn default_transparent_log_level() -> TransparentLogLevel {
+    TransparentLogLevel::Info
+}
 fn default_sensitive_header_names() -> Vec<String> {
     vec![
         "authorization".to_string(),

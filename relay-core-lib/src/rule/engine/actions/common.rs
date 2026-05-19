@@ -1,7 +1,7 @@
-use crate::rule::model::{Action, TerminalReason};
-use crate::rule::engine::executor::ExecutionContext;
-use crate::rule::engine::actions::utils::substitute_variables;
 use crate::rule::engine::actions::ActionOutcome;
+use crate::rule::engine::actions::utils::substitute_variables;
+use crate::rule::engine::executor::ExecutionContext;
+use crate::rule::model::{Action, TerminalReason};
 use relay_core_api::flow::{Flow, Layer};
 use url::{Host, Url};
 
@@ -13,19 +13,25 @@ fn infer_throttle_bytes(flow: &Flow) -> u64 {
                 total = total.saturating_add(body.size);
             }
             if let Some(response) = &http.response
-                && let Some(body) = &response.body {
-                    total = total.saturating_add(body.size);
-                }
+                && let Some(body) = &response.body
+            {
+                total = total.saturating_add(body.size);
+            }
             total
         }
-        Layer::WebSocket(ws) => {
-            ws.handshake_request
-                .body
-                .as_ref()
-                .map(|b| b.size)
-                .unwrap_or(0)
-                .saturating_add(ws.handshake_response.body.as_ref().map(|b| b.size).unwrap_or(0))
-        }
+        Layer::WebSocket(ws) => ws
+            .handshake_request
+            .body
+            .as_ref()
+            .map(|b| b.size)
+            .unwrap_or(0)
+            .saturating_add(
+                ws.handshake_response
+                    .body
+                    .as_ref()
+                    .map(|b| b.size)
+                    .unwrap_or(0),
+            ),
         _ => 0,
     }
 }
@@ -120,7 +126,11 @@ pub async fn execute(
             flow.tags.push(format!("{}:{}", key, val));
             ActionOutcome::Continue
         }
-        Action::RateLimit { key, limit, window_ms } => {
+        Action::RateLimit {
+            key,
+            limit,
+            window_ms,
+        } => {
             let key = substitute_variables(key, flow, ctx, None);
             let count = ctx
                 .state_store
@@ -150,9 +160,10 @@ pub async fn execute(
                     };
                     http.request.url = mapped;
                     if !*preserve_host
-                        && let Some(authority) = authority_for_host_header(&http.request.url) {
-                            upsert_host_header(&mut http.request.headers, &authority);
-                        }
+                        && let Some(authority) = authority_for_host_header(&http.request.url)
+                    {
+                        upsert_host_header(&mut http.request.headers, &authority);
+                    }
                     ActionOutcome::Continue
                 }
                 Layer::WebSocket(ws) => {
@@ -162,12 +173,16 @@ pub async fn execute(
                     };
                     ws.handshake_request.url = mapped;
                     if !*preserve_host
-                        && let Some(authority) = authority_for_host_header(&ws.handshake_request.url) {
-                            upsert_host_header(&mut ws.handshake_request.headers, &authority);
-                        }
+                        && let Some(authority) =
+                            authority_for_host_header(&ws.handshake_request.url)
+                    {
+                        upsert_host_header(&mut ws.handshake_request.headers, &authority);
+                    }
                     ActionOutcome::Continue
                 }
-                _ => ActionOutcome::Failed("MapRemote only supports HTTP/WebSocket flows".to_string()),
+                _ => ActionOutcome::Failed(
+                    "MapRemote only supports HTTP/WebSocket flows".to_string(),
+                ),
             }
         }
         Action::Throttle { kbps } => {
@@ -196,7 +211,10 @@ pub async fn execute(
             }
             ActionOutcome::Continue
         }
-        _ => ActionOutcome::Failed(format!("Action {:?} not supported in common handler", action)),
+        _ => ActionOutcome::Failed(format!(
+            "Action {:?} not supported in common handler",
+            action
+        )),
     }
 }
 
@@ -626,7 +644,10 @@ mod tests {
         let Layer::WebSocket(ws) = flow.layer else {
             panic!("expected websocket layer");
         };
-        assert_eq!(ws.handshake_request.url.as_str(), "wss://new.example.com/socket?token=1");
+        assert_eq!(
+            ws.handshake_request.url.as_str(),
+            "wss://new.example.com/socket?token=1"
+        );
         let host = ws
             .handshake_request
             .headers
@@ -641,8 +662,10 @@ mod tests {
     async fn test_map_remote_websocket_url_supports_variable_substitution() {
         let mut flow = sample_ws_flow();
         let mut ctx = sample_ctx();
-        ctx.variables
-            .insert("ws_upstream".to_string(), "new.example.com:9555".to_string());
+        ctx.variables.insert(
+            "ws_upstream".to_string(),
+            "new.example.com:9555".to_string(),
+        );
         let action = Action::MapRemote {
             url: "wss://{{ws_upstream}}".to_string(),
             preserve_host: false,

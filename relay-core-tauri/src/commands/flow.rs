@@ -1,12 +1,12 @@
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
-use tokio::sync::mpsc;
-use crate::transport::{FlowIndex, FlowDetail};
 use crate::RelayCoreState;
-use relay_core_api::flow::{BodyData, FlowUpdate, Direction};
+use crate::transport::{FlowDetail, FlowIndex};
+use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
 use relay_core_api::modification::FlowModification;
 use relay_core_runtime::audit::AuditActor;
 use serde::Deserialize;
 use std::collections::HashMap;
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tokio::sync::mpsc;
 
 pub struct TauriFlowSink<R: Runtime> {
     pub app_handle: AppHandle<R>,
@@ -19,12 +19,16 @@ impl<R: Runtime> TauriFlowSink<R> {
                 FlowUpdate::Full(flow) => {
                     let mut index = FlowIndex::from(*flow);
                     if let Some(state) = self.app_handle.try_state::<RelayCoreState>() {
-                        index.is_intercepted = state.ctx.intercepts.is_flow_intercepted(index.id.clone()).await;
+                        index.is_intercepted = state
+                            .ctx
+                            .intercepts
+                            .is_flow_intercepted(index.id.clone())
+                            .await;
                     }
                     if let Err(e) = self.app_handle.emit("flow-update", index) {
                         eprintln!("Failed to emit flow-update event: {}", e);
                     }
-                },
+                }
                 FlowUpdate::WebSocketMessage { flow_id, message } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]
@@ -36,8 +40,12 @@ impl<R: Runtime> TauriFlowSink<R> {
                     if let Err(e) = self.app_handle.emit("flow-ws-update", event) {
                         eprintln!("Failed to emit flow-ws-update event: {}", e);
                     }
-                },
-                FlowUpdate::HttpBody { flow_id, direction, body } => {
+                }
+                FlowUpdate::HttpBody {
+                    flow_id,
+                    direction,
+                    body,
+                } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]
                     struct HttpBodyEvent {
@@ -45,7 +53,11 @@ impl<R: Runtime> TauriFlowSink<R> {
                         direction: Direction,
                         body: BodyData,
                     }
-                    let event = HttpBodyEvent { flow_id, direction, body };
+                    let event = HttpBodyEvent {
+                        flow_id,
+                        direction,
+                        body,
+                    };
                     if let Err(e) = self.app_handle.emit("flow-body-update", event) {
                         eprintln!("Failed to emit flow-body-update event: {}", e);
                     }
@@ -86,11 +98,17 @@ impl From<Modification> for FlowModification {
 }
 
 #[tauri::command]
-pub async fn get_flow_detail(state: State<'_, RelayCoreState>, id: String) -> Result<FlowDetail, String> {
+pub async fn get_flow_detail(
+    state: State<'_, RelayCoreState>,
+    id: String,
+) -> Result<FlowDetail, String> {
     get_flow_detail_impl(&state, id).await
 }
 
-pub async fn get_flow_detail_impl(state: &RelayCoreState, id: String) -> Result<FlowDetail, String> {
+pub async fn get_flow_detail_impl(
+    state: &RelayCoreState,
+    id: String,
+) -> Result<FlowDetail, String> {
     if let Some(flow) = state.ctx.flows.get_flow(&id).await {
         let mut detail = FlowDetail::from(flow);
         detail._rc.intercept.intercepted = state.ctx.intercepts.is_flow_intercepted(id).await;
@@ -119,7 +137,9 @@ pub async fn resume_flow_impl(
     let mods = modifications
         .map(FlowModification::from)
         .and_then(FlowModification::into_option);
-    state.ctx.intercepts
+    state
+        .ctx
+        .intercepts
         .resolve_intercept_with_modifications_from(AuditActor::Tauri, id, &action, mods)
         .await
 }
@@ -127,12 +147,14 @@ pub async fn resume_flow_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relay_core_api::flow::{Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol};
-    use relay_core_lib::InterceptionResult;
     use chrono::Utc;
-    use uuid::Uuid;
-    use url::Url;
+    use relay_core_api::flow::{
+        Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
+    };
+    use relay_core_lib::InterceptionResult;
     use std::collections::HashMap;
+    use url::Url;
+    use uuid::Uuid;
 
     fn create_test_http_flow() -> Flow {
         Flow {
@@ -177,12 +199,18 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let intercept_key = format!("{}:request_headers", flow_id);
-        state.core.register_intercept(intercept_key.clone(), tx).await;
+        state
+            .core
+            .register_intercept(intercept_key.clone(), tx)
+            .await;
 
         let detail = get_flow_detail_impl(&state, flow_id.clone())
             .await
             .expect("flow detail should exist");
-        assert!(detail._rc.intercept.intercepted, "should be intercepted=true while pending");
+        assert!(
+            detail._rc.intercept.intercepted,
+            "should be intercepted=true while pending"
+        );
 
         state
             .core
@@ -193,7 +221,10 @@ mod tests {
         let detail_after = get_flow_detail_impl(&state, flow_id)
             .await
             .expect("flow detail should still exist");
-        assert!(!detail_after._rc.intercept.intercepted, "should be intercepted=false after resolve");
+        assert!(
+            !detail_after._rc.intercept.intercepted,
+            "should be intercepted=false after resolve"
+        );
     }
 
     #[tokio::test]
@@ -213,7 +244,10 @@ mod tests {
             None,
         )
         .await;
-        assert!(result.is_err(), "resume should fail when interception key does not exist");
+        assert!(
+            result.is_err(),
+            "resume should fail when interception key does not exist"
+        );
     }
 
     #[tokio::test]
@@ -221,7 +255,10 @@ mod tests {
         let state = crate::RelayCoreState::new_async().await;
         let intercept_key = "missing-flow:request".to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        state.core.register_intercept(intercept_key.clone(), tx).await;
+        state
+            .core
+            .register_intercept(intercept_key.clone(), tx)
+            .await;
 
         let mods = Modification {
             method: Some("PATCH".to_string()),
@@ -233,7 +270,13 @@ mod tests {
             response_body: None,
             message_content: None,
         };
-        let result = resume_flow_impl(&state, intercept_key.clone(), "continue".to_string(), Some(mods)).await;
+        let result = resume_flow_impl(
+            &state,
+            intercept_key.clone(),
+            "continue".to_string(),
+            Some(mods),
+        )
+        .await;
         assert!(result.is_ok(), "registered intercept should be resolvable");
 
         let recv = rx.await.expect("should receive interception decision");
@@ -241,7 +284,10 @@ mod tests {
             matches!(recv, InterceptionResult::Continue),
             "when flow is absent, modifications should degrade to Continue"
         );
-        assert!(!state.core.is_intercept_pending(intercept_key).await, "key should be cleared");
+        assert!(
+            !state.core.is_intercept_pending(intercept_key).await,
+            "key should be cleared"
+        );
     }
 
     #[tokio::test]
@@ -249,7 +295,10 @@ mod tests {
         let state = crate::RelayCoreState::new_async().await;
         let intercept_key = "flow-drop-1:request".to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        state.core.register_intercept(intercept_key.clone(), tx).await;
+        state
+            .core
+            .register_intercept(intercept_key.clone(), tx)
+            .await;
 
         let result = resume_flow_impl(
             &state,
@@ -271,7 +320,10 @@ mod tests {
 
         let recv = rx.await.expect("should receive interception decision");
         assert!(matches!(recv, InterceptionResult::Drop));
-        assert!(!state.core.is_intercept_pending(intercept_key).await, "key should be cleared after drop");
+        assert!(
+            !state.core.is_intercept_pending(intercept_key).await,
+            "key should be cleared after drop"
+        );
     }
 
     #[tokio::test]
@@ -279,7 +331,10 @@ mod tests {
         let state = crate::RelayCoreState::new_async().await;
         let intercept_key = "flow-ws-missing:ws_msg:msg-1".to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        state.core.register_intercept(intercept_key.clone(), tx).await;
+        state
+            .core
+            .register_intercept(intercept_key.clone(), tx)
+            .await;
 
         let result = resume_flow_impl(
             &state,
@@ -304,7 +359,10 @@ mod tests {
             matches!(recv, InterceptionResult::Continue),
             "without pending ws message, resume should degrade to Continue"
         );
-        assert!(!state.core.is_intercept_pending(intercept_key).await, "key should be cleared");
+        assert!(
+            !state.core.is_intercept_pending(intercept_key).await,
+            "key should be cleared"
+        );
     }
 
     #[tokio::test]
@@ -312,7 +370,10 @@ mod tests {
         let state = crate::RelayCoreState::new_async().await;
         let intercept_key = "flow-malformed-key".to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        state.core.register_intercept(intercept_key.clone(), tx).await;
+        state
+            .core
+            .register_intercept(intercept_key.clone(), tx)
+            .await;
 
         let mods = Modification {
             method: Some("PATCH".to_string()),
@@ -324,7 +385,13 @@ mod tests {
             response_body: None,
             message_content: None,
         };
-        let result = resume_flow_impl(&state, intercept_key.clone(), "continue".to_string(), Some(mods)).await;
+        let result = resume_flow_impl(
+            &state,
+            intercept_key.clone(),
+            "continue".to_string(),
+            Some(mods),
+        )
+        .await;
         assert!(result.is_ok(), "registered intercept should be resolvable");
 
         let recv = rx.await.expect("should receive interception decision");
@@ -332,6 +399,9 @@ mod tests {
             matches!(recv, InterceptionResult::Continue),
             "malformed intercept key should degrade to Continue"
         );
-        assert!(!state.core.is_intercept_pending(intercept_key).await, "key should be cleared");
+        assert!(
+            !state.core.is_intercept_pending(intercept_key).await,
+            "key should be cleared"
+        );
     }
 }

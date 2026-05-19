@@ -2,7 +2,7 @@
 fn test_backward_compatibility_paths() {
     // 1. relay_core_lib::engine::TcpCaptureSource
     // Verify that we can refer to TcpCaptureSource via the `engine` alias
-    // We can't verify TcpCaptureSource easily if it's not re-exported from engine, 
+    // We can't verify TcpCaptureSource easily if it's not re-exported from engine,
     // but we can check the module alias existence.
     // Based on lib.rs: pub use capture::source as engine;
     // capture::source has TcpCaptureSource.

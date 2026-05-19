@@ -1,22 +1,22 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{mpsc::Sender, watch};
-use hyper_util::rt::TokioIo;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_util::client::legacy::Client;
 use hyper_rustls::HttpsConnectorBuilder;
-use tracing::{info, error};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioIo;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::sync::{mpsc::Sender, watch};
+use tracing::{error, info};
 
-use crate::capture::CaptureSource; 
-use crate::tls::CertificateAuthority;
-use crate::interceptor::{Interceptor, ENGINE_INDEX};
-use relay_core_api::flow::FlowUpdate;
-use relay_core_api::policy::ProxyPolicy;
+use crate::capture::CaptureSource;
+use crate::capture::loop_detection::LoopDetector;
+use crate::interceptor::{ENGINE_INDEX, Interceptor};
 use crate::proxy::http::handle_request;
 use crate::proxy::http_utils::HttpsClient;
-use crate::capture::loop_detection::LoopDetector;
+use crate::tls::CertificateAuthority;
+use relay_core_api::flow::FlowUpdate;
+use relay_core_api::policy::ProxyPolicy;
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -29,7 +29,7 @@ pub async fn start_proxy<S>(
     policy: watch::Receiver<ProxyPolicy>,
     client: Option<Arc<HttpsClient>>,
     shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
-) -> crate::error::Result<()> 
+) -> crate::error::Result<()>
 where
     S: CaptureSource + Send + 'static,
     S::IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -122,17 +122,22 @@ where
                 .header_read_timeout(Duration::from_secs(10))
                 .preserve_header_case(true)
                 .title_case_headers(true)
-                .serve_connection(io, service_fn(move |req| handle_request(
-                    req, 
-                    client_addr, 
-                    on_flow.clone(), 
-                    ca.clone(), 
-                    client.clone(), 
-                    interceptor.clone(),
-                    target_addr,
-                    policy.clone(),
-                    loop_detector.clone()
-                )))
+                .serve_connection(
+                    io,
+                    service_fn(move |req| {
+                        handle_request(
+                            req,
+                            client_addr,
+                            on_flow.clone(),
+                            ca.clone(),
+                            client.clone(),
+                            interceptor.clone(),
+                            target_addr,
+                            policy.clone(),
+                            loop_detector.clone(),
+                        )
+                    }),
+                )
                 .with_upgrades()
                 .await
             {

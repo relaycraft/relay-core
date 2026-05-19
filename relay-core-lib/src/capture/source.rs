@@ -1,5 +1,5 @@
-use std::net::SocketAddr;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -8,18 +8,20 @@ pub struct IncomingConnection<IO> {
     pub stream: IO,
     pub client_addr: SocketAddr,
     /// Original destination address (if known via TPROXY/eBPF/NAT lookup)
-    pub target_addr: Option<SocketAddr>, 
+    pub target_addr: Option<SocketAddr>,
 }
 
 /// Trait for capturing traffic.
-/// This abstracts away the difference between a simple TCP Listener, 
+/// This abstracts away the difference between a simple TCP Listener,
 /// a Transparent Proxy (TPROXY), or a TUN interface with a user-space stack.
 pub trait CaptureSource {
     type IO: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
     /// Accept the next connection from the source
     #[allow(clippy::type_complexity)]
-    fn accept(&mut self) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>>;
+    fn accept(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>>;
 
     /// Returns the addresses this source is listening on (for loop detection)
     fn listen_addrs(&self) -> Vec<SocketAddr> {
@@ -43,7 +45,10 @@ impl TcpCaptureSource {
 impl CaptureSource for TcpCaptureSource {
     type IO = tokio::net::TcpStream;
 
-    fn accept(&mut self) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>> {
+    fn accept(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>>
+    {
         Box::pin(async move {
             let (stream, client_addr) = self.listener.accept().await?;
             Ok(IncomingConnection {

@@ -1,13 +1,13 @@
 use crate::args::InterceptAction;
 use anyhow::Result;
+use futures_util::StreamExt;
 use relay_core_api::flow::{FlowUpdate, Layer};
 use tokio_tungstenite::connect_async;
-use futures_util::StreamExt;
 use tracing::info;
 
 pub async fn execute(control_url: String, output: String) -> Result<()> {
     let ws_url = if control_url.starts_with("https") {
-            control_url.replace("https", "wss") + "/api/flows/ws"
+        control_url.replace("https", "wss") + "/api/flows/ws"
     } else if control_url.starts_with("http") {
         control_url.replace("http", "ws") + "/api/flows/ws"
     } else {
@@ -15,14 +15,19 @@ pub async fn execute(control_url: String, output: String) -> Result<()> {
     };
 
     info!("Connecting to {}", ws_url);
-    let (ws_stream, _) = connect_async(ws_url).await.map_err(|e| anyhow::anyhow!("Failed to connect to control server: {}", e))?;
+    let (ws_stream, _) = connect_async(ws_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to control server: {}", e))?;
     let (_, mut read) = ws_stream.split();
 
     while let Some(msg) = read.next().await {
         let msg = match msg {
             Ok(msg) => msg,
             Err(e) => {
-                return Err(anyhow::anyhow!("Failed to read message from control server: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to read message from control server: {}",
+                    e
+                ));
             }
         };
 
@@ -70,7 +75,11 @@ pub async fn execute(control_url: String, output: String) -> Result<()> {
                     info!("[WS] [{}] {} bytes", flow_id, message.content.size);
                 }
             }
-            FlowUpdate::HttpBody { flow_id, direction, body } => {
+            FlowUpdate::HttpBody {
+                flow_id,
+                direction,
+                body,
+            } => {
                 if output == "table" {
                     info!("[Body] [{}] {:?} {} bytes", flow_id, direction, body.size);
                 }
@@ -81,14 +90,13 @@ pub async fn execute(control_url: String, output: String) -> Result<()> {
     Ok(())
 }
 
-
 pub async fn execute_intercept(action: InterceptAction, control_url: String) -> Result<()> {
     let client = reqwest::Client::new();
     let url = match action {
         InterceptAction::Pause => format!("{}/api/intercept/pause", control_url),
         InterceptAction::Resume => format!("{}/api/intercept/resume", control_url),
     };
-    
+
     let res = client.post(&url).send().await?;
     if res.status().is_success() {
         let json: serde_json::Value = res.json().await?;

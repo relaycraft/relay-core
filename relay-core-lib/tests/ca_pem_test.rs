@@ -1,8 +1,8 @@
 use relay_core_lib::tls::ca::CertificateAuthority;
-use tempfile::tempdir;
+use rustls::ServerConfig;
 use std::fs;
 use std::sync::Arc;
-use rustls::ServerConfig;
+use tempfile::tempdir;
 
 #[tokio::test]
 async fn test_ca_load_from_pem_fallback() {
@@ -16,7 +16,7 @@ async fn test_ca_load_from_pem_fallback() {
     // 1. Create a new CA with JSON metadata
     let ca1 = CertificateAuthority::load_or_create(&ca_cert_path, &ca_key_path).unwrap();
     let pem1 = ca1.get_ca_cert_pem();
-    
+
     assert!(ca_cert_path.exists());
     assert!(ca_key_path.exists());
     assert!(meta_path.exists());
@@ -31,7 +31,7 @@ async fn test_ca_load_from_pem_fallback() {
 
     println!("PEM1:\n{}", pem1);
     println!("PEM2:\n{}", pem2);
-    
+
     // Check if we can generate a server cert from the loaded CA
     let server_config: Result<Arc<ServerConfig>, _> = ca2.gen_server_config("example.com").await;
     assert!(server_config.is_ok());

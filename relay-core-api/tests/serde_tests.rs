@@ -130,8 +130,18 @@ fn test_proxy_policy_defaults_via_deserialize() {
     assert_eq!(policy.quic_mode, QuicMode::Downgrade);
     assert!(!policy.redaction.enabled);
     assert!(!policy.redaction.redact_bodies);
-    assert!(policy.redaction.sensitive_header_names.contains(&"authorization".to_string()));
-    assert!(policy.redaction.sensitive_query_keys.contains(&"token".to_string()));
+    assert!(
+        policy
+            .redaction
+            .sensitive_header_names
+            .contains(&"authorization".to_string())
+    );
+    assert!(
+        policy
+            .redaction
+            .sensitive_query_keys
+            .contains(&"token".to_string())
+    );
 }
 
 #[test]
@@ -140,11 +150,23 @@ fn test_proxy_policy_default_matches_empty_deserialize() {
     let from_deser: ProxyPolicy =
         serde_json::from_value(json!({})).expect("deserialize policy failed");
 
-    assert_eq!(from_default.strict_http_semantics, from_deser.strict_http_semantics);
-    assert_eq!(from_default.allow_fallback_method, from_deser.allow_fallback_method);
-    assert_eq!(from_default.allow_fallback_status, from_deser.allow_fallback_status);
+    assert_eq!(
+        from_default.strict_http_semantics,
+        from_deser.strict_http_semantics
+    );
+    assert_eq!(
+        from_default.allow_fallback_method,
+        from_deser.allow_fallback_method
+    );
+    assert_eq!(
+        from_default.allow_fallback_status,
+        from_deser.allow_fallback_status
+    );
     assert_eq!(from_default.enable_retry, from_deser.enable_retry);
-    assert_eq!(from_default.retry_idempotent_only, from_deser.retry_idempotent_only);
+    assert_eq!(
+        from_default.retry_idempotent_only,
+        from_deser.retry_idempotent_only
+    );
     assert_eq!(from_default.max_retries, from_deser.max_retries);
     assert_eq!(from_default.sandbox_root, from_deser.sandbox_root);
     assert_eq!(
@@ -152,8 +174,14 @@ fn test_proxy_policy_default_matches_empty_deserialize() {
         from_deser.max_local_file_bytes
     );
     assert_eq!(from_default.max_body_size, from_deser.max_body_size);
-    assert_eq!(from_default.request_timeout_ms, from_deser.request_timeout_ms);
-    assert_eq!(from_default.transparent_enabled, from_deser.transparent_enabled);
+    assert_eq!(
+        from_default.request_timeout_ms,
+        from_deser.request_timeout_ms
+    );
+    assert_eq!(
+        from_default.transparent_enabled,
+        from_deser.transparent_enabled
+    );
     assert_eq!(
         from_default.transparent_require_original_dst,
         from_deser.transparent_require_original_dst

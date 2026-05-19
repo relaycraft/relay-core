@@ -9,16 +9,25 @@ pub fn execute(action: CaAction) -> Result<()> {
     match action {
         CaAction::Init { cert, key, force } => {
             if cert.exists() && !force {
-                println!("CA certificate already exists at {:?}. Use --force to overwrite.", cert);
+                println!(
+                    "CA certificate already exists at {:?}. Use --force to overwrite.",
+                    cert
+                );
                 return Ok(());
             }
 
             if force {
                 // Remove existing files to allow regeneration
-                if cert.exists() { let _ = std::fs::remove_file(&cert); }
-                if key.exists() { let _ = std::fs::remove_file(&key); }
+                if cert.exists() {
+                    let _ = std::fs::remove_file(&cert);
+                }
+                if key.exists() {
+                    let _ = std::fs::remove_file(&key);
+                }
                 let meta = cert.with_extension("json");
-                if meta.exists() { let _ = std::fs::remove_file(&meta); }
+                if meta.exists() {
+                    let _ = std::fs::remove_file(&meta);
+                }
             }
 
             match CertificateAuthority::load_or_create(&cert, &key) {
@@ -28,7 +37,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                     std::process::exit(1);
                 }
             }
-        },
+        }
         CaAction::Export { cert, output } => {
             if !cert.exists() {
                 eprintln!("CA certificate not found at {:?}. Run 'init' first.", cert);
@@ -41,13 +50,13 @@ pub fn execute(action: CaAction) -> Result<()> {
             } else {
                 println!("{}", content);
             }
-        },
+        }
         CaAction::Install { cert } => {
             if !cert.exists() {
                 eprintln!("CA certificate not found at {:?}. Run 'init' first.", cert);
                 std::process::exit(1);
             }
-            
+
             #[cfg(target_os = "macos")]
             {
                 println!("Adding RelayCraft CA to System Keychain (requires sudo)...");
@@ -62,7 +71,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                     .arg("/Library/Keychains/System.keychain")
                     .arg(&cert)
                     .status()?;
-                    
+
                 if status.success() {
                     println!();
                     println!("CA certificate installed and trusted by macOS.");
@@ -71,17 +80,26 @@ pub fn execute(action: CaAction) -> Result<()> {
                     println!("  HTTP Proxy: 127.0.0.1, Port: 8080");
                     println!("  HTTPS Proxy: 127.0.0.1, Port: 8080");
                 } else {
-                    eprintln!("Failed to install CA certificate. Exit code: {:?}", status.code());
-                    eprintln!("Try running: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {:?}", cert);
+                    eprintln!(
+                        "Failed to install CA certificate. Exit code: {:?}",
+                        status.code()
+                    );
+                    eprintln!(
+                        "Try running: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {:?}",
+                        cert
+                    );
                 }
             }
-            
+
             #[cfg(not(target_os = "macos"))]
             {
                 println!("Automatic installation is not supported on this platform yet.");
-                println!("Please install {:?} manually to your system's trust store.", cert);
+                println!(
+                    "Please install {:?} manually to your system's trust store.",
+                    cert
+                );
             }
-        },
+        }
         CaAction::Uninstall { cert } => {
             #[cfg(target_os = "macos")]
             {
@@ -96,33 +114,41 @@ pub fn execute(action: CaAction) -> Result<()> {
                 if status.success() {
                     println!("CA certificate uninstalled successfully.");
                 } else {
-                    eprintln!("Failed to uninstall CA certificate. Exit code: {:?}", status.code());
+                    eprintln!(
+                        "Failed to uninstall CA certificate. Exit code: {:?}",
+                        status.code()
+                    );
                 }
             }
-        },
+        }
         CaAction::Status { cert } => {
             if !cert.exists() {
                 println!("Status: Not Initialized (File missing at {:?})", cert);
                 return Ok(());
             }
-            
+
             println!("Status: Initialized (File exists at {:?})", cert);
 
             #[cfg(target_os = "macos")]
             {
                 match get_file_sha1(&cert) {
-                    Ok(hash) => {
-                        match is_cert_installed_macos(&hash) {
-                            Ok(true) => println!("System Trust: Installed and Trusted (Found in System Keychain)"),
-                            Ok(false) => {
-                                println!("System Trust: Not Installed (Not found in System Keychain)");
-                                println!("Note: Local certificate (SHA1: {}) does not match System Keychain.", hash);
-                                println!("      Run 'ca install' to update system trust.");
-                            },
-                            Err(e) => println!("System Trust: Unknown (Check failed: {})", e),
+                    Ok(hash) => match is_cert_installed_macos(&hash) {
+                        Ok(true) => println!(
+                            "System Trust: Installed and Trusted (Found in System Keychain)"
+                        ),
+                        Ok(false) => {
+                            println!("System Trust: Not Installed (Not found in System Keychain)");
+                            println!(
+                                "Note: Local certificate (SHA1: {}) does not match System Keychain.",
+                                hash
+                            );
+                            println!("      Run 'ca install' to update system trust.");
                         }
+                        Err(e) => println!("System Trust: Unknown (Check failed: {})", e),
                     },
-                    Err(_) => println!("System Trust: Unknown (Failed to compute local certificate hash)"),
+                    Err(_) => {
+                        println!("System Trust: Unknown (Failed to compute local certificate hash)")
+                    }
                 }
             }
         }
@@ -131,13 +157,13 @@ pub fn execute(action: CaAction) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 
 #[cfg(target_os = "macos")]
 fn get_file_sha1(path: &std::path::Path) -> Result<String> {
     // Read PEM file content
     let pem_content = std::fs::read_to_string(path)?;
-    
+
     // Parse PEM to get DER bytes
     let mut reader = std::io::BufReader::new(std::io::Cursor::new(pem_content.as_bytes()));
     let cert_der = rustls_pemfile::certs(&mut reader)
@@ -150,7 +176,7 @@ fn get_file_sha1(path: &std::path::Path) -> Result<String> {
     let mut hasher = Sha1::new();
     hasher.update(cert_der.as_ref());
     let result = hasher.finalize();
-    
+
     Ok(hex::encode(result).to_uppercase())
 }
 
@@ -175,6 +201,6 @@ fn is_cert_installed_macos(sha1: &str) -> Result<bool> {
     let target_sha1 = sha1.replace(" ", "").to_uppercase();
     // Normalize output (remove spaces/newlines for robust check)
     let clean_stdout = stdout.replace(" ", "").replace("\n", "");
-    
+
     Ok(clean_stdout.contains(&target_sha1))
 }

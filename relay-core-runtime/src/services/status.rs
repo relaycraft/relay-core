@@ -1,6 +1,6 @@
+use crate::{CoreMetrics, CoreState, CoreStatusReport, CoreStatusSnapshot, RuntimeLifecycle};
 use async_trait::async_trait;
 use tokio::sync::watch;
-use crate::{CoreMetrics, CoreState, CoreStatusReport, CoreStatusSnapshot, RuntimeLifecycle};
 
 #[async_trait]
 pub trait RuntimeStatusService: Send + Sync {

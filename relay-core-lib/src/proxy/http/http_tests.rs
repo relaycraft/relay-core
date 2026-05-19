@@ -1,18 +1,18 @@
 use super::*;
-use relay_core_api::flow::Flow;
-use relay_core_api::policy::{ProxyPolicy, QuicMode};
-use http_body_util::Full;
-use std::sync::Arc;
-use hyper::{Request, Response, StatusCode};
-use hyper::body::Bytes;
-use hyper_util::client::legacy::Client;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::sync::Once;
-use std::collections::{BTreeSet, HashMap};
 use crate::capture::loop_detection::LoopDetector;
-use uuid::Uuid;
 use chrono::Utc;
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::client::legacy::Client;
+use relay_core_api::flow::Flow;
 use relay_core_api::flow::{NetworkInfo, TransportProtocol};
+use relay_core_api::policy::{ProxyPolicy, QuicMode};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+use std::sync::Once;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use uuid::Uuid;
 
 static INIT: Once = Once::new();
 
@@ -89,18 +89,20 @@ async fn test_request_timeout() {
         false, // is_mitm
         rx_policy,
         None, // target_addr
-        loop_detector
-    ).await.unwrap();
+        loop_detector,
+    )
+    .await
+    .unwrap();
 
     // 4. Verify 504 Gateway Timeout
     assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
 }
 
-
 fn create_dummy_client() -> Arc<HttpsClient> {
     init_crypto();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots().unwrap()
+        .with_native_roots()
+        .unwrap()
         .https_or_http()
         .enable_http1()
         .build();
@@ -124,7 +126,7 @@ fn test_quic_downgrade_logic() {
     let (mut parts, _) = response.into_parts();
 
     // 3. Setup Flow
-    let mut flow = create_test_flow(); 
+    let mut flow = create_test_flow();
 
     // 4. Apply Logic
     super::apply_quic_downgrade(&mut parts, &mut flow, &policy);

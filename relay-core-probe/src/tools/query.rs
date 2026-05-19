@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use super::{make_tool, ok_json, require_str};
 use crate::server::ProbeContext;
 use relay_core_api::flow::Layer;
-use relay_core_api::modification::FlowQuery;
 use relay_core_api::har::flow_to_har_entry;
+use relay_core_api::modification::FlowQuery;
 use rmcp::model::{Content, Tool};
-use serde_json::{json, Value};
-use super::{make_tool, require_str, ok_json};
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub fn search_flows_schema() -> Tool {
     make_tool(
@@ -53,15 +53,33 @@ pub fn get_metrics_schema() -> Tool {
 
 pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let query = FlowQuery {
-        host:          args.get("host").and_then(Value::as_str).map(str::to_string),
-        path_contains: args.get("path_contains").and_then(Value::as_str).map(str::to_string),
-        method:        args.get("method").and_then(Value::as_str).map(str::to_string),
-        status_min:    args.get("status_min").and_then(Value::as_u64).map(|v| v as u16),
-        status_max:    args.get("status_max").and_then(Value::as_u64).map(|v| v as u16),
-        has_error:     args.get("has_error").and_then(Value::as_bool),
-        is_websocket:  args.get("is_websocket").and_then(Value::as_bool),
-        limit:         args.get("limit").and_then(Value::as_u64).map(|v| v as usize),
-        offset:        args.get("offset").and_then(Value::as_u64).map(|v| v as usize),
+        host: args.get("host").and_then(Value::as_str).map(str::to_string),
+        path_contains: args
+            .get("path_contains")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        method: args
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        status_min: args
+            .get("status_min")
+            .and_then(Value::as_u64)
+            .map(|v| v as u16),
+        status_max: args
+            .get("status_max")
+            .and_then(Value::as_u64)
+            .map(|v| v as u16),
+        has_error: args.get("has_error").and_then(Value::as_bool),
+        is_websocket: args.get("is_websocket").and_then(Value::as_bool),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize),
+        offset: args
+            .get("offset")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize),
     };
     let summaries = ctx.flows.search_flows(query).await;
     ok_json(&summaries)
@@ -97,16 +115,29 @@ pub fn replay_flow_schema() -> Tool {
 
 pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let id = require_str(&args, "id")?.to_string();
-    let flow = ctx.flows.get_flow(&id).await
+    let flow = ctx
+        .flows
+        .get_flow(&id)
+        .await
         .ok_or(format!("Flow not found: {}", id))?;
 
     let (method, url, headers, body) = match &flow.layer {
         Layer::Http(http) => {
-            let headers: Vec<(String, String)> = http.request.headers.iter()
-                .filter(|(k, _)| !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection"))
+            let headers: Vec<(String, String)> = http
+                .request
+                .headers
+                .iter()
+                .filter(|(k, _)| {
+                    !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection")
+                })
                 .cloned()
                 .collect();
-            (http.request.method.clone(), http.request.url.to_string(), headers, http.request.body.clone())
+            (
+                http.request.method.clone(),
+                http.request.url.to_string(),
+                headers,
+                http.request.body.clone(),
+            )
         }
         _ => return Err("Replay only supports HTTP flows".to_string()),
     };
@@ -117,7 +148,9 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
         .map_err(|e| e.to_string())?;
 
     let mut req = client.request(
-        method.parse::<reqwest::Method>().map_err(|e| format!("Invalid method: {}", e))?,
+        method
+            .parse::<reqwest::Method>()
+            .map_err(|e| format!("Invalid method: {}", e))?,
         &url,
     );
     for (k, v) in &headers {
@@ -127,19 +160,27 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
         req = req.body(b.content.clone());
     }
 
-    let resp = req.send().await.map_err(|e| format!("Replay failed: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("Replay failed: {}", e))?;
     let status = resp.status().as_u16();
-    let resp_headers: Vec<(String, String)> = resp.headers().iter()
+    let resp_headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
     let resp_body = resp.text().await.map_err(|e| e.to_string())?;
 
-    Ok(vec![Content::text(serde_json::to_string_pretty(&json!({
-        "status": status,
-        "url": url,
-        "headers": resp_headers,
-        "body": resp_body,
-    })).map_err(|e| e.to_string())?)])
+    Ok(vec![Content::text(
+        serde_json::to_string_pretty(&json!({
+            "status": status,
+            "url": url,
+            "headers": resp_headers,
+            "body": resp_body,
+        }))
+        .map_err(|e| e.to_string())?,
+    )])
 }
 
 pub fn export_har_schema() -> Tool {
@@ -161,14 +202,24 @@ pub fn export_har_schema() -> Tool {
 
 pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, String> {
     let entries = if let Some(id) = args.get("id").and_then(Value::as_str) {
-        let flow = ctx.flows.get_flow(id).await
+        let flow = ctx
+            .flows
+            .get_flow(id)
+            .await
             .ok_or(format!("Flow not found: {}", id))?;
         vec![flow_to_har_entry(&flow)]
     } else {
         let query = FlowQuery {
             host: args.get("host").and_then(Value::as_str).map(str::to_string),
-            path_contains: args.get("path_contains").and_then(Value::as_str).map(str::to_string),
-            limit: args.get("limit").and_then(Value::as_u64).map(|v| v as usize).or(Some(50)),
+            path_contains: args
+                .get("path_contains")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            limit: args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize)
+                .or(Some(50)),
             ..Default::default()
         };
         let summaries = ctx.flows.search_flows(query).await;

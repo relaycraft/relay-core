@@ -24,7 +24,6 @@ impl AuditActor {
             Self::Cli => "cli",
         }
     }
-
 }
 
 impl FromStr for AuditActor {
@@ -60,7 +59,6 @@ impl AuditEventKind {
             Self::PolicyUpdated => "policy_updated",
         }
     }
-
 }
 
 impl FromStr for AuditEventKind {
@@ -91,7 +89,6 @@ impl AuditOutcome {
             Self::Failed => "failed",
         }
     }
-
 }
 
 impl FromStr for AuditOutcome {

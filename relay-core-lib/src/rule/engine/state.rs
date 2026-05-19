@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use std::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
@@ -9,12 +9,12 @@ use tokio::time::Instant;
 pub trait RuleStateStore: Send + Sync + std::fmt::Debug {
     /// Increment a counter for the given key.
     /// Returns the new value.
-    /// The window parameter suggests a time window for rate limiting, 
+    /// The window parameter suggests a time window for rate limiting,
     /// but in this simple interface it might just set the TTL for the key if it's new.
     async fn increment_counter(&self, key: &str, window: Duration) -> u64;
-    
+
     async fn get_variable(&self, key: &str) -> Option<String>;
-    
+
     async fn set_variable(&self, key: &str, value: String, ttl: Option<Duration>);
 }
 
@@ -62,10 +62,12 @@ impl RuleStateStore for InMemoryRuleStateStore {
             window
         };
 
-        let entry = counters.entry(key.to_string()).or_insert_with(|| CounterState {
-            count: 0,
-            expires_at: now + window,
-        });
+        let entry = counters
+            .entry(key.to_string())
+            .or_insert_with(|| CounterState {
+                count: 0,
+                expires_at: now + window,
+            });
 
         if now >= entry.expires_at {
             entry.count = 0;
@@ -75,20 +77,21 @@ impl RuleStateStore for InMemoryRuleStateStore {
         entry.count = entry.count.saturating_add(1);
         entry.count
     }
-    
+
     async fn get_variable(&self, key: &str) -> Option<String> {
         let mut variables = self.variables.lock().await;
         if let Some(v) = variables.get(key) {
             if let Some(exp) = v.expires_at
-                && Instant::now() >= exp {
-                    variables.remove(key);
-                    return None;
-                }
+                && Instant::now() >= exp
+            {
+                variables.remove(key);
+                return None;
+            }
             return Some(v.value.clone());
         }
         None
     }
-    
+
     async fn set_variable(&self, key: &str, value: String, ttl: Option<Duration>) {
         let expires_at = ttl.and_then(|d| {
             if d.is_zero() {
@@ -98,13 +101,7 @@ impl RuleStateStore for InMemoryRuleStateStore {
             }
         });
         let mut variables = self.variables.lock().await;
-        variables.insert(
-            key.to_string(),
-            VariableState {
-                value,
-                expires_at,
-            },
-        );
+        variables.insert(key.to_string(), VariableState { value, expires_at });
     }
 }
 

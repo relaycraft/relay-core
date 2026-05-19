@@ -9,12 +9,12 @@
 //! - `actions`: Implementation of specific actions (e.g., Modify Header, Drop, Mock).
 //! - `validator`: Validates if filters/actions are appropriate for the current execution stage.
 
+pub mod actions;
 pub mod compiled;
 pub mod compiler;
-pub mod matcher;
-pub mod validator;
 pub mod executor;
-pub mod actions;
+pub mod matcher;
 pub mod state;
+pub mod validator;
 
-pub use executor::{RuleEngine, ExecutionContext};
+pub use executor::{ExecutionContext, RuleEngine};

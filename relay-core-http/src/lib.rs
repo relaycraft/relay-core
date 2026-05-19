@@ -22,7 +22,7 @@
 //! | POST   | /api/v1/intercepts/{key}/resume   | Resume an intercepted flow         |
 //! | GET    | /api/v1/events                    | SSE stream of live flow events     |
 
-pub mod server;
 mod routes;
+pub mod server;
 
 pub use server::{HttpApiConfig, HttpApiServer};

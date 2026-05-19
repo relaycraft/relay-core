@@ -1,7 +1,7 @@
+use crate::rule::Rule;
+use glob::Pattern;
 use ipnetwork::IpNetwork;
 use regex::Regex;
-use glob::Pattern;
-use crate::rule::Rule;
 
 #[derive(Debug)]
 pub struct CompiledRule {
@@ -20,8 +20,14 @@ pub enum CompiledFilter {
     Host(CompiledStringMatcher),
     Path(CompiledStringMatcher),
     Method(CompiledStringMatcher),
-    RequestHeader { name: String, value: Option<CompiledStringMatcher> },
-    ResponseHeader { name: String, value: Option<CompiledStringMatcher> },
+    RequestHeader {
+        name: String,
+        value: Option<CompiledStringMatcher>,
+    },
+    ResponseHeader {
+        name: String,
+        value: Option<CompiledStringMatcher>,
+    },
     StatusCode(u16),
     ResponseBody(CompiledStringMatcher),
     WebSocketMessage(CompiledStringMatcher),

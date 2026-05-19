@@ -1,15 +1,15 @@
-use tauri::{AppHandle, Runtime, State, Manager};
-use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
-use relay_core_runtime::{
-    CoreAuditSnapshot, CoreInterceptSnapshot, CoreMetrics, CoreStatusSnapshot,
-    ProxyConfig, ProxySpawnResult, ProxyStopResult,
-};
-use relay_core_runtime::audit::AuditActor;
 use crate::RelayCoreState;
-use crate::interceptor::TauriInterceptor;
 use crate::commands::flow::TauriFlowSink;
-use std::sync::Arc;
+use crate::interceptor::TauriInterceptor;
+use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
+use relay_core_runtime::audit::AuditActor;
+use relay_core_runtime::{
+    CoreAuditSnapshot, CoreInterceptSnapshot, CoreMetrics, CoreStatusSnapshot, ProxyConfig,
+    ProxySpawnResult, ProxyStopResult,
+};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::mpsc;
 
 fn resolve_proxy_port(port: Option<u16>) -> u16 {
@@ -48,10 +48,7 @@ pub fn get_policy(state: State<'_, RelayCoreState>) -> ProxyPolicy {
 }
 
 #[tauri::command]
-pub fn update_policy(
-    state: State<'_, RelayCoreState>,
-    policy: ProxyPolicy,
-) -> Result<(), String> {
+pub fn update_policy(state: State<'_, RelayCoreState>, policy: ProxyPolicy) -> Result<(), String> {
     update_policy_impl(&state, policy);
     Ok(())
 }
@@ -78,12 +75,16 @@ pub fn get_policy_impl(state: &RelayCoreState) -> ProxyPolicy {
 }
 
 pub fn update_policy_impl(state: &RelayCoreState, policy: ProxyPolicy) {
-    state.ctx.policy
+    state
+        .ctx
+        .policy
         .update_policy_from(AuditActor::Tauri, "tauri.policy".to_string(), policy);
 }
 
 pub fn patch_policy_impl(state: &RelayCoreState, patch: ProxyPolicyPatch) {
-    state.ctx.policy
+    state
+        .ctx
+        .policy
         .patch_policy_from(AuditActor::Tauri, "tauri.policy.patch".to_string(), patch);
 }
 
@@ -101,7 +102,9 @@ pub async fn stop_core_proxy_impl(state: &RelayCoreState) -> Result<String, Stri
 
 #[tauri::command]
 pub async fn load_script(state: State<'_, RelayCoreState>, script: String) -> Result<(), String> {
-    state.ctx.script
+    state
+        .ctx
+        .script
         .load_script_from(AuditActor::Tauri, "tauri.load_script".to_string(), &script)
         .await
 }
@@ -121,7 +124,7 @@ pub fn get_ca_cert_path<R: Runtime>(app: AppHandle<R>) -> Result<String, String>
 pub async fn install_ca_cert<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let ca_cert_path = app_data_dir.join("ca_cert.pem");
-    
+
     if !ca_cert_path.exists() {
         return Err("CA certificate not found. Start the proxy first.".to_string());
     }
@@ -132,9 +135,12 @@ pub async fn install_ca_cert<R: Runtime>(app: AppHandle<R>) -> Result<String, St
             .arg(&ca_cert_path)
             .status()
             .map_err(|e| format!("Failed to open certificate file: {}", e))?;
-            
+
         if status.success() {
-            Ok("Certificate file opened. Please follow system prompts to add to Keychain.".to_string())
+            Ok(
+                "Certificate file opened. Please follow system prompts to add to Keychain."
+                    .to_string(),
+            )
         } else {
             Err("Failed to open certificate file".to_string())
         }
@@ -148,9 +154,9 @@ pub async fn install_ca_cert<R: Runtime>(app: AppHandle<R>) -> Result<String, St
             .map_err(|e| format!("Failed to open certificate file: {}", e))?;
 
         if status.success() {
-             Ok("Certificate file opened. Please follow system prompts to install.".to_string())
+            Ok("Certificate file opened. Please follow system prompts to install.".to_string())
         } else {
-             Err("Failed to open certificate file".to_string())
+            Err("Failed to open certificate file".to_string())
         }
     }
 
@@ -162,12 +168,12 @@ pub async fn install_ca_cert<R: Runtime>(app: AppHandle<R>) -> Result<String, St
             .map_err(|e| format!("Failed to open certificate file: {}", e))?;
 
         if status.success() {
-             Ok("Certificate file opened.".to_string())
+            Ok("Certificate file opened.".to_string())
         } else {
-             Err("Failed to open certificate file".to_string())
+            Err("Failed to open certificate file".to_string())
         }
     }
-    
+
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Err("Unsupported operating system for auto-install".to_string())
@@ -181,19 +187,19 @@ pub async fn start_core_proxy<R: Runtime>(
     port: Option<u16>,
 ) -> Result<String, String> {
     println!("Starting RelayCore Proxy from Tauri Command...");
-    
+
     let port = resolve_proxy_port(port);
-    
+
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let config = build_proxy_config(app_data_dir, port)?;
 
     // Create Flow Sink (mpsc channel)
     let (proxy_tx, proxy_rx) = mpsc::channel(1000);
-    
+
     let sink = TauriFlowSink {
         app_handle: app.clone(),
     };
-    
+
     // Spawn sink processor
     tokio::spawn(async move {
         sink.run(proxy_rx).await;
@@ -205,7 +211,10 @@ pub async fn start_core_proxy<R: Runtime>(
         flow_sender: proxy_tx.clone(),
     });
 
-    match state.core.spawn_proxy(config, proxy_tx, Some(tauri_interceptor)) {
+    match state
+        .core
+        .spawn_proxy(config, proxy_tx, Some(tauri_interceptor))
+    {
         Ok(ProxySpawnResult::Started(_)) => {}
         Ok(ProxySpawnResult::AlreadyRunning) => return Ok("Already started".to_string()),
         Err(error) => return Err(error),
@@ -218,22 +227,29 @@ pub async fn start_core_proxy<R: Runtime>(
 mod tests {
     use super::{
         build_proxy_config, get_pending_intercepts_impl, get_policy_impl, get_recent_audit_impl,
-        patch_policy_impl, resolve_proxy_port, stop_core_proxy_impl,
-        update_policy_impl,
+        patch_policy_impl, resolve_proxy_port, stop_core_proxy_impl, update_policy_impl,
     };
     use crate::RelayCoreState;
-    use relay_core_lib::interceptor::NoOpInterceptor;
     use relay_core_api::policy::ProxyPolicy;
-    use relay_core_runtime::{ProxySpawnResult, RuntimeLifecyclePhase, audit::{AuditActor, AuditEventKind}};
+    use relay_core_lib::interceptor::NoOpInterceptor;
+    use relay_core_runtime::{
+        ProxySpawnResult, RuntimeLifecyclePhase,
+        audit::{AuditActor, AuditEventKind},
+    };
     use serde_json::json;
-    use std::{sync::{Arc, Once}, time::Duration};
+    use std::{
+        sync::{Arc, Once},
+        time::Duration,
+    };
     use tokio::sync::mpsc;
 
     static INIT: Once = Once::new();
 
     fn init_crypto() {
         INIT.call_once(|| {
-            rustls::crypto::ring::default_provider().install_default().ok();
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .ok();
         });
     }
 
@@ -271,7 +287,9 @@ mod tests {
     #[tokio::test]
     async fn test_stop_core_proxy_impl_not_running() {
         let state = RelayCoreState::new_async().await;
-        let result = stop_core_proxy_impl(&state).await.expect("stop should succeed");
+        let result = stop_core_proxy_impl(&state)
+            .await
+            .expect("stop should succeed");
         assert_eq!(result, "Not running");
     }
 
@@ -298,15 +316,15 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let result = stop_core_proxy_impl(&state).await.expect("stop should succeed");
+        let result = stop_core_proxy_impl(&state)
+            .await
+            .expect("stop should succeed");
         assert_eq!(result, "stopped");
         let lifecycle = state.core.lifecycle();
         assert_eq!(lifecycle.phase, RuntimeLifecyclePhase::Stopping);
         assert_eq!(lifecycle.port, Some(port));
 
-        handle
-            .await
-            .expect("proxy task should join");
+        handle.await.expect("proxy task should join");
         assert_eq!(state.core.lifecycle().phase, RuntimeLifecyclePhase::Stopped);
     }
 
@@ -333,7 +351,10 @@ mod tests {
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.events[0].actor, AuditActor::Tauri);
         assert_eq!(snapshot.events[0].kind, AuditEventKind::PolicyUpdated);
-        assert_eq!(snapshot.events[0].details["transparent_enabled"], json!(false));
+        assert_eq!(
+            snapshot.events[0].details["transparent_enabled"],
+            json!(false)
+        );
     }
 
     #[tokio::test]
@@ -380,7 +401,10 @@ mod tests {
         let after = get_policy_impl(&state);
         assert_eq!(after.request_timeout_ms, before.request_timeout_ms);
         assert!(after.redaction.enabled);
-        assert_eq!(after.redaction.redact_bodies, before.redaction.redact_bodies);
+        assert_eq!(
+            after.redaction.redact_bodies,
+            before.redaction.redact_bodies
+        );
 
         let snapshot = get_recent_audit_impl(&state);
         assert!(!snapshot.events.is_empty());

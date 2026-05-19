@@ -1,5 +1,5 @@
-pub mod model;
 pub mod engine;
+pub mod model;
 
-pub use model::*;
 pub use engine::RuleEngine;
+pub use model::*;

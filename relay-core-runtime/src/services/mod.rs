@@ -1,22 +1,22 @@
-pub mod flow_read;
+pub mod audit;
 pub mod flow_event;
-pub mod rule;
+pub mod flow_read;
 pub mod intercept;
 pub mod policy;
-pub mod audit;
-pub mod status;
+pub mod rule;
 #[cfg(feature = "script")]
 pub mod script;
+pub mod status;
 
-pub use flow_read::FlowReadService;
+pub use audit::AuditService;
 pub use flow_event::FlowEventHub;
-pub use rule::RuleService;
+pub use flow_read::FlowReadService;
 pub use intercept::InterceptService;
 pub use policy::PolicyService;
-pub use audit::AuditService;
-pub use status::RuntimeStatusService;
+pub use rule::RuleService;
 #[cfg(feature = "script")]
 pub use script::ScriptService;
+pub use status::RuntimeStatusService;
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
-use tokio::sync::broadcast;
-use relay_core_api::flow::FlowUpdate;
 use crate::CoreState;
+use relay_core_api::flow::FlowUpdate;
+use tokio::sync::broadcast;
 
 pub trait FlowEventHub: Send + Sync {
     fn subscribe_flow_updates(&self) -> broadcast::Receiver<FlowUpdate>;

@@ -1,16 +1,11 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use relay_core_lib::intercept::{
-    Interceptor, 
-    InterceptionResult, 
-    RequestAction, 
-    ResponseAction, 
-    WebSocketMessageAction,
-    HttpBody, 
-    BoxError
-};
-use relay_core_api::flow::{Flow, Layer, HttpResponse, ResponseTiming, BodyData};
 use crate::CoreState;
+use async_trait::async_trait;
+use relay_core_api::flow::{BodyData, Flow, HttpResponse, Layer, ResponseTiming};
+use relay_core_lib::intercept::{
+    BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
+    WebSocketMessageAction,
+};
+use std::sync::Arc;
 
 pub struct MetricsInterceptor {
     state: Arc<CoreState>,
@@ -51,8 +46,8 @@ impl Interceptor for MetricsInterceptor {
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
-                    connect_time_ms: None,
-                    ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
                 };
 
@@ -62,13 +57,13 @@ impl Interceptor for MetricsInterceptor {
             if http.request.url.path() == "/_relay/metrics" {
                 let metrics = self.state.get_metrics().await;
                 let json = serde_json::to_string(&metrics).unwrap_or_default();
-                
+
                 let body_data = BodyData {
                     encoding: "utf-8".to_string(),
                     content: json.clone(),
                     size: json.len() as u64,
                 };
-                
+
                 let response = HttpResponse {
                     status: 200,
                     status_text: "OK".to_string(),
@@ -82,26 +77,38 @@ impl Interceptor for MetricsInterceptor {
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
-                    connect_time_ms: None,
-                    ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
                 };
-                
+
                 return InterceptionResult::MockResponse(response);
             }
         }
         InterceptionResult::Continue
     }
 
-    async fn on_request(&self, _flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
         Ok(RequestAction::Continue(body))
     }
 
-    async fn on_response(&self, _flow: &mut Flow, body: HttpBody) -> Result<ResponseAction, BoxError> {
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
         Ok(ResponseAction::Continue(body))
     }
 
-    async fn on_websocket_message(&self, _flow: &mut Flow, message: relay_core_api::flow::WebSocketMessage) -> Result<WebSocketMessageAction, BoxError> {
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<WebSocketMessageAction, BoxError> {
         Ok(WebSocketMessageAction::Continue(message))
     }
 }

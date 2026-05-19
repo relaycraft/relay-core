@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use crate::server::HttpApiContext;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, put, post},
-    Json, Router,
+    routing::{delete, get, post, put},
 };
 use relay_core_api::rule::Rule;
 use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::MockResponseRuleConfig;
-use crate::server::HttpApiContext;
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn router(ctx: Arc<HttpApiContext>) -> Router {
@@ -54,7 +54,8 @@ async fn delete_rule(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    let deleted = ctx.rules
+    let deleted = ctx
+        .rules
         .delete_rule_from(
             AuditActor::Http,
             "rule.delete",

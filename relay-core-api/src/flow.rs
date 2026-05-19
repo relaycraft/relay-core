@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
-use url::Url;
-use std::sync::Arc;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
+use std::collections::HashMap;
+use std::sync::Arc;
+use url::Url;
+use uuid::Uuid;
 
 /// Trait for custom protocol layers to implement
 pub trait ProtocolLayer: Any + Send + Sync + std::fmt::Debug {
@@ -14,7 +14,10 @@ pub trait ProtocolLayer: Any + Send + Sync + std::fmt::Debug {
 }
 
 // Custom serializer for Arc<dyn ProtocolLayer>
-fn serialize_custom_layer<S>(layer: &Arc<dyn ProtocolLayer>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_custom_layer<S>(
+    layer: &Arc<dyn ProtocolLayer>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -31,21 +34,20 @@ where
     D: Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
-    
+
     // Try to extract protocol and data
-    let protocol = value.get("protocol")
+    let protocol = value
+        .get("protocol")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
-        
-    let data = value.get("data")
+
+    let data = value
+        .get("data")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    Ok(Arc::new(GenericProtocolLayer { 
-        protocol,
-        data 
-    }))
+    Ok(Arc::new(GenericProtocolLayer { protocol, data }))
 }
 
 #[derive(Debug)]
@@ -73,16 +75,16 @@ pub struct Flow {
     pub id: Uuid,
     pub start_time: DateTime<Utc>,
     pub end_time: Option<DateTime<Utc>>,
-    
+
     /// L3/L4 Connection Info (IP, Port, Protocol)
     pub network: NetworkInfo,
-    
+
     /// The application layer protocol detected or parsed
     pub layer: Layer,
 
     /// Analysis tags (e.g., "error", "large-body", "injected")
     pub tags: Vec<String>,
-    
+
     /// Internal processing metadata (not necessarily for UI)
     #[serde(skip)]
     pub meta: HashMap<String, String>,
@@ -116,10 +118,13 @@ pub enum TransportProtocol {
 pub enum Layer {
     Http(HttpLayer),
     WebSocket(WebSocketLayer),
-    Tcp(TcpLayer), // For raw TCP flows without L7 parsing
-    Udp(UdpLayer), // For raw UDP flows
+    Tcp(TcpLayer),   // For raw TCP flows without L7 parsing
+    Udp(UdpLayer),   // For raw UDP flows
     Quic(QuicLayer), // For QUIC flows
-    #[serde(serialize_with = "serialize_custom_layer", deserialize_with = "deserialize_custom_layer")]
+    #[serde(
+        serialize_with = "serialize_custom_layer",
+        deserialize_with = "deserialize_custom_layer"
+    )]
     Custom(Arc<dyn ProtocolLayer>),
     Unknown,
 }
@@ -150,7 +155,7 @@ pub struct HttpLayer {
 pub struct HttpRequest {
     pub method: String,
     pub url: Url,
-    pub version: String, // HTTP/1.1, HTTP/2
+    pub version: String,                // HTTP/1.1, HTTP/2
     pub headers: Vec<(String, String)>, // Vec preserves order, unlike HashMap
     pub cookies: Vec<Cookie>,
     pub query: Vec<(String, String)>,
@@ -230,7 +235,7 @@ pub struct BodyData {
     /// Encoding (e.g., "utf-8", "base64")
     pub encoding: String,
     /// The actual content. If binary, it should be base64 encoded string.
-    pub content: String, 
+    pub content: String,
     /// Original size in bytes before any decoding/unzipping
     pub size: u64,
 }
@@ -242,9 +247,9 @@ pub enum FlowUpdate {
     /// Full Flow update (e.g., initial creation, request/response headers)
     Full(Box<Flow>),
     /// Incremental WebSocket Message
-    WebSocketMessage { 
-        flow_id: String, 
-        message: WebSocketMessage 
+    WebSocketMessage {
+        flow_id: String,
+        message: WebSocketMessage,
     },
     /// Incremental HTTP Body Update (Request or Response)
     HttpBody {
@@ -253,4 +258,3 @@ pub enum FlowUpdate {
         body: BodyData,
     },
 }
-

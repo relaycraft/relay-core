@@ -1,18 +1,18 @@
+use bytes::Bytes;
+use deno_core::{AsyncResult, BufView, Resource};
+use futures_util::Stream;
+use http_body::{Body, Frame};
+use http_body_util::{BodyExt, StreamBody};
+use relay_core_lib::interceptor::{BoxError, HttpBody};
 use std::borrow::Cow;
 use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use deno_core::{Resource, AsyncResult, BufView};
-use bytes::Bytes;
-use relay_core_lib::interceptor::{HttpBody, BoxError};
-use futures_util::Stream;
-use tokio_util::io::StreamReader;
-use http_body::{Body, Frame};
-use http_body_util::{BodyExt, StreamBody};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
+use tokio_util::io::StreamReader;
 
 pub struct BodyStreamAdapter {
     body: HttpBody,
@@ -93,12 +93,11 @@ pub fn create_body_from_resource(resource: &HttpBodyResource) -> HttpBody {
             Ok(n) => {
                 buf.truncate(n);
                 Some((Ok(Frame::data(Bytes::from(buf))), reader.clone()))
-            },
+            }
             Err(e) => Some((Err(Box::new(e) as BoxError), reader.clone())),
         }
     });
-    
+
     // StreamBody expects Frame<D, E>.
     StreamBody::new(stream).boxed()
 }
-

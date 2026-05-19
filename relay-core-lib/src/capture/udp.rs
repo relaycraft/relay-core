@@ -1,15 +1,15 @@
-use std::net::{SocketAddr, IpAddr};
+#[allow(unused_imports)]
+use chrono::Utc;
+#[allow(unused_imports)]
+use relay_core_api::flow::{Flow, FlowUpdate, Layer, NetworkInfo, TransportProtocol, UdpLayer};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
-use tokio::net::UdpSocket;
-use std::sync::Arc;
-#[allow(unused_imports)]
-use relay_core_api::flow::{Flow, FlowUpdate, NetworkInfo, TransportProtocol, Layer, UdpLayer};
-#[allow(unused_imports)]
-use chrono::Utc;
 
 #[cfg(target_os = "linux")]
 use crate::capture::linux_tproxy::LinuxTproxy;
@@ -68,7 +68,11 @@ impl UdpSessionManager {
 
     /// Get existing session or create new one
     /// Returns (session, is_new)
-    pub async fn get_or_create_session(&self, src: SocketAddr, dst: SocketAddr) -> std::io::Result<(UdpSession, bool)> {
+    pub async fn get_or_create_session(
+        &self,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> std::io::Result<(UdpSession, bool)> {
         let key = UdpSessionKey::new(src, dst);
         // Fast path: read lock
         {
@@ -96,11 +100,11 @@ impl UdpSessionManager {
             // Create upstream socket: Bound to src, connect to dst
             let up = LinuxTproxy::create_transparent_udp_socket(src)?;
             up.connect(dst).await?;
-            
+
             // Create downstream socket: Bound to dst, connect to src
             let down = LinuxTproxy::create_transparent_udp_socket(dst)?;
             down.connect(src).await?;
-            
+
             (Some(Arc::new(up)), Some(Arc::new(down)))
         };
 
@@ -125,7 +129,7 @@ impl UdpSessionManager {
             let down_clone = down.clone();
             let last_activity = session.last_activity.clone();
             let bytes_transferred = session.bytes_transferred.clone();
-            
+
             tokio::spawn(async move {
                 let mut buf = [0u8; 65535];
                 loop {
@@ -137,7 +141,7 @@ impl UdpSessionManager {
                                 *last = Instant::now();
                             }
                             bytes_transferred.fetch_add(n, Ordering::Relaxed);
-                            
+
                             // Send to downstream (to Client A)
                             if let Err(e) = down_clone.send(&buf[..n]).await {
                                 tracing::debug!("UDP downstream send error: {}", e);
@@ -177,7 +181,7 @@ impl UdpSessionManager {
         for key in keys_to_remove {
             sessions.remove(&key);
         }
-        
+
         removed_ids
     }
 }
@@ -198,82 +202,86 @@ impl UdpProxy {
     }
 
     /// Run the proxy loop
-    pub async fn run(&self, on_flow: Sender<FlowUpdate>) -> crate::error::Result<()> 
-    {
+    pub async fn run(&self, on_flow: Sender<FlowUpdate>) -> crate::error::Result<()> {
         let mut buf = [0u8; 65535];
-        
+
         #[cfg(target_os = "linux")]
         {
             // Enable TPROXY on socket
             LinuxTproxy::enable_tproxy(&self.socket)?;
-            
+
             loop {
                 // Use recv_original_dst
-                let (len, src_addr, orig_dst) = match LinuxTproxy::recv_original_dst(&self.socket, &mut buf).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        tracing::error!("UDP TPROXY recv error: {}", e);
-                        continue;
-                    }
-                };
-                
+                let (len, src_addr, orig_dst) =
+                    match LinuxTproxy::recv_original_dst(&self.socket, &mut buf).await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            tracing::error!("UDP TPROXY recv error: {}", e);
+                            continue;
+                        }
+                    };
+
                 if let Some(dst_addr) = orig_dst {
-                     match self.session_manager.get_or_create_session(src_addr, dst_addr).await {
-                         Ok((session, is_new)) => {
-                             if is_new {
-                                 // Create initial flow
-                                 let flow = Flow {
-                                     id: session.flow_id,
-                                     start_time: Utc::now(),
-                                     end_time: None,
-                                     network: NetworkInfo {
-                                         client_ip: src_addr.ip().to_string(),
-                                         client_port: src_addr.port(),
-                                         server_ip: dst_addr.ip().to_string(),
-                                         server_port: dst_addr.port(),
-                                         protocol: TransportProtocol::UDP,
-                                         tls: false,
-                                         tls_version: None,
-                                         sni: None,
-                                     },
-                                     layer: Layer::Udp(UdpLayer {
-                                         payload_size: len,
-                                         packet_count: 1,
-                                     }),
-                                     tags: vec![],
-                                     meta: HashMap::new(),
-                                 };
-                                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
-                                     crate::metrics::inc_flows_dropped();
-                                 }
-                             }
-                             
-                             // Forward packet logic (A -> B)
-                             // Using upstream socket bound to src_addr
-                             if let Some(upstream) = &session.upstream_socket {
-                                 if let Err(e) = upstream.send(&buf[..len]).await {
-                                     tracing::debug!("UDP upstream send error: {}", e);
-                                 } else {
-                                     session.bytes_transferred.fetch_add(len, Ordering::Relaxed);
-                                 }
-                             }
-                         }
-                         Err(e) => {
-                             tracing::warn!("Failed to create UDP session: {}", e);
-                         }
-                     }
+                    match self
+                        .session_manager
+                        .get_or_create_session(src_addr, dst_addr)
+                        .await
+                    {
+                        Ok((session, is_new)) => {
+                            if is_new {
+                                // Create initial flow
+                                let flow = Flow {
+                                    id: session.flow_id,
+                                    start_time: Utc::now(),
+                                    end_time: None,
+                                    network: NetworkInfo {
+                                        client_ip: src_addr.ip().to_string(),
+                                        client_port: src_addr.port(),
+                                        server_ip: dst_addr.ip().to_string(),
+                                        server_port: dst_addr.port(),
+                                        protocol: TransportProtocol::UDP,
+                                        tls: false,
+                                        tls_version: None,
+                                        sni: None,
+                                    },
+                                    layer: Layer::Udp(UdpLayer {
+                                        payload_size: len,
+                                        packet_count: 1,
+                                    }),
+                                    tags: vec![],
+                                    meta: HashMap::new(),
+                                };
+                                if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                                    crate::metrics::inc_flows_dropped();
+                                }
+                            }
+
+                            // Forward packet logic (A -> B)
+                            // Using upstream socket bound to src_addr
+                            if let Some(upstream) = &session.upstream_socket {
+                                if let Err(e) = upstream.send(&buf[..len]).await {
+                                    tracing::debug!("UDP upstream send error: {}", e);
+                                } else {
+                                    session.bytes_transferred.fetch_add(len, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to create UDP session: {}", e);
+                        }
+                    }
                 }
             }
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
-             let _ = on_flow;
-             loop {
+            let _ = on_flow;
+            loop {
                 let (_len, _src_addr) = self.socket.recv_from(&mut buf).await?;
                 // Without TPROXY, we don't know the original destination easily
                 // Just consume packets to avoid buffer bloat
-             }
+            }
         }
     }
 }

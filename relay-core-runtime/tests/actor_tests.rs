@@ -80,8 +80,8 @@ fn create_test_ws_flow(url: &str) -> Flow {
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
-                connect_time_ms: None,
-                ssl_time_ms: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
                 },
             },
             messages: vec![],
@@ -104,7 +104,10 @@ async fn test_core_state_upsert_and_get_flow() {
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
     let found = state.get_flow(flow_id).await;
-    assert!(found.is_some(), "flow should be available in FlowStoreActor");
+    assert!(
+        found.is_some(),
+        "flow should be available in FlowStoreActor"
+    );
 }
 
 #[tokio::test]
@@ -123,7 +126,10 @@ async fn test_core_state_intercept_prefix_lookup() {
     state.register_intercept(key.clone(), tx).await;
 
     let pending = state.is_flow_intercepted("flow-123".to_string()).await;
-    assert!(pending, "flow should be marked intercepted by flow id prefix");
+    assert!(
+        pending,
+        "flow should be marked intercepted by flow id prefix"
+    );
 
     let resolved = state
         .resolve_intercept(key, InterceptionResult::Continue)
@@ -171,7 +177,11 @@ async fn test_core_state_set_and_get_rules() {
 
     state.set_rules(vec![rule]).await;
     let rules = state.get_rules().await;
-    assert_eq!(rules.len(), 1, "RuleStoreActor should persist in-memory rules");
+    assert_eq!(
+        rules.len(),
+        1,
+        "RuleStoreActor should persist in-memory rules"
+    );
     assert_eq!(rules[0].id, "rule-1");
 }
 
@@ -196,7 +206,10 @@ async fn test_core_state_pending_ws_message_lifecycle() {
         .await;
 
     let found = state.get_pending_ws_message(flow_key.clone()).await;
-    assert!(found.is_some(), "pending websocket message should be retrievable");
+    assert!(
+        found.is_some(),
+        "pending websocket message should be retrievable"
+    );
     assert_eq!(found.expect("msg").content.content, "hello");
 
     let (tx, _rx) = oneshot::channel();
@@ -207,7 +220,10 @@ async fn test_core_state_pending_ws_message_lifecycle() {
     assert!(resolved.is_ok(), "ws intercept should resolve");
 
     let after = state.get_pending_ws_message(flow_key).await;
-    assert!(after.is_none(), "pending websocket message should be cleared on resolve");
+    assert!(
+        after.is_none(),
+        "pending websocket message should be cleared on resolve"
+    );
 }
 
 #[tokio::test]
@@ -243,7 +259,11 @@ async fn test_core_state_ws_message_buffer_capped_at_2000() {
     let Layer::WebSocket(ws) = found.layer else {
         panic!("expected websocket flow");
     };
-    assert_eq!(ws.messages.len(), 2000, "ws message buffer should be capped");
+    assert_eq!(
+        ws.messages.len(),
+        2000,
+        "ws message buffer should be capped"
+    );
     assert_eq!(ws.messages[0].content.content, "m5");
     assert_eq!(ws.messages[1999].content.content, "m2004");
 }
@@ -350,7 +370,10 @@ async fn test_core_state_intercept_pending_and_resolve_missing_key() {
     let missing = state
         .resolve_intercept("flow-321:missing".to_string(), InterceptionResult::Continue)
         .await;
-    assert!(missing.is_err(), "resolving missing key should return error");
+    assert!(
+        missing.is_err(),
+        "resolving missing key should return error"
+    );
 }
 
 #[tokio::test]
@@ -383,7 +406,10 @@ async fn test_core_state_metrics_reflect_flow_and_intercept_lifecycle() {
         .await;
 
     let m1 = state.get_metrics().await;
-    assert!(m1.flows_total >= 1, "flows_total should include upserted flow");
+    assert!(
+        m1.flows_total >= 1,
+        "flows_total should include upserted flow"
+    );
     assert!(m1.flows_in_memory >= 1, "flow should be stored in memory");
     assert_eq!(m1.intercepts_pending, 1, "one intercept should be pending");
     assert_eq!(
@@ -399,7 +425,9 @@ async fn test_core_state_metrics_reflect_flow_and_intercept_lifecycle() {
         "oldest websocket pending age should be present when pending websocket message exists"
     );
 
-    let resolved = state.resolve_intercept(key, InterceptionResult::Continue).await;
+    let resolved = state
+        .resolve_intercept(key, InterceptionResult::Continue)
+        .await;
     assert!(resolved.is_ok(), "intercept resolve should succeed");
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 

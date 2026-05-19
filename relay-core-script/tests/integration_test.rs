@@ -1,17 +1,22 @@
+use bytes::Bytes;
+use chrono::Utc;
+use http_body_util::{BodyExt, Full};
+use relay_core_api::flow::{
+    BodyData, Direction, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
+    ResponseTiming, TransportProtocol, WebSocketMessage,
+};
+use relay_core_lib::interceptor::{
+    BoxError, Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
+};
 use relay_core_script::ScriptInterceptor;
-use relay_core_lib::interceptor::{Interceptor, RequestAction, ResponseAction, WebSocketMessageAction, BoxError};
-use relay_core_api::flow::{Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, TransportProtocol, WebSocketMessage, BodyData, Direction, ResponseTiming};
+use std::collections::HashMap;
 use url::Url;
 use uuid::Uuid;
-use chrono::Utc;
-use std::collections::HashMap;
-use http_body_util::{Full, BodyExt};
-use bytes::Bytes;
 
 #[tokio::test]
 async fn test_deno_script_on_request() {
     let interceptor = ScriptInterceptor::new().await.unwrap();
-    
+
     // JS script that modifies a header - Deno style
     let script = r#"
         globalThis.onRequest = function(context, flow) {
@@ -23,21 +28,27 @@ async fn test_deno_script_on_request() {
             return flow;
         }
     "#;
-    
+
     interceptor.load_script(script).await.unwrap();
-    
+
     let mut flow = create_dummy_flow();
-    let body = Full::new(Bytes::new()).map_err(|e| Box::new(e) as BoxError).boxed();
-    
+    let body = Full::new(Bytes::new())
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+
     match interceptor.on_request(&mut flow, body).await.unwrap() {
         RequestAction::Continue(_) => {
             if let Layer::Http(http) = &flow.layer {
                 let headers = &http.request.headers;
-                assert!(headers.iter().any(|(k, v)| k == "X-Deno-Scripted" && v == "true"));
+                assert!(
+                    headers
+                        .iter()
+                        .any(|(k, v)| k == "X-Deno-Scripted" && v == "true")
+                );
             } else {
                 panic!("Flow layer is not Http");
             }
-        },
+        }
         res => panic!("Expected Continue, got {:?}", res),
     }
 }
@@ -45,7 +56,7 @@ async fn test_deno_script_on_request() {
 #[tokio::test]
 async fn test_deno_script_on_websocket_message() {
     let interceptor = ScriptInterceptor::new().await.unwrap();
-    
+
     let script = r#"
         globalThis.onWebSocketMessage = function(context, flow, message) {
             if (message.content.encoding === "utf-8") {
@@ -54,11 +65,11 @@ async fn test_deno_script_on_websocket_message() {
             return message;
         }
     "#;
-    
+
     interceptor.load_script(script).await.unwrap();
-    
+
     let mut flow = create_dummy_flow();
-    
+
     let message = WebSocketMessage {
         id: Uuid::new_v4(),
         timestamp: Utc::now(),
@@ -70,11 +81,15 @@ async fn test_deno_script_on_websocket_message() {
         },
         opcode: "Text".to_string(),
     };
-    
-    match interceptor.on_websocket_message(&mut flow, message.clone()).await.unwrap() {
+
+    match interceptor
+        .on_websocket_message(&mut flow, message.clone())
+        .await
+        .unwrap()
+    {
         WebSocketMessageAction::Continue(mod_msg) => {
             assert_eq!(mod_msg.content.content, "Hello [Modified]");
-        },
+        }
         res => panic!("Expected Continue, got {:?}", res),
     }
 }
@@ -115,7 +130,7 @@ fn create_dummy_flow() -> Flow {
 #[tokio::test]
 async fn test_deno_script_on_websocket_binary_message() {
     let interceptor = ScriptInterceptor::new().await.unwrap();
-    
+
     let script = r#"
         globalThis.onWebSocketMessage = function(context, flow, message) {
             if (message.content.encoding === "base64") {
@@ -127,11 +142,11 @@ async fn test_deno_script_on_websocket_binary_message() {
             return message;
         }
     "#;
-    
+
     interceptor.load_script(script).await.unwrap();
-    
+
     let mut flow = create_dummy_flow();
-    
+
     let message = WebSocketMessage {
         id: Uuid::new_v4(),
         timestamp: Utc::now(),
@@ -143,12 +158,16 @@ async fn test_deno_script_on_websocket_binary_message() {
         },
         opcode: "Binary".to_string(),
     };
-    
-    match interceptor.on_websocket_message(&mut flow, message.clone()).await.unwrap() {
+
+    match interceptor
+        .on_websocket_message(&mut flow, message.clone())
+        .await
+        .unwrap()
+    {
         WebSocketMessageAction::Continue(mod_msg) => {
             assert_eq!(mod_msg.content.content, "SGVsbG8gW0Jpbk1vZF0=");
             assert_eq!(mod_msg.content.encoding, "base64");
-        },
+        }
         res => panic!("Expected Continue, got {:?}", res),
     }
 }
@@ -174,7 +193,9 @@ async fn test_deno_script_on_response() {
             version: "HTTP/1.1".to_string(),
             headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
             body: None,
-            timing: ResponseTiming { time_to_first_byte: None, time_to_last_byte: None,
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
                 connect_time_ms: None,
                 ssl_time_ms: None,
             },

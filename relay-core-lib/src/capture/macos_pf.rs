@@ -1,11 +1,11 @@
-use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::capture::original_dst::OriginalDstProvider;
+use async_trait::async_trait;
 use std::collections::BTreeSet;
-use std::io;
 use std::fs::File;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::io::AsRawFd;
 use tokio::net::TcpStream;
-use async_trait::async_trait;
-use crate::capture::original_dst::OriginalDstProvider;
 use tracing::warn;
 
 // Constants for PF
@@ -42,7 +42,7 @@ struct pfioc_natlook {
 // 'D' = 0x44
 // 23 = 0x17
 // 0xc0000000 | (0x4c << 16) | (0x44 << 8) | 0x17 = 0xc04c4417
-const DIOCNATLOOK: u64 = 0xc04c4417; 
+const DIOCNATLOOK: u64 = 0xc04c4417;
 
 #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
 pub struct MacOsOriginalDstProvider {
@@ -83,12 +83,17 @@ impl MacOsOriginalDstProvider {
                 pnl.sport = addr.port().to_be();
             }
             SocketAddr::V6(addr) => {
-                 let octets = addr.ip().octets();
-                 for i in 0..4 {
-                     let val = u32::from_be_bytes([octets[i*4], octets[i*4+1], octets[i*4+2], octets[i*4+3]]);
-                     pnl.saddr.addr[i] = val.to_be();
-                 }
-                 pnl.sport = addr.port().to_be();
+                let octets = addr.ip().octets();
+                for i in 0..4 {
+                    let val = u32::from_be_bytes([
+                        octets[i * 4],
+                        octets[i * 4 + 1],
+                        octets[i * 4 + 2],
+                        octets[i * 4 + 3],
+                    ]);
+                    pnl.saddr.addr[i] = val.to_be();
+                }
+                pnl.sport = addr.port().to_be();
             }
         }
 
@@ -98,19 +103,22 @@ impl MacOsOriginalDstProvider {
                 pnl.dport = addr.port().to_be();
             }
             SocketAddr::V6(addr) => {
-                 let octets = addr.ip().octets();
-                 for i in 0..4 {
-                     let val = u32::from_be_bytes([octets[i*4], octets[i*4+1], octets[i*4+2], octets[i*4+3]]);
-                     pnl.daddr.addr[i] = val.to_be();
-                 }
-                 pnl.dport = addr.port().to_be();
+                let octets = addr.ip().octets();
+                for i in 0..4 {
+                    let val = u32::from_be_bytes([
+                        octets[i * 4],
+                        octets[i * 4 + 1],
+                        octets[i * 4 + 2],
+                        octets[i * 4 + 3],
+                    ]);
+                    pnl.daddr.addr[i] = val.to_be();
+                }
+                pnl.dport = addr.port().to_be();
             }
         }
 
         let fd = self.pf_dev.as_raw_fd();
-        let ret = unsafe {
-            libc::ioctl(fd, DIOCNATLOOK, &mut pnl)
-        };
+        let ret = unsafe { libc::ioctl(fd, DIOCNATLOOK, &mut pnl) };
 
         if ret < 0 {
             return Err(io::Error::last_os_error());
@@ -120,30 +128,30 @@ impl MacOsOriginalDstProvider {
         // This is the original destination.
         // rdport is in Network Byte Order (BE).
         let port = u16::from_be(pnl.rdport);
-        
+
         if pnl.af == libc::AF_INET as u8 {
-             // rdaddr.addr[0] is in BE. u32::from_be converts it to Host.
-             // Ipv4Addr::from(u32) expects Host Order?
-             // Wait, Ipv4Addr::from(u32) creates it from host u32.
-             // But let's check.
-             // Ipv4Addr::new(a,b,c,d).
-             // Let's use octets to be safe.
-             let val = u32::from_be(pnl.rdaddr.addr[0]);
-             let ip = Ipv4Addr::from(val);
-             Ok(SocketAddr::new(IpAddr::V4(ip), port))
+            // rdaddr.addr[0] is in BE. u32::from_be converts it to Host.
+            // Ipv4Addr::from(u32) expects Host Order?
+            // Wait, Ipv4Addr::from(u32) creates it from host u32.
+            // But let's check.
+            // Ipv4Addr::new(a,b,c,d).
+            // Let's use octets to be safe.
+            let val = u32::from_be(pnl.rdaddr.addr[0]);
+            let ip = Ipv4Addr::from(val);
+            Ok(SocketAddr::new(IpAddr::V4(ip), port))
         } else {
-             // Reconstruct IPv6
-             let mut octets = [0u8; 16];
-             for i in 0..4 {
-                 let val = u32::from_be(pnl.rdaddr.addr[i]);
-                 let bytes = val.to_be_bytes();
-                 octets[i*4] = bytes[0];
-                 octets[i*4+1] = bytes[1];
-                 octets[i*4+2] = bytes[2];
-                 octets[i*4+3] = bytes[3];
-             }
-             let ip = Ipv6Addr::from(octets);
-             Ok(SocketAddr::new(IpAddr::V6(ip), port))
+            // Reconstruct IPv6
+            let mut octets = [0u8; 16];
+            for i in 0..4 {
+                let val = u32::from_be(pnl.rdaddr.addr[i]);
+                let bytes = val.to_be_bytes();
+                octets[i * 4] = bytes[0];
+                octets[i * 4 + 1] = bytes[1];
+                octets[i * 4 + 2] = bytes[2];
+                octets[i * 4 + 3] = bytes[3];
+            }
+            let ip = Ipv6Addr::from(octets);
+            Ok(SocketAddr::new(IpAddr::V6(ip), port))
         }
     }
 }

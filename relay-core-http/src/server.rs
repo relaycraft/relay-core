@@ -11,13 +11,13 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 use relay_core_runtime::CoreState;
 use relay_core_runtime::services::{
-    FlowReadService, FlowEventHub, RuleService, InterceptService,
-    AuditService, RuntimeStatusService,
+    AuditService, FlowEventHub, FlowReadService, InterceptService, RuleService,
+    RuntimeStatusService,
 };
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::routes;
@@ -116,7 +116,10 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
         .merge(routes::rules::router(ctx.clone()))
         .merge(routes::intercepts::router(ctx.clone()))
         .merge(routes::events::router(ctx))
-        .route_layer(middleware::from_fn_with_state(config.clone(), require_bearer_token))
+        .route_layer(middleware::from_fn_with_state(
+            config.clone(),
+            require_bearer_token,
+        ))
         .layer(TraceLayer::new_for_http());
 
     if config.allowed_origins.is_empty() {
@@ -186,10 +189,10 @@ mod tests {
     use relay_core_api::flow::Flow;
     use relay_core_api::policy::ProxyPolicy;
     use relay_core_runtime::{CoreState, audit::AuditActor};
+    use serde_json::json;
     use std::sync::Arc;
     use tokio::time::{Duration, sleep};
     use tower::ServiceExt;
-    use serde_json::json;
 
     fn sample_http_flow(host: &str, path: &str, method: &str, status: u16, ts: i64) -> Flow {
         let flow_id = format!(
@@ -267,7 +270,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should be readable");
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("body should be valid json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("body should be valid json");
         assert_eq!(json["phase"], "created");
         assert_eq!(json["running"], false);
         assert!(json.get("started_at_ms").is_none());
@@ -294,7 +298,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should be readable");
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("body should be valid json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("body should be valid json");
         assert_eq!(json["pending_count"], 0);
         assert_eq!(json["ws_pending_count"], 0);
     }
@@ -336,7 +341,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should be readable");
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("body should be valid json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("body should be valid json");
         assert!(json["events"].is_array());
         assert_eq!(json["events"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(json["events"][0]["actor"], "http");
@@ -405,7 +411,8 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should be readable");
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("body should be valid json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("body should be valid json");
         assert_eq!(json["returned"], 1);
         assert_eq!(json["limit"], 1);
         assert_eq!(json["offset"], 1);
@@ -467,7 +474,12 @@ mod tests {
             .await
             .expect("request should succeed");
 
-        assert!(response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+        assert!(
+            response
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -477,9 +489,8 @@ mod tests {
         let app = build_router(
             ctx,
             Arc::new(
-                HttpApiConfig::new(8082).with_allowed_origins([HeaderValue::from_static(
-                    "https://allowed.example",
-                )]),
+                HttpApiConfig::new(8082)
+                    .with_allowed_origins([HeaderValue::from_static("https://allowed.example")]),
             ),
         );
 

@@ -3,18 +3,21 @@
 //!
 //! **This is a feature backend for `relay-core`.** Enable with `relay-core = { features = ["script"] }`.
 
-pub mod engine_trait;
 pub mod deno_engine;
+pub mod engine_trait;
 pub mod streams;
 
-use relay_core_lib::interceptor::{Interceptor, InterceptionResult, RequestAction, ResponseAction, WebSocketMessageAction, HttpBody, BoxError};
-use relay_core_api::flow::{Flow, WebSocketMessage};
 use crate::deno_engine::DenoScriptEngine;
 use crate::engine_trait::ScriptEngineTrait;
 use async_trait::async_trait;
-use tokio::sync::RwLock;
-use std::hash::{Hash, Hasher};
+use relay_core_api::flow::{Flow, WebSocketMessage};
+use relay_core_lib::interceptor::{
+    BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
+    WebSocketMessageAction,
+};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use tokio::sync::RwLock;
 
 pub struct ScriptInterceptor {
     engines: Vec<RwLock<Box<dyn ScriptEngineTrait>>>,
@@ -22,7 +25,9 @@ pub struct ScriptInterceptor {
 
 impl ScriptInterceptor {
     pub async fn new() -> Result<Self, BoxError> {
-        let pool_size = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let pool_size = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         let mut engines = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
@@ -30,9 +35,7 @@ impl ScriptInterceptor {
             engines.push(RwLock::new(engine));
         }
 
-        Ok(Self { 
-            engines,
-        })
+        Ok(Self { engines })
     }
 
     pub async fn load_script(&self, script: &str) -> Result<(), BoxError> {
@@ -52,12 +55,12 @@ impl ScriptInterceptor {
         // The new engines are already prepared, so the critical section is very short.
         let mut new_engines_iter = new_engines.into_iter();
         for engine_lock in &self.engines {
-             if let Some(new_engine) = new_engines_iter.next() {
-                 let mut guard = engine_lock.write().await;
-                 *guard = new_engine;
-             }
+            if let Some(new_engine) = new_engines_iter.next() {
+                let mut guard = engine_lock.write().await;
+                *guard = new_engine;
+            }
         }
-        
+
         Ok(())
     }
 
@@ -80,7 +83,7 @@ impl Interceptor for ScriptInterceptor {
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
-        
+
         match engine.on_request_headers(flow).await {
             Ok(Some(modified_flow)) => {
                 *flow = modified_flow;
@@ -89,7 +92,7 @@ impl Interceptor for ScriptInterceptor {
                     relay_core_api::flow::Layer::WebSocket(w) => w.handshake_request.clone(),
                     _ => return InterceptionResult::Continue,
                 })
-            },
+            }
             Ok(None) => InterceptionResult::Continue,
             Err(e) => {
                 tracing::error!("Script execution error (on_request_headers): {}", e);
@@ -106,7 +109,7 @@ impl Interceptor for ScriptInterceptor {
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
-        
+
         engine.on_request(flow, body).await
     }
 
@@ -114,7 +117,7 @@ impl Interceptor for ScriptInterceptor {
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
-        
+
         match engine.on_response_headers(flow).await {
             Ok(Some(modified_flow)) => {
                 *flow = modified_flow;
@@ -123,7 +126,7 @@ impl Interceptor for ScriptInterceptor {
                     relay_core_api::flow::Layer::WebSocket(w) => w.handshake_response.clone(),
                     _ => return InterceptionResult::Continue,
                 })
-            },
+            }
             Ok(None) => InterceptionResult::Continue,
             Err(e) => {
                 tracing::error!("Script execution error (on_response_headers): {}", e);
@@ -136,15 +139,23 @@ impl Interceptor for ScriptInterceptor {
         }
     }
 
-    async fn on_response(&self, flow: &mut Flow, body: HttpBody) -> Result<ResponseAction, BoxError> {
+    async fn on_response(
+        &self,
+        flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
         engine.on_response(flow, body).await
     }
-    
-    async fn on_websocket_message(&self, flow: &mut Flow, mut message: WebSocketMessage) -> Result<WebSocketMessageAction, BoxError> {
+
+    async fn on_websocket_message(
+        &self,
+        flow: &mut Flow,
+        mut message: WebSocketMessage,
+    ) -> Result<WebSocketMessageAction, BoxError> {
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
@@ -163,16 +174,16 @@ impl Interceptor for ScriptInterceptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use chrono::Utc;
+    use http_body_util::{BodyExt, Empty};
     use relay_core_api::flow::{
         BodyData, Direction, Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
         WebSocketMessage,
     };
+    use std::collections::HashMap;
     use url::Url;
     use uuid::Uuid;
-    use chrono::Utc;
-    use std::collections::HashMap;
-    use http_body_util::{BodyExt, Empty};
-    use bytes::Bytes;
 
     fn create_test_flow() -> Flow {
         Flow {
@@ -210,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_error_propagation() {
         let interceptor = ScriptInterceptor::new().await.unwrap();
-        
+
         let script = r#"
             globalThis.onRequestHeaders = (flow) => {
                 throw new Error("Test Error 123");
@@ -219,16 +230,16 @@ mod tests {
         interceptor.load_script(script).await.unwrap();
 
         let mut flow = create_test_flow();
-        
+
         let result = interceptor.on_request_headers(&mut flow).await;
-        
+
         match result {
-            InterceptionResult::Continue => {},
+            InterceptionResult::Continue => {}
             _ => panic!("Expected Continue"),
         }
 
         assert!(flow.tags.contains(&"script-error".to_string()));
-        
+
         if let Layer::Http(http) = &flow.layer {
             assert!(http.error.is_some());
             let err = http.error.as_ref().unwrap();
@@ -241,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn test_script_api_relay_body() {
         let interceptor = ScriptInterceptor::new().await.unwrap();
-        
+
         let script = r#"
             globalThis.onRequest = (body, flow) => {
                 if (!(body instanceof RelayBody)) {
@@ -252,10 +263,12 @@ mod tests {
             };
         "#;
         interceptor.load_script(script).await.unwrap();
-        
+
         let mut flow = create_test_flow();
-        let body = Empty::<Bytes>::new().map_err(|_| -> BoxError { unreachable!() }).boxed();
-        
+        let body = Empty::<Bytes>::new()
+            .map_err(|_| -> BoxError { unreachable!() })
+            .boxed();
+
         let result = interceptor.on_request(&mut flow, body).await;
         assert!(result.is_ok());
     }

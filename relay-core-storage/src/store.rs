@@ -1,8 +1,8 @@
-use sqlx::{SqlitePool, Row};
-use sqlx::sqlite::SqlitePoolOptions;
 use crate::error::Result;
-use serde_json::Value;
 use relay_core_api::modification::{FlowQuery, FlowSummary};
+use serde_json::Value;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Row, SqlitePool};
 
 #[derive(Clone)]
 pub struct Store {
@@ -25,9 +25,7 @@ impl Store {
     }
 
     pub async fn connect(url: &str) -> Result<Self> {
-        let pool = SqlitePoolOptions::new()
-            .connect(url)
-            .await?;
+        let pool = SqlitePoolOptions::new().connect(url).await?;
         Ok(Self { pool })
     }
 
@@ -37,7 +35,7 @@ impl Store {
                 id TEXT PRIMARY KEY,
                 content JSON NOT NULL,
                 updated_at INTEGER NOT NULL
-            );"
+            );",
         )
         .execute(&self.pool)
         .await?;
@@ -48,7 +46,7 @@ impl Store {
                 id TEXT PRIMARY KEY,
                 content JSON NOT NULL,
                 created_at INTEGER NOT NULL
-            );"
+            );",
         )
         .execute(&self.pool)
         .await?;
@@ -62,7 +60,7 @@ impl Store {
                 target TEXT NOT NULL,
                 outcome TEXT NOT NULL,
                 content JSON NOT NULL
-            );"
+            );",
         )
         .execute(&self.pool)
         .await?;
@@ -76,9 +74,11 @@ impl Store {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_events_kind ON audit_events(kind);")
             .execute(&self.pool)
             .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_events_outcome ON audit_events(outcome);")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_events_outcome ON audit_events(outcome);",
+        )
+        .execute(&self.pool)
+        .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS flow_summaries (
@@ -91,7 +91,7 @@ impl Store {
                 has_error INTEGER NOT NULL,
                 is_websocket INTEGER NOT NULL,
                 content JSON NOT NULL
-            );"
+            );",
         )
         .execute(&self.pool)
         .await?;
@@ -101,15 +101,21 @@ impl Store {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_flow_summaries_host ON flow_summaries(host);")
             .execute(&self.pool)
             .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_flow_summaries_method ON flow_summaries(method);")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_flow_summaries_status ON flow_summaries(status);")
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_flow_summaries_has_error ON flow_summaries(has_error);")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_flow_summaries_method ON flow_summaries(method);",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_flow_summaries_status ON flow_summaries(status);",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_flow_summaries_has_error ON flow_summaries(has_error);",
+        )
+        .execute(&self.pool)
+        .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_flow_summaries_is_websocket ON flow_summaries(is_websocket);")
             .execute(&self.pool)
             .await?;
@@ -122,7 +128,7 @@ impl Store {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        
+
         sqlx::query(
             "INSERT INTO rules (id, content, updated_at) VALUES (?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at"
@@ -132,7 +138,7 @@ impl Store {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        
+
         Ok(())
     }
 
@@ -148,7 +154,7 @@ impl Store {
         let rows = sqlx::query("SELECT id, content FROM rules")
             .fetch_all(&self.pool)
             .await?;
-        
+
         let mut rules = Vec::new();
         for row in rows {
             let id: String = row.get("id");
@@ -160,27 +166,23 @@ impl Store {
 
     pub async fn replace_rules(&self, rules: &[(String, Value)]) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        
-        sqlx::query("DELETE FROM rules")
-            .execute(&mut *tx)
-            .await?;
-            
+
+        sqlx::query("DELETE FROM rules").execute(&mut *tx).await?;
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
         for (id, content) in rules {
-            sqlx::query(
-                "INSERT INTO rules (id, content, updated_at) VALUES (?, ?, ?)"
-            )
-            .bind(id)
-            .bind(content)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query("INSERT INTO rules (id, content, updated_at) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(content)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
         }
-        
+
         tx.commit().await?;
         Ok(())
     }
@@ -192,14 +194,12 @@ impl Store {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        sqlx::query(
-            "INSERT INTO flows (id, content, created_at) VALUES (?, ?, ?)"
-        )
-        .bind(id)
-        .bind(content)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT INTO flows (id, content, created_at) VALUES (?, ?, ?)")
+            .bind(id)
+            .bind(content)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -243,7 +243,7 @@ impl Store {
                 status = excluded.status,
                 has_error = excluded.has_error,
                 is_websocket = excluded.is_websocket,
-                content = excluded.content"
+                content = excluded.content",
         )
         .bind(&summary.id)
         .bind(summary.start_time_ms)
@@ -274,7 +274,7 @@ impl Store {
                AND (?7 IS NULL OR is_websocket = ?7)
              ORDER BY start_time_ms DESC
              LIMIT ?8
-             OFFSET ?9"
+             OFFSET ?9",
         )
         .bind(query.host.as_deref())
         .bind(query.path_contains.as_deref())
@@ -308,7 +308,7 @@ impl Store {
                 kind = excluded.kind,
                 target = excluded.target,
                 outcome = excluded.outcome,
-                content = excluded.content"
+                content = excluded.content",
         )
         .bind(event.id)
         .bind(event.timestamp_ms as i64)
@@ -340,7 +340,7 @@ impl Store {
                AND (?4 IS NULL OR kind = ?4)
                AND (?5 IS NULL OR outcome = ?5)
              ORDER BY timestamp_ms DESC
-             LIMIT ?6"
+             LIMIT ?6",
         )
         .bind(since_ms.map(|v| v as i64))
         .bind(until_ms.map(|v| v as i64))

@@ -1,15 +1,15 @@
-use std::sync::Arc;
-use tauri::{Runtime, Manager};
 use relay_core_runtime::CoreState;
-use relay_core_runtime::services::{
-    FlowReadService, RuleService, InterceptService, PolicyService,
-    AuditService, RuntimeStatusService, ScriptService,
-};
 pub use relay_core_runtime::rule::InterceptRule;
+use relay_core_runtime::services::{
+    AuditService, FlowReadService, InterceptService, PolicyService, RuleService,
+    RuntimeStatusService, ScriptService,
+};
+use std::sync::Arc;
+use tauri::{Manager, Runtime};
 
 pub mod commands;
-pub mod transport;
 pub mod interceptor;
+pub mod transport;
 
 /// Narrow-trait context for Tauri commands — most data operations go through here.
 pub struct TauriContext {
@@ -49,9 +49,7 @@ impl Default for RelayCoreState {
 
 impl RelayCoreState {
     pub fn new() -> Self {
-        tauri::async_runtime::block_on(async {
-            Self::new_async().await
-        })
+        tauri::async_runtime::block_on(async { Self::new_async().await })
     }
 
     pub async fn new_async() -> Self {

@@ -143,15 +143,25 @@ pub enum Action {
     /// Abort the connection (RST)
     Abort,
     /// Delay execution (Latency Simulation)
-    Delay { ms: u64 },
+    Delay {
+        ms: u64,
+    },
     /// Throttle bandwidth
-    Throttle { kbps: u64 },
+    Throttle {
+        kbps: u64,
+    },
     /// Tag for subsequent processing/stats
-    Tag { key: String, value: String },
+    Tag {
+        key: String,
+        value: String,
+    },
     /// Pause the flow for manual inspection/intervention (e.g., in GUI)
     Inspect,
     /// Set a variable for use in subsequent actions (Fluxzy-style)
-    SetVariable { name: String, value: String },
+    SetVariable {
+        name: String,
+        value: String,
+    },
     /// Rate limit traffic based on a key
     RateLimit {
         /// The key to limit by (e.g., "ip", "host", "path", or a template like "{{ip}}:{{path}}")
@@ -269,9 +279,17 @@ pub enum BodySource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "config")]
 pub enum BodyTransform {
-    RegexReplace { pattern: String, replacement: String },
-    JsonPathSet { path: String, value: String },
-    JsonPathDelete { path: String },
+    RegexReplace {
+        pattern: String,
+        replacement: String,
+    },
+    JsonPathSet {
+        path: String,
+        value: String,
+    },
+    JsonPathDelete {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -295,7 +313,9 @@ pub struct RuleTrace {
 pub enum RuleTraceSummary {
     NoMatch,
     /// Modified by one or more rules
-    Modified { rule_ids: Vec<String> },
+    Modified {
+        rule_ids: Vec<String>,
+    },
     /// Terminated by a rule (Drop/Mock)
     Terminated {
         rule_id: String,

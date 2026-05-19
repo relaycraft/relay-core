@@ -1,15 +1,15 @@
-use std::net::SocketAddr;
-use tokio::net::TcpStream;
+use async_trait::async_trait;
 use std::collections::BTreeSet;
 use std::io;
-use async_trait::async_trait;
+use std::net::SocketAddr;
+use tokio::net::TcpStream;
 
 /// Platform-agnostic interface for retrieving original destination address
 #[async_trait]
 pub trait OriginalDstProvider: Send + Sync {
     /// Returns the original destination address if available
     fn get_original_dst(&self, stream: &TcpStream) -> io::Result<Option<SocketAddr>>;
-    
+
     /// Returns all addresses this proxy is listening on (for loop detection)
     fn get_listen_addrs(&self) -> BTreeSet<SocketAddr>;
 }
@@ -39,11 +39,11 @@ impl OriginalDstProvider for LinuxOriginalDstProvider {
     fn get_original_dst(&self, stream: &TcpStream) -> io::Result<Option<SocketAddr>> {
         use std::os::unix::io::AsRawFd;
         let fd = stream.as_raw_fd();
-        
+
         unsafe {
             let mut addr: libc::sockaddr_storage = std::mem::zeroed();
             let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-            
+
             // SO_ORIGINAL_DST = 80
             // Note: This is specific to IPv4. IPv6 uses IP6T_SO_ORIGINAL_DST (80) with SOL_IPV6.
             if libc::getsockopt(
@@ -52,11 +52,12 @@ impl OriginalDstProvider for LinuxOriginalDstProvider {
                 80,
                 &mut addr as *mut _ as *mut libc::c_void,
                 &mut len,
-            ) != 0 {
+            ) != 0
+            {
                 // If failing, return None rather than error to allow fallback
                 return Ok(None);
             }
-            
+
             if addr.ss_family as i32 == libc::AF_INET {
                 let addr_in = *(&addr as *const _ as *const libc::sockaddr_in);
                 // s_addr is network byte order (big endian)
@@ -69,7 +70,10 @@ impl OriginalDstProvider for LinuxOriginalDstProvider {
             } else {
                 // TODO: Support IPv6 transparent proxy
                 // Explicitly return error for IPv6 to avoid silent fallback/failures
-                Err(io::Error::new(io::ErrorKind::Unsupported, "IPv6 transparent proxy not implemented"))
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "IPv6 transparent proxy not implemented",
+                ))
             }
         }
     }
@@ -95,7 +99,7 @@ impl OriginalDstProvider for NoOpOriginalDstProvider {
     fn get_original_dst(&self, _stream: &TcpStream) -> io::Result<Option<SocketAddr>> {
         Ok(None)
     }
-    
+
     fn get_listen_addrs(&self) -> BTreeSet<SocketAddr> {
         self.listen_addrs.clone()
     }

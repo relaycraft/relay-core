@@ -1,5 +1,5 @@
+use relay_core_api::flow::{Direction, Flow, HttpRequest, HttpResponse, Layer, WebSocketMessage};
 use serde::{Deserialize, Serialize};
-use relay_core_api::flow::{Flow, Layer, HttpRequest, HttpResponse, Direction, WebSocketMessage};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,58 +171,107 @@ pub struct FlowDetailWebSocketMessage {
 
 impl From<Flow> for FlowIndex {
     fn from(flow: Flow) -> Self {
-        let (method, url, host, path, status, http_version, content_type, size, has_resp_body, has_req_body, is_ws, ws_frames) = match &flow.layer {
+        let (
+            method,
+            url,
+            host,
+            path,
+            status,
+            http_version,
+            content_type,
+            size,
+            has_resp_body,
+            has_req_body,
+            is_ws,
+            ws_frames,
+        ) = match &flow.layer {
             Layer::Http(http) => {
                 let method = http.request.method.clone();
                 let url = http.request.url.to_string();
                 let host = http.request.url.host_str().unwrap_or("").to_string();
                 let path = http.request.url.path().to_string();
                 let has_req_body = http.request.body.is_some();
-                
-                let (status, size, content_type, has_resp_body) = if let Some(resp) = &http.response {
-                    let c_type = resp.headers.iter()
+
+                let (status, size, content_type, has_resp_body) = if let Some(resp) = &http.response
+                {
+                    let c_type = resp
+                        .headers
+                        .iter()
                         .find(|(k, _)| k.to_lowercase() == "content-type")
                         .map(|(_, v)| v.clone())
                         .unwrap_or_default();
-                    
+
                     let body_size = resp.body.as_ref().map(|b| b.size).unwrap_or(0);
-                    
+
                     (resp.status, body_size, c_type, resp.body.is_some())
                 } else {
                     (0, 0, String::new(), false)
                 };
 
-                (method, url, host, path, status, http.request.version.clone(), content_type, size, has_resp_body, has_req_body, false, 0)
-            },
+                (
+                    method,
+                    url,
+                    host,
+                    path,
+                    status,
+                    http.request.version.clone(),
+                    content_type,
+                    size,
+                    has_resp_body,
+                    has_req_body,
+                    false,
+                    0,
+                )
+            }
             Layer::WebSocket(ws) => {
                 let method = ws.handshake_request.method.clone();
                 let url = ws.handshake_request.url.to_string();
-                let host = ws.handshake_request.url.host_str().unwrap_or("").to_string();
+                let host = ws
+                    .handshake_request
+                    .url
+                    .host_str()
+                    .unwrap_or("")
+                    .to_string();
                 let path = ws.handshake_request.url.path().to_string();
-                
+
                 let (status, content_type) = (
                     ws.handshake_response.status,
-                    ws.handshake_response.headers.iter()
+                    ws.handshake_response
+                        .headers
+                        .iter()
                         .find(|(k, _)| k.to_lowercase() == "content-type")
                         .map(|(_, v)| v.clone())
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
                 );
 
-                (method, url, host, path, status, ws.handshake_request.version.clone(), content_type, 0, false, false, true, ws.messages.len() as u32)
-            },
+                (
+                    method,
+                    url,
+                    host,
+                    path,
+                    status,
+                    ws.handshake_request.version.clone(),
+                    content_type,
+                    0,
+                    false,
+                    false,
+                    true,
+                    ws.messages.len() as u32,
+                )
+            }
             _ => (
-                "UNKNOWN".to_string(), 
-                "".to_string(), 
-                "".to_string(), 
-                "".to_string(), 
-                0, 
-                "".to_string(), 
-                "".to_string(), 
+                "UNKNOWN".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                0,
+                "".to_string(),
+                "".to_string(),
                 0,
                 false,
                 false,
                 false,
-                0
+                0,
             ),
         };
 
@@ -248,7 +297,7 @@ impl From<Flow> for FlowIndex {
             client_ip: Some(flow.network.client_ip),
             app_name: None,
             app_display_name: None,
-            has_error: false, 
+            has_error: false,
             has_request_body: has_req_body,
             has_response_body: has_resp_body,
             is_websocket: is_ws,
@@ -267,10 +316,16 @@ impl From<Flow> for FlowIndex {
 fn calc_request_headers_size(req: &HttpRequest) -> u64 {
     // Request line: "METHOD path?query HTTP/version\r\n"
     let path = req.url.path();
-    let query = req.url.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = req
+        .url
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let request_line = req.method.len() + 1 + path.len() + query.len() + 1 + req.version.len() + 2;
     // Each header: "name: value\r\n"
-    let headers_bytes: usize = req.headers.iter()
+    let headers_bytes: usize = req
+        .headers
+        .iter()
         .map(|(k, v)| k.len() + 2 + v.len() + 2)
         .sum();
     // Final blank line "\r\n"
@@ -281,7 +336,9 @@ fn calc_response_headers_size(resp: &HttpResponse) -> u64 {
     // Status line: "HTTP/version status status_text\r\n"
     let status_line = resp.version.len() + 1 + 3 + 1 + resp.status_text.len() + 2;
     // Each header: "name: value\r\n"
-    let headers_bytes: usize = resp.headers.iter()
+    let headers_bytes: usize = resp
+        .headers
+        .iter()
         .map(|(k, v)| k.len() + 2 + v.len() + 2)
         .sum();
     // Final blank line "\r\n"
@@ -289,12 +346,19 @@ fn calc_response_headers_size(resp: &HttpResponse) -> u64 {
 }
 
 fn convert_request(req: &HttpRequest) -> FlowDetailRequest {
-    let headers: Vec<FlowDetailHeader> = req.headers.iter()
-        .map(|(k, v)| FlowDetailHeader { name: k.clone(), value: v.clone() })
+    let headers: Vec<FlowDetailHeader> = req
+        .headers
+        .iter()
+        .map(|(k, v)| FlowDetailHeader {
+            name: k.clone(),
+            value: v.clone(),
+        })
         .collect();
 
     // Parse Cookies from "Cookie" header
-    let cookies: Vec<FlowDetailCookie> = req.cookies.iter()
+    let cookies: Vec<FlowDetailCookie> = req
+        .cookies
+        .iter()
         .map(|c| FlowDetailCookie {
             name: c.name.clone(),
             value: c.value.clone(),
@@ -307,17 +371,24 @@ fn convert_request(req: &HttpRequest) -> FlowDetailRequest {
         .collect();
 
     // Parse Query String
-    let query_string: Vec<FlowDetailQuery> = req.query.iter()
-        .map(|(k, v)| FlowDetailQuery { name: k.clone(), value: v.clone() })
+    let query_string: Vec<FlowDetailQuery> = req
+        .query
+        .iter()
+        .map(|(k, v)| FlowDetailQuery {
+            name: k.clone(),
+            value: v.clone(),
+        })
         .collect();
 
     // Parse Post Data
     let post_data = req.body.as_ref().map(|body| {
-        let mime_type = req.headers.iter()
+        let mime_type = req
+            .headers
+            .iter()
             .find(|(k, _)| k.to_lowercase() == "content-type")
             .map(|(_, v)| v.clone())
             .unwrap_or_default();
-        
+
         FlowDetailPostData {
             mime_type,
             text: Some(body.content.clone()),
@@ -339,12 +410,19 @@ fn convert_request(req: &HttpRequest) -> FlowDetailRequest {
 }
 
 fn convert_response(resp: &HttpResponse) -> FlowDetailResponse {
-    let headers: Vec<FlowDetailHeader> = resp.headers.iter()
-        .map(|(k, v)| FlowDetailHeader { name: k.clone(), value: v.clone() })
+    let headers: Vec<FlowDetailHeader> = resp
+        .headers
+        .iter()
+        .map(|(k, v)| FlowDetailHeader {
+            name: k.clone(),
+            value: v.clone(),
+        })
         .collect();
 
     // Parse Cookies from "Set-Cookie" header
-    let cookies: Vec<FlowDetailCookie> = resp.cookies.iter()
+    let cookies: Vec<FlowDetailCookie> = resp
+        .cookies
+        .iter()
         .map(|c| FlowDetailCookie {
             name: c.name.clone(),
             value: c.value.clone(),
@@ -356,7 +434,9 @@ fn convert_response(resp: &HttpResponse) -> FlowDetailResponse {
         })
         .collect();
 
-    let mime_type = resp.headers.iter()
+    let mime_type = resp
+        .headers
+        .iter()
         .find(|(k, _)| k.to_lowercase() == "content-type")
         .map(|(_, v)| v.clone())
         .unwrap_or_default();
@@ -368,7 +448,9 @@ fn convert_response(resp: &HttpResponse) -> FlowDetailResponse {
         encoding: resp.body.as_ref().map(|b| b.encoding.clone()),
     };
 
-    let redirect_url = resp.headers.iter()
+    let redirect_url = resp
+        .headers
+        .iter()
         .find(|(k, _)| k.to_lowercase() == "location")
         .map(|(_, v)| v.clone())
         .unwrap_or_default();
@@ -405,7 +487,11 @@ fn empty_response() -> FlowDetailResponse {
     }
 }
 
-fn convert_websocket_message(msg: &WebSocketMessage, flow_id: &str, seq: u32) -> FlowDetailWebSocketMessage {
+fn convert_websocket_message(
+    msg: &WebSocketMessage,
+    flow_id: &str,
+    seq: u32,
+) -> FlowDetailWebSocketMessage {
     let type_str = msg.opcode.to_lowercase();
     let from_client = matches!(msg.direction, Direction::ClientToServer);
 
@@ -432,43 +518,46 @@ impl From<Flow> for FlowDetail {
 
         let flow_id_str = flow.id.to_string();
 
-        let (request, response, is_websocket, websocket_frame_count, websocket_messages) = match &flow.layer {
-            Layer::Http(http) => {
-                let req = convert_request(&http.request);
-                let resp = if let Some(r) = &http.response {
-                    convert_response(r)
-                } else {
-                    empty_response()
-                };
-                (req, resp, false, 0, vec![])
-            },
-            Layer::WebSocket(ws) => {
-                let req = convert_request(&ws.handshake_request);
-                let resp = convert_response(&ws.handshake_response);
-                let messages: Vec<FlowDetailWebSocketMessage> = ws.messages.iter()
-                    .enumerate()
-                    .map(|(i, msg)| convert_websocket_message(msg, &flow_id_str, i as u32))
-                    .collect();
-                (req, resp, true, ws.messages.len() as u32, messages)
-            },
-            _ => (
-                FlowDetailRequest {
-                    method: "UNKNOWN".to_string(),
-                    url: "".to_string(),
-                    http_version: "".to_string(),
-                    headers: vec![],
-                    cookies: vec![],
-                    query_string: vec![],
-                    post_data: None,
-                    body_size: 0,
-                    headers_size: 0,
-                },
-                empty_response(),
-                false, 
-                0,
-                vec![]
-            ),
-        };
+        let (request, response, is_websocket, websocket_frame_count, websocket_messages) =
+            match &flow.layer {
+                Layer::Http(http) => {
+                    let req = convert_request(&http.request);
+                    let resp = if let Some(r) = &http.response {
+                        convert_response(r)
+                    } else {
+                        empty_response()
+                    };
+                    (req, resp, false, 0, vec![])
+                }
+                Layer::WebSocket(ws) => {
+                    let req = convert_request(&ws.handshake_request);
+                    let resp = convert_response(&ws.handshake_response);
+                    let messages: Vec<FlowDetailWebSocketMessage> = ws
+                        .messages
+                        .iter()
+                        .enumerate()
+                        .map(|(i, msg)| convert_websocket_message(msg, &flow_id_str, i as u32))
+                        .collect();
+                    (req, resp, true, ws.messages.len() as u32, messages)
+                }
+                _ => (
+                    FlowDetailRequest {
+                        method: "UNKNOWN".to_string(),
+                        url: "".to_string(),
+                        http_version: "".to_string(),
+                        headers: vec![],
+                        cookies: vec![],
+                        query_string: vec![],
+                        post_data: None,
+                        body_size: 0,
+                        headers_size: 0,
+                    },
+                    empty_response(),
+                    false,
+                    0,
+                    vec![],
+                ),
+            };
 
         FlowDetail {
             id: flow.id.to_string(),

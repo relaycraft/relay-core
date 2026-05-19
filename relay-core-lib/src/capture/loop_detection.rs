@@ -1,12 +1,12 @@
-use std::net::{SocketAddr, IpAddr};
-use std::collections::{BTreeSet, HashSet};
-use std::sync::{Arc, RwLock};
 use if_addrs::get_if_addrs;
+use std::collections::{BTreeSet, HashSet};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, RwLock};
 
 pub struct LoopDetector {
     /// All addresses the proxy is listening on
     listen_addrs: BTreeSet<SocketAddr>,
-    
+
     /// Local interface addresses (updated periodically)
     local_addrs: Arc<RwLock<BTreeSet<IpAddr>>>,
 }
@@ -25,20 +25,18 @@ impl LoopDetector {
         if self.listen_addrs.contains(&target) {
             return true;
         }
-        
+
         // Check if target IP is local/loopback and port matches any listen port.
         if self.is_local_ip(target.ip()) {
-             let listen_ports: HashSet<u16> = self.listen_addrs.iter()
-                .map(|a| a.port())
-                .collect();
+            let listen_ports: HashSet<u16> = self.listen_addrs.iter().map(|a| a.port()).collect();
             if listen_ports.contains(&target.port()) {
                 return true;
             }
         }
-        
+
         false
     }
-    
+
     fn is_local_ip(&self, ip: IpAddr) -> bool {
         if ip.is_loopback() {
             return true;
@@ -46,16 +44,17 @@ impl LoopDetector {
         if ip.is_unspecified() {
             return true;
         }
-        
+
         // Check cached local addrs
         if let Ok(guard) = self.local_addrs.read()
-            && guard.contains(&ip) {
-                return true;
-            }
-        
+            && guard.contains(&ip)
+        {
+            return true;
+        }
+
         false
     }
-    
+
     /// Refresh local interface addresses from system interfaces.
     pub async fn refresh_local_addrs(&self) {
         let mut ips = BTreeSet::new();

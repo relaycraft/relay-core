@@ -1,6 +1,6 @@
-use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
-use crate::audit::AuditActor;
 use crate::CoreState;
+use crate::audit::AuditActor;
+use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
 
 pub trait PolicyService: Send + Sync {
     fn policy_snapshot(&self) -> ProxyPolicy;

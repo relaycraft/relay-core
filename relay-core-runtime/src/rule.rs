@@ -1,8 +1,10 @@
 use regex::Regex;
+use relay_core_api::flow::{Flow, Layer};
+use relay_core_lib::rule::{
+    Action, BodySource, Filter, Rule, RuleStage, RuleTermination, StringMatcher,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use relay_core_api::flow::{Flow, Layer};
-use relay_core_lib::rule::{Action, BodySource, Filter, Rule, RuleStage, RuleTermination, StringMatcher};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterceptRule {
@@ -66,16 +68,17 @@ impl InterceptRule {
         let method_str = method.as_deref().unwrap_or("");
 
         if let Some(m) = &self.method
-            && !m.eq_ignore_ascii_case(method_str) {
-                return false;
-            }
+            && !m.eq_ignore_ascii_case(method_str)
+        {
+            return false;
+        }
 
         if let Ok(re) = Regex::new(&self.url_pattern) {
             if re.is_match(url_str) {
                 return true;
             }
         } else if url_str.contains(&self.url_pattern) {
-             return true;
+            return true;
         }
 
         false
@@ -121,7 +124,10 @@ pub fn build_intercept_rules(config: InterceptRuleConfig) -> Vec<Rule> {
 
     let url_filter = Filter::Url(build_url_matcher(url_pattern));
     let filter = if let Some(method) = method {
-        Filter::And(vec![url_filter, Filter::Method(StringMatcher::Exact(method))])
+        Filter::And(vec![
+            url_filter,
+            Filter::Method(StringMatcher::Exact(method)),
+        ])
     } else {
         url_filter
     };
@@ -192,7 +198,9 @@ mod tests {
         Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
         TransportProtocol, WebSocketLayer,
     };
-    use relay_core_lib::rule::{Action, BodySource, Filter, RuleStage, RuleTermination, StringMatcher};
+    use relay_core_lib::rule::{
+        Action, BodySource, Filter, RuleStage, RuleTermination, StringMatcher,
+    };
     use std::collections::HashMap;
     use url::Url;
     use uuid::Uuid;
@@ -393,8 +401,14 @@ mod tests {
         assert_eq!(rules.len(), 1);
         match &rules[0].filter {
             Filter::And(filters) => {
-                assert!(matches!(filters[0], Filter::Url(StringMatcher::Contains(_))));
-                assert!(matches!(filters[1], Filter::Method(StringMatcher::Exact(_))));
+                assert!(matches!(
+                    filters[0],
+                    Filter::Url(StringMatcher::Contains(_))
+                ));
+                assert!(matches!(
+                    filters[1],
+                    Filter::Method(StringMatcher::Exact(_))
+                ));
             }
             other => panic!("expected And filter for method+url, got {:?}", other),
         }
@@ -419,9 +433,16 @@ mod tests {
             other => panic!("expected regex url filter, got {:?}", other),
         }
         match &rule.actions[0] {
-            Action::MockResponse { status, headers, body } => {
+            Action::MockResponse {
+                status,
+                headers,
+                body,
+            } => {
                 assert_eq!(*status, 201);
-                assert_eq!(headers.get("Content-Type").map(String::as_str), Some("application/json"));
+                assert_eq!(
+                    headers.get("Content-Type").map(String::as_str),
+                    Some("application/json")
+                );
                 match body {
                     Some(BodySource::Text(text)) => assert_eq!(text, "{\"ok\":true}"),
                     other => panic!("expected text body, got {:?}", other),

@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use crate::server::ProbeContext;
 use rmcp::model::{Content, Tool};
 use serde_json::Value;
+use std::sync::Arc;
 
-mod query;
 mod intercept;
+mod query;
 mod rules;
 mod script;
 
@@ -36,21 +36,21 @@ pub async fn dispatch(
     args: Value,
 ) -> Result<Vec<Content>, String> {
     match name {
-        "search_flows"          => query::search_flows(ctx, args).await,
-        "get_flow"              => query::get_flow(ctx, args).await,
-        "get_metrics"           => query::get_metrics(ctx).await,
-        "replay_flow"           => query::replay_flow(ctx, args).await,
-        "export_har"            => query::export_har(ctx, args).await,
-        "set_intercept"         => intercept::set_intercept(ctx, args).await,
-        "get_pending_intercepts"=> intercept::get_pending_intercepts(ctx).await,
-        "resume_flow"           => intercept::resume_flow(ctx, args).await,
-        "set_rule"              => rules::set_rule(ctx, args).await,
-        "delete_rule"           => rules::delete_rule(ctx, args).await,
-        "mock_url"              => rules::mock_url(ctx, args).await,
-        "get_policy"            => rules::get_policy(ctx).await,
-        "update_policy"         => rules::update_policy(ctx, args).await,
-        "patch_policy"          => rules::patch_policy(ctx, args).await,
-        "set_script"            => script::set_script(ctx, args).await,
+        "search_flows" => query::search_flows(ctx, args).await,
+        "get_flow" => query::get_flow(ctx, args).await,
+        "get_metrics" => query::get_metrics(ctx).await,
+        "replay_flow" => query::replay_flow(ctx, args).await,
+        "export_har" => query::export_har(ctx, args).await,
+        "set_intercept" => intercept::set_intercept(ctx, args).await,
+        "get_pending_intercepts" => intercept::get_pending_intercepts(ctx).await,
+        "resume_flow" => intercept::resume_flow(ctx, args).await,
+        "set_rule" => rules::set_rule(ctx, args).await,
+        "delete_rule" => rules::delete_rule(ctx, args).await,
+        "mock_url" => rules::mock_url(ctx, args).await,
+        "get_policy" => rules::get_policy(ctx).await,
+        "update_policy" => rules::update_policy(ctx, args).await,
+        "patch_policy" => rules::patch_policy(ctx, args).await,
+        "set_script" => script::set_script(ctx, args).await,
         other => Err(format!("Unknown tool: {}", other)),
     }
 }

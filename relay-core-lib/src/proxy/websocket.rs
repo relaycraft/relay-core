@@ -1,28 +1,34 @@
-use tokio::sync::mpsc::Sender;
+use crate::capture::loop_detection::LoopDetector;
+use crate::intercept::types::{
+    BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, WebSocketMessageAction,
+};
+use crate::proxy::http_utils::{
+    HttpsClient, create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
+};
+use chrono::Utc;
+use data_encoding::BASE64;
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{HeaderName, HeaderValue};
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response, StatusCode};
-use hyper::header::{HeaderName, HeaderValue};
-use http_body_util::{Full, BodyExt};
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::protocol::Message;
-use futures_util::{StreamExt, SinkExt};
-use data_encoding::BASE64;
-use relay_core_api::flow::{Flow, FlowUpdate, WebSocketMessage, Direction, BodyData, Layer, HttpResponse};
+use relay_core_api::flow::{
+    BodyData, Direction, Flow, FlowUpdate, HttpResponse, Layer, WebSocketMessage,
+};
 use relay_core_api::policy::ProxyPolicy;
-use crate::intercept::types::{Interceptor, InterceptionResult, RequestAction, WebSocketMessageAction, HttpBody, BoxError};
-use crate::proxy::http_utils::{HttpsClient, parse_request_meta, create_initial_flow, mock_to_response, create_error_response};
-use crate::capture::loop_detection::LoopDetector;
-use std::sync::Arc;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use uuid::Uuid;
-use chrono::Utc;
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
-use hyper::body::Bytes;
+use uuid::Uuid;
 
-use tokio::sync::watch;
 use hyper_util::rt::TokioIo;
 use relay_core_api::flow::ResponseTiming;
+use tokio::sync::watch;
 
 fn validate_ws_strict_handshake<B>(
     req: &Request<B>,
@@ -83,150 +89,173 @@ where
     }
 
     // Create Initial Flow for WebSocket Handshake
-    let mut flow = create_initial_flow(
-        meta.clone(),
-        None,
-        client_addr,
-        is_mitm,
-        true,
-    );
-    
+    let mut flow = create_initial_flow(meta.clone(), None, client_addr, is_mitm, true);
+
     // INTERCEPT HEADERS (Handshake)
     match interceptor.on_request_headers(&mut flow).await {
         InterceptionResult::Drop => {
-             return Ok(create_error_response(StatusCode::FORBIDDEN, ""));
-        },
+            return Ok(create_error_response(StatusCode::FORBIDDEN, ""));
+        }
         InterceptionResult::MockResponse(mock) => {
-             if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
-                 crate::metrics::inc_flows_dropped();
-             }
-             return Ok(mock_to_response(mock));
-        },
+            if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                crate::metrics::inc_flows_dropped();
+            }
+            return Ok(mock_to_response(mock));
+        }
         InterceptionResult::ModifiedRequest(req) => {
-             if let Layer::WebSocket(ws) = &mut flow.layer {
-                 ws.handshake_request = req;
-             }
-        },
+            if let Layer::WebSocket(ws) = &mut flow.layer {
+                ws.handshake_request = req;
+            }
+        }
         InterceptionResult::ModifiedResponse(res) => {
-             if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
-                 crate::metrics::inc_flows_dropped();
-             }
-             return Ok(mock_to_response(res));
-        },
+            if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                crate::metrics::inc_flows_dropped();
+            }
+            return Ok(mock_to_response(res));
+        }
         _ => {}
     }
 
     // INTERCEPT REQUEST (Handshake Full)
     // WS Handshake has empty body
     let body = http_body_util::Empty::new().map_err(|e| e.into()).boxed();
-    
+
     match interceptor.on_request(&mut flow, body).await {
         Ok(RequestAction::Drop) => {
-             return Ok(create_error_response(StatusCode::FORBIDDEN, ""));
-        },
+            return Ok(create_error_response(StatusCode::FORBIDDEN, ""));
+        }
         Ok(RequestAction::MockResponse(res)) => {
-             if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
-                 crate::metrics::inc_flows_dropped();
-             }
-             let (parts, body) = res.into_parts();
-             return Ok(Response::from_parts(parts, body));
-        },
-        Ok(RequestAction::Continue(_)) => {},
+            if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                crate::metrics::inc_flows_dropped();
+            }
+            let (parts, body) = res.into_parts();
+            return Ok(Response::from_parts(parts, body));
+        }
+        Ok(RequestAction::Continue(_)) => {}
         Err(e) => {
-             return Ok(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Interceptor Error: {}", e)));
+            return Ok(create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Interceptor Error: {}", e),
+            ));
         }
     }
-    
-    if on_flow.try_send(FlowUpdate::Full(Box::new(flow.clone()))).is_err() {
+
+    if on_flow
+        .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+        .is_err()
+    {
         crate::metrics::inc_flows_dropped();
     }
 
     // Prepare Upgrade
     let (parts, body) = req.into_parts();
     let req_for_upgrade = Request::from_parts(parts, body);
-    
+
     // Determine Target URL
     let mut target_url_str = meta.url_str.clone();
-    
+
     if policy.transparent_enabled
-        && let Some(addr) = target_addr {
-            flow.tags.push("transparent".to_string());
-            
-            // Update Flow Network Info
-            flow.network.server_ip = addr.ip().to_string();
-            flow.network.server_port = addr.port();
+        && let Some(addr) = target_addr
+    {
+        flow.tags.push("transparent".to_string());
 
-            // Loop Detection
-            if loop_detector.would_loop(addr) {
-                if let Layer::WebSocket(ws) = &mut flow.layer {
-                     ws.handshake_response.status = 508;
-                     ws.closed = true;
-                }
-                if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
-                    crate::metrics::inc_flows_dropped();
-                }
-                return Ok(create_error_response(StatusCode::LOOP_DETECTED, "Loop Detected"));
+        // Update Flow Network Info
+        flow.network.server_ip = addr.ip().to_string();
+        flow.network.server_port = addr.port();
+
+        // Loop Detection
+        if loop_detector.would_loop(addr) {
+            if let Layer::WebSocket(ws) = &mut flow.layer {
+                ws.handshake_response.status = 508;
+                ws.closed = true;
             }
-
-            // Rewrite URI
-            let mut u = if let Layer::WebSocket(ws) = &flow.layer {
-                ws.handshake_request.url.clone()
-            } else {
-                Url::parse(&meta.url_str).unwrap_or_else(|_| Url::parse("http://unknown/").unwrap())
-            };
-
-            if u.set_ip_host(addr.ip()).is_ok() {
-                u.set_port(Some(addr.port())).ok();
-                // Ensure scheme is correct (ws/wss)
-                if is_mitm && (u.scheme() == "http" || u.scheme() == "ws") {
-                    u.set_scheme("wss").ok();
-                } else if !is_mitm && (u.scheme() == "https" || u.scheme() == "wss") {
-                    u.set_scheme("ws").ok();
-                }
-                target_url_str = u.to_string();
+            if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                crate::metrics::inc_flows_dropped();
             }
+            return Ok(create_error_response(
+                StatusCode::LOOP_DETECTED,
+                "Loop Detected",
+            ));
         }
+
+        // Rewrite URI
+        let mut u = if let Layer::WebSocket(ws) = &flow.layer {
+            ws.handshake_request.url.clone()
+        } else {
+            Url::parse(&meta.url_str).unwrap_or_else(|_| Url::parse("http://unknown/").unwrap())
+        };
+
+        if u.set_ip_host(addr.ip()).is_ok() {
+            u.set_port(Some(addr.port())).ok();
+            // Ensure scheme is correct (ws/wss)
+            if is_mitm && (u.scheme() == "http" || u.scheme() == "ws") {
+                u.set_scheme("wss").ok();
+            } else if !is_mitm && (u.scheme() == "https" || u.scheme() == "wss") {
+                u.set_scheme("ws").ok();
+            }
+            target_url_str = u.to_string();
+        }
+    }
 
     // Prepare Forward Request
     let current_req = if let Layer::WebSocket(ws) = &flow.layer {
         &ws.handshake_request
     } else {
-        return Ok(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Invalid Flow Layer State"));
+        return Ok(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid Flow Layer State",
+        ));
     };
 
     let mut forward_req_builder = Request::builder()
         .method(current_req.method.as_str())
         .uri(target_url_str.as_str())
         .version(hyper::Version::HTTP_11);
-    
+
     for (k, v) in current_req.headers.iter() {
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
             forward_req_builder = forward_req_builder.header(name, val);
         }
     }
-    
-    let forward_req = match forward_req_builder.body(Full::new(Bytes::new()).map_err(|e| e.into()).boxed()) {
-        Ok(req) => req,
-        Err(e) => return Ok(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to build forward request: {}", e))),
-    };
 
-    match tokio::time::timeout(std::time::Duration::from_secs(30), client.request(forward_req)).await {
+    let forward_req =
+        match forward_req_builder.body(Full::new(Bytes::new()).map_err(|e| e.into()).boxed()) {
+            Ok(req) => req,
+            Err(e) => {
+                return Ok(create_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to build forward request: {}", e),
+                ));
+            }
+        };
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        client.request(forward_req),
+    )
+    .await
+    {
         Ok(Ok(resp)) => {
             if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
                 let (parts, body) = resp.into_parts();
                 let resp_for_upgrade = Response::from_parts(parts.clone(), body);
-                
+
                 // Spawn upgrade task
                 let on_flow_clone = on_flow.clone();
                 let interceptor_clone = interceptor.clone();
                 let flow_clone = flow.clone(); // Clone flow for the tunnel task
-                
+
                 tokio::task::spawn(async move {
                     // Add timeout for upgrades
                     let upgrade_timeout = std::time::Duration::from_secs(10);
-                    
-                    let client_upgrade = tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(req_for_upgrade));
-                    let server_upgrade = tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(resp_for_upgrade));
+
+                    let client_upgrade =
+                        tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(req_for_upgrade));
+                    let server_upgrade =
+                        tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(resp_for_upgrade));
 
                     match tokio::try_join!(client_upgrade, server_upgrade) {
                         Ok((Ok(upgraded_client), Ok(upgraded_server))) => {
@@ -236,13 +265,17 @@ where
                                 upgraded_server,
                                 flow_clone,
                                 on_flow_clone,
-                                interceptor_clone
-                            ).await {
+                                interceptor_clone,
+                            )
+                            .await
+                            {
                                 tracing::error!("WebSocket Tunnel Error: {}", e);
                             }
-                        },
+                        }
                         Ok((Err(e), _)) => tracing::error!("Client WebSocket Upgrade Error: {}", e),
-                        Ok((_, Err(e))) => tracing::error!("Upstream WebSocket Upgrade Error: {}", e),
+                        Ok((_, Err(e))) => {
+                            tracing::error!("Upstream WebSocket Upgrade Error: {}", e)
+                        }
                         Err(_) => tracing::error!("WebSocket Upgrade Timed Out"),
                     }
                 });
@@ -250,27 +283,30 @@ where
                 let mut client_resp_builder = Response::builder()
                     .status(StatusCode::SWITCHING_PROTOCOLS)
                     .version(parts.version);
-                    
+
                 for (k, v) in parts.headers.iter() {
                     client_resp_builder = client_resp_builder.header(k, v);
                 }
-                
+
                 let client_resp = match client_resp_builder
                     .body(Full::new(Bytes::new()).map_err(|e| e.into()).boxed())
                 {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::error!("Failed to build 101 Switching Protocols response: {}", e);
-                        return Ok(create_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Response build failed"));
+                        return Ok(create_error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Response build failed",
+                        ));
                     }
                 };
-                
+
                 // Update handshake response in flow (but we don't send update here as flow is moved/cloned)
                 // Ideally we should send an update here for the handshake response
                 // But `flow` variable is local.
                 // We can construct a partial update? Or just ignore.
                 // The tunnel will send messages.
-                
+
                 Ok(client_resp)
             } else {
                 // Normal HTTP Response (Handshake failed)
@@ -279,14 +315,22 @@ where
                     Ok(c) => c.to_bytes(),
                     Err(_) => Bytes::new(),
                 };
-                
+
                 // Create HTTP Response for Flow
                 let http_resp = HttpResponse {
                     status: parts.status.as_u16(),
-                    status_text: parts.status.canonical_reason().unwrap_or("Unknown").to_string(),
+                    status_text: parts
+                        .status
+                        .canonical_reason()
+                        .unwrap_or("Unknown")
+                        .to_string(),
                     version: format!("{:?}", parts.version),
-                    headers: parts.headers.iter()
-                        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                    headers: parts
+                        .headers
+                        .iter()
+                        .map(|(k, v)| {
+                            (k.as_str().to_string(), v.to_str().unwrap_or("").to_string())
+                        })
                         .collect(),
                     cookies: vec![], // Todo: parse cookies
                     body: Some(BodyData {
@@ -297,8 +341,8 @@ where
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
-                    connect_time_ms: None,
-                    ssl_time_ms: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
                     },
                 };
 
@@ -306,16 +350,25 @@ where
                     ws.handshake_response = http_resp.clone();
                     ws.closed = true;
                 }
-                
+
                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
                     crate::metrics::inc_flows_dropped();
                 }
 
-                Ok(Response::from_parts(parts, Full::new(body_bytes).map_err(|e| e.into()).boxed()))
+                Ok(Response::from_parts(
+                    parts,
+                    Full::new(body_bytes).map_err(|e| e.into()).boxed(),
+                ))
             }
-        },
-        Ok(Err(e)) => Ok(create_error_response(StatusCode::BAD_GATEWAY, format!("Upstream Handshake Failed: {}", e))),
-        Err(_) => Ok(create_error_response(StatusCode::GATEWAY_TIMEOUT, "Upstream Handshake Timed Out")),
+        }
+        Ok(Err(e)) => Ok(create_error_response(
+            StatusCode::BAD_GATEWAY,
+            format!("Upstream Handshake Failed: {}", e),
+        )),
+        Err(_) => Ok(create_error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Upstream Handshake Timed Out",
+        )),
     }
 }
 
@@ -326,12 +379,22 @@ async fn handle_websocket_tunnel(
     on_flow: Sender<FlowUpdate>,
     interceptor: Arc<dyn Interceptor>,
 ) -> Result<(), BoxError> {
-    let client_ws = WebSocketStream::from_raw_socket(TokioIo::new(client_io), tokio_tungstenite::tungstenite::protocol::Role::Server, None).await;
-    let server_ws = WebSocketStream::from_raw_socket(TokioIo::new(server_io), tokio_tungstenite::tungstenite::protocol::Role::Client, None).await;
+    let client_ws = WebSocketStream::from_raw_socket(
+        TokioIo::new(client_io),
+        tokio_tungstenite::tungstenite::protocol::Role::Server,
+        None,
+    )
+    .await;
+    let server_ws = WebSocketStream::from_raw_socket(
+        TokioIo::new(server_io),
+        tokio_tungstenite::tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await;
 
     let (mut client_tx, mut client_rx) = client_ws.split();
     let (mut server_tx, mut server_rx) = server_ws.split();
-    
+
     // Idle timeout for WebSocket
     let idle_timeout_duration = std::time::Duration::from_secs(300); // 5 minutes
 
@@ -341,54 +404,65 @@ async fn handle_websocket_tunnel(
                 msg = client_rx.next() => (Direction::ClientToServer, msg),
                 msg = server_rx.next() => (Direction::ServerToClient, msg),
             }
-        }).await;
+        })
+        .await;
 
         match event {
             Ok((dir, msg_opt)) => {
                 match msg_opt {
                     Some(Ok(msg)) => {
                         // Handle Message
-                        let (sender, _receiver, intercept_dir) = if dir == Direction::ClientToServer {
+                        let (sender, _receiver, intercept_dir) = if dir == Direction::ClientToServer
+                        {
                             (&mut server_tx, &mut client_tx, Direction::ClientToServer)
                         } else {
                             (&mut client_tx, &mut server_tx, Direction::ServerToClient)
                         };
 
                         if let Some(ws_msg) = tungstenite_to_flow_msg(msg.clone(), intercept_dir) {
-                             match interceptor.on_websocket_message(&mut flow, ws_msg.clone()).await {
+                            match interceptor
+                                .on_websocket_message(&mut flow, ws_msg.clone())
+                                .await
+                            {
                                 Ok(WebSocketMessageAction::Drop) => continue,
                                 Ok(WebSocketMessageAction::Continue(mod_msg)) => {
                                     let t_msg = flow_msg_to_tungstenite(&mod_msg);
                                     sender.send(t_msg).await?;
-                                    
-                                    if on_flow.try_send(FlowUpdate::WebSocketMessage {
-                                        flow_id: flow.id.to_string(),
-                                        message: mod_msg,
-                                    }).is_err() {
+
+                                    if on_flow
+                                        .try_send(FlowUpdate::WebSocketMessage {
+                                            flow_id: flow.id.to_string(),
+                                            message: mod_msg,
+                                        })
+                                        .is_err()
+                                    {
                                         crate::metrics::inc_flows_dropped();
                                     }
-                                },
+                                }
                                 Err(e) => {
                                     tracing::error!("WebSocket Interception Error: {}", e);
                                     sender.send(msg).await?;
-                                    
-                                    if on_flow.try_send(FlowUpdate::WebSocketMessage {
-                                        flow_id: flow.id.to_string(),
-                                        message: ws_msg,
-                                    }).is_err() {
+
+                                    if on_flow
+                                        .try_send(FlowUpdate::WebSocketMessage {
+                                            flow_id: flow.id.to_string(),
+                                            message: ws_msg,
+                                        })
+                                        .is_err()
+                                    {
                                         crate::metrics::inc_flows_dropped();
                                     }
                                 }
                             }
                         } else {
-                             // Non-data message
-                             sender.send(msg).await?;
+                            // Non-data message
+                            sender.send(msg).await?;
                         }
-                    },
+                    }
                     Some(Err(e)) => return Err(e.into()),
                     None => break, // Connection closed
                 }
-            },
+            }
             Err(_) => {
                 tracing::warn!("WebSocket Tunnel Idle Timeout");
                 // Optional: Send close frame?
@@ -396,7 +470,7 @@ async fn handle_websocket_tunnel(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -405,23 +479,23 @@ fn tungstenite_to_flow_msg(msg: Message, dir: Direction) -> Option<WebSocketMess
         Message::Text(t) => {
             let len = t.len();
             ("Text", t.to_string(), "utf-8", len)
-        },
+        }
         Message::Binary(b) => {
             let len = b.len();
             ("Binary", BASE64.encode(&b), "base64", len)
-        },
+        }
         Message::Ping(b) => {
             let len = b.len();
             ("Ping", BASE64.encode(&b), "base64", len)
-        },
+        }
         Message::Pong(b) => {
             let len = b.len();
             ("Pong", BASE64.encode(&b), "base64", len)
-        },
+        }
         Message::Close(_) => ("Close", String::new(), "none", 0),
         Message::Frame(_) => return None,
     };
-    
+
     Some(WebSocketMessage {
         id: Uuid::new_v4(),
         timestamp: Utc::now(),
@@ -444,21 +518,21 @@ fn flow_msg_to_tungstenite(msg: &WebSocketMessage) -> Message {
             } else {
                 Message::Binary(Bytes::new())
             }
-        },
+        }
         "Ping" => {
             if let Ok(b) = BASE64.decode(msg.content.content.as_bytes()) {
                 Message::Ping(Bytes::from(b))
             } else {
                 Message::Ping(Bytes::new())
             }
-        },
+        }
         "Pong" => {
-             if let Ok(b) = BASE64.decode(msg.content.content.as_bytes()) {
+            if let Ok(b) = BASE64.decode(msg.content.content.as_bytes()) {
                 Message::Pong(Bytes::from(b))
             } else {
                 Message::Pong(Bytes::new())
             }
-        },
+        }
         "Close" => Message::Close(None),
         _ => Message::Text(msg.content.content.clone().into()),
     }
@@ -471,7 +545,10 @@ mod websocket_tests {
 
     #[test]
     fn test_validate_ws_strict_handshake_rejects_missing_key() {
-        let policy = ProxyPolicy { strict_http_semantics: true, ..Default::default() };
+        let policy = ProxyPolicy {
+            strict_http_semantics: true,
+            ..Default::default()
+        };
         let req = Request::builder()
             .method("GET")
             .uri("ws://example.com/socket")
@@ -484,7 +561,10 @@ mod websocket_tests {
 
     #[test]
     fn test_validate_ws_strict_handshake_rejects_invalid_version() {
-        let policy = ProxyPolicy { strict_http_semantics: true, ..Default::default() };
+        let policy = ProxyPolicy {
+            strict_http_semantics: true,
+            ..Default::default()
+        };
         let req = Request::builder()
             .method("GET")
             .uri("ws://example.com/socket")
@@ -498,7 +578,10 @@ mod websocket_tests {
 
     #[test]
     fn test_validate_ws_strict_handshake_accepts_valid_request() {
-        let policy = ProxyPolicy { strict_http_semantics: true, ..Default::default() };
+        let policy = ProxyPolicy {
+            strict_http_semantics: true,
+            ..Default::default()
+        };
         let req = Request::builder()
             .method("GET")
             .uri("ws://example.com/socket")
@@ -512,7 +595,10 @@ mod websocket_tests {
 
     #[test]
     fn test_validate_ws_strict_handshake_skips_when_disabled() {
-        let policy = ProxyPolicy { strict_http_semantics: false, ..Default::default() };
+        let policy = ProxyPolicy {
+            strict_http_semantics: false,
+            ..Default::default()
+        };
         let req = Request::builder()
             .method("GET")
             .uri("ws://example.com/socket")

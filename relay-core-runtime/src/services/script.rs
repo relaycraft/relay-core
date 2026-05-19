@@ -1,6 +1,6 @@
-use async_trait::async_trait;
-use crate::audit::AuditActor;
 use crate::CoreState;
+use crate::audit::AuditActor;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait ScriptService: Send + Sync {

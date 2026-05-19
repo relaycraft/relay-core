@@ -1,15 +1,22 @@
+use anyhow::Context;
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
+    Json, Router,
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     response::IntoResponse,
     routing::{get, post},
-    Router, Json,
+};
+use relay_core_api::flow::FlowUpdate;
+use serde_json::json;
+use std::net::SocketAddr;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::broadcast;
-use relay_core_api::flow::FlowUpdate;
-use std::net::SocketAddr;
 use tracing::info;
-use serde_json::json;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,8 +24,15 @@ pub struct AppState {
     pub interception_enabled: Arc<AtomicBool>,
 }
 
-pub async fn start_server(port: u16, flow_tx: broadcast::Sender<FlowUpdate>, interception_enabled: Arc<AtomicBool>) {
-    let state = AppState { flow_tx, interception_enabled };
+pub async fn start_server(
+    port: u16,
+    flow_tx: broadcast::Sender<FlowUpdate>,
+    interception_enabled: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let state = AppState {
+        flow_tx,
+        interception_enabled,
+    };
 
     let app = Router::new()
         .route("/api/flows/ws", get(ws_handler))
@@ -31,14 +45,16 @@ pub async fn start_server(port: u16, flow_tx: broadcast::Sender<FlowUpdate>, int
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("Control API listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Failed to bind control API to {addr}"))?;
+    axum::serve(listener, app)
+        .await
+        .with_context(|| "Control API server error")?;
+    Ok(())
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -47,10 +63,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     while let Ok(update) = rx.recv().await {
         if let Ok(json) = serde_json::to_string(&update)
-            && socket.send(Message::Text(json.into())).await.is_err() {
-                // Client disconnected
-                break;
-            }
+            && socket.send(Message::Text(json.into())).await.is_err()
+        {
+            // Client disconnected
+            break;
+        }
     }
 }
 

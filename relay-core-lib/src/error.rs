@@ -34,7 +34,7 @@ pub enum RelayError {
 
     #[error("Configuration error: {0}")]
     Config(String),
-    
+
     #[error("Unknown error: {0}")]
     Unknown(String),
 }

@@ -1,11 +1,11 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::future::Future;
-use std::pin::Pin;
-use tokio::net::{TcpListener, TcpStream};
-use crate::capture::source::{CaptureSource, IncomingConnection};
 use crate::capture::original_dst::OriginalDstProvider;
+use crate::capture::source::{CaptureSource, IncomingConnection};
+use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
 
 fn is_recoverable_original_dst_error(err: &io::Error) -> bool {
     matches!(
@@ -24,17 +24,23 @@ pub struct TransparentTcpCaptureSource {
 
 impl TransparentTcpCaptureSource {
     pub fn new(listener: TcpListener, original_dst_provider: Arc<dyn OriginalDstProvider>) -> Self {
-        Self { listener, original_dst_provider }
+        Self {
+            listener,
+            original_dst_provider,
+        }
     }
 }
 
 impl CaptureSource for TransparentTcpCaptureSource {
     type IO = TcpStream;
 
-    fn accept(&mut self) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>> {
+    fn accept(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = crate::error::Result<IncomingConnection<Self::IO>>> + Send + '_>>
+    {
         Box::pin(async move {
             let (stream, client_addr) = self.listener.accept().await?;
-            
+
             // Try to get original destination.
             // Some platforms/modes may return recoverable errors (e.g. unsupported IPv6),
             // in which case we gracefully degrade to "unknown original dst".
@@ -46,7 +52,7 @@ impl CaptureSource for TransparentTcpCaptureSource {
                 }
                 Err(e) => return Err(e.into()),
             };
-            
+
             Ok(IncomingConnection {
                 stream,
                 client_addr,
@@ -60,7 +66,7 @@ impl CaptureSource for TransparentTcpCaptureSource {
         // or just the listener's local address.
         // Usually transparent proxy listens on 0.0.0.0, but we want to avoid loops to *that* address.
         // But loop detection logic also checks local IPs.
-        
+
         let mut addrs = self
             .original_dst_provider
             .get_listen_addrs()
@@ -134,7 +140,10 @@ mod tests {
         });
 
         let conn = source.accept().await.expect("accept should recover");
-        assert!(conn.target_addr.is_none(), "target_addr should fallback to None");
+        assert!(
+            conn.target_addr.is_none(),
+            "target_addr should fallback to None"
+        );
         let _ = connect_task.await;
     }
 
