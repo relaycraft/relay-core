@@ -43,11 +43,13 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 ### Quality gate (matches CI `quality` job — run before push or release)
 
 ```bash
-./scripts/ci-check.sh          # fmt --check → clippy → test --workspace
-./scripts/install-git-hooks.sh # installs pre-push hook that runs ci-check.sh
+./scripts/ci-check.sh          # fmt → clippy → test; on macOS also Linux Docker parity
+./scripts/install-git-hooks.sh # pre-push hook → ci-check.sh
 ```
 
-GitHub Actions runs the same script in `.github/workflows/ci.yml`. Tag workflows (`release`, `publish-npm`, `publish`) also run `quality` before building.
+GitHub Actions runs the same script on **ubuntu-latest** (`.github/workflows/ci.yml`). Tag workflows (`release`, `publish-npm`, `publish`) run `quality` first.
+
+**macOS developers:** host `cargo clippy` uses `target_os = "macos"`, so symbols only used on macOS can pass locally but fail Linux CI (`dead_code`). `ci-check.sh` therefore re-runs the gate inside Docker (same deps as CI). Requires Docker Desktop; skip with `RELAY_SKIP_LINUX_PARITY=1` only when you accept that risk.
 
 *   **Run Offline Tests**:
     ```bash

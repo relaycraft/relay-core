@@ -12,6 +12,6 @@ if [[ ! -d "$ROOT/.git" ]]; then
 fi
 
 cp "$SRC" "$DST"
-chmod +x "$DST" "$ROOT/scripts/ci-check.sh"
+chmod +x "$DST" "$ROOT/scripts/ci-check.sh" "$ROOT/scripts/ci-check-linux-docker.sh"
 echo "Installed pre-push hook -> $DST"
-echo "Runs: scripts/ci-check.sh (fmt, clippy, test)"
+echo "Runs: scripts/ci-check.sh (host + Linux Docker parity on macOS)"
