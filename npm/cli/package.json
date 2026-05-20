@@ -8,16 +8,27 @@
     "relay-core": "./bin/relay-core"
   },
   "files": [
-    "install.js",
-    "README.md",
-    "bin/"
+    "bin/",
+    "lib/",
+    "README.md"
   ],
-  "scripts": {
-    "postinstall": "node install.js"
+  "optionalDependencies": {
+    "@relay-core/binaries-darwin-arm64": "0.3.8",
+    "@relay-core/binaries-darwin-x64": "0.3.8",
+    "@relay-core/binaries-linux-arm64": "0.3.8",
+    "@relay-core/binaries-linux-x64": "0.3.8",
+    "@relay-core/binaries-win32-x64": "0.3.8"
   },
   "engines": {
     "node": ">=18"
   },
-  "os": ["darwin", "linux", "win32"],
-  "cpu": ["x64", "arm64"]
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
 }

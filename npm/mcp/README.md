@@ -2,6 +2,8 @@
 
 MCP (Model Context Protocol) server for [RelayCore](https://github.com/relaycraft/relay-core) — expose real-time traffic inspection and control to AI agents.
 
+The `relay-core-probe` binary is delivered through the same `@relay-core/binaries-*` optional packages as `@relay-core/cli` (npm registry, not postinstall downloads from GitHub).
+
 ## Quick Start
 
 ### Cursor / Claude Desktop

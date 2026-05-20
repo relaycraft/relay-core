@@ -1,0 +1,17 @@
+{
+  "name": "@relay-core/binaries-darwin-arm64",
+  "version": "0.3.8",
+  "description": "RelayCore native binaries (relay-core-cli, relay-core-probe) for macOS Apple Silicon",
+  "license": "MIT",
+  "repository": "github:relaycraft/relay-core",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "bin/"
+  ]
+}

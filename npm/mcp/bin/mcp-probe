@@ -1,6 +1,16 @@
 #!/usr/bin/env node
+"use strict";
+
 const { spawnSync } = require("child_process");
-const path = require("path");
-const binary = process.platform === "win32" ? "relay-core-probe.exe" : "relay-core-probe";
-const result = spawnSync(path.join(__dirname, binary), process.argv.slice(2), { stdio: "inherit" });
+const { resolveBinary } = require("../lib/resolve-binary");
+
+let binary;
+try {
+  binary = resolveBinary("relay-core-probe");
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
 process.exit(result.status ?? 1);

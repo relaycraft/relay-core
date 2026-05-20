@@ -2,6 +2,8 @@
 
 Standalone CLI and TUI for [RelayCore](https://github.com/relaycraft/relay-core) — a high-performance Rust traffic interception engine.
 
+Native binaries are installed via npm optional dependencies (`@relay-core/binaries-<platform>-<arch>`), so corporate npm proxies and mirrors work without GitHub Releases downloads.
+
 ## Quick Start
 
 ```bash

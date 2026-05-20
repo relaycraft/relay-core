@@ -84,8 +84,16 @@ benchmarks/*.csv
 benchmarks/reports/
 relay-core-cli-*.tgz
 relay-core-mcp-*.tgz
-npm/*/bin/relay-core-cli
-npm/*/bin/relay-core-probe
-npm/*/bin/relay-core-cli.tar.gz
+npm/packages/*/bin/*
+!npm/packages/*/bin/.gitkeep
+# Legacy postinstall artifacts under JS bin wrappers (wrappers themselves stay tracked)
+npm/cli/bin/relay-core-cli
+npm/cli/bin/relay-core-cli.exe
+npm/cli/bin/*.tar.gz
+npm/cli/bin/*.zip
+npm/mcp/bin/relay-core-probe
+npm/mcp/bin/relay-core-probe.exe
+npm/mcp/bin/relay-core-probe.tar.gz
+npm/mcp/bin/relay-core-probe.zip
+npm/**/node_modules/
 .env
-npm/*/bin/relay-core-probe.tar.gz
