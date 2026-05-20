@@ -47,8 +47,11 @@ jobs:
           if [ -z "$prev_tag" ]; then
             prev_tag=$(git rev-list --max-parents=0 HEAD)
           fi
-          commits=$(git log --oneline --no-merges "${prev_tag}..HEAD" | tr '\n' ' ')
-          prompt="根据以下 commits 生成 Release Notes。中英双语，按 Features/Fixes/Chores 分类。每条一句。最后一段总结。\n\nCommits: ${commits}"
+          user_commits=$(git log --format=%s --no-merges "${prev_tag}..HEAD" | grep -E '^(feat|fix)(\(|:)' | tr '\n' ' ' || true)
+          if [ -z "$user_commits" ]; then
+            user_commits=$(git log --oneline --no-merges "${prev_tag}..HEAD" | tr '\n' ' ')
+          fi
+          prompt="根据以下 feat/fix commits 生成 Release Notes（中英双语，Features / Fixes 两类，每条一句，最后一段总结）。不要逐条展开 chore/ci/refactor/test/docs；若需提及维护项，最多用一句概括。\n\nCommits: ${user_commits}"
           response=$(curl -s "${LLM_BASE_URL}/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${LLM_API_KEY}" \
