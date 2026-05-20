@@ -4,6 +4,9 @@ use relay_core_lib::tls::CertificateAuthority;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
+/// Must match `Run` default in `args.rs`.
+const DEFAULT_PROXY_LISTEN: &str = "127.0.0.1:8080";
+
 #[allow(unused_variables)]
 pub fn execute(action: CaAction) -> Result<()> {
     match action {
@@ -17,7 +20,6 @@ pub fn execute(action: CaAction) -> Result<()> {
             }
 
             if force {
-                // Remove existing files to allow regeneration
                 if cert.exists() {
                     let _ = std::fs::remove_file(&cert);
                 }
@@ -61,6 +63,11 @@ pub fn execute(action: CaAction) -> Result<()> {
             {
                 println!("Adding RelayCraft CA to System Keychain (requires sudo)...");
                 println!("This allows your browser to trust certificates signed by RelayCore.");
+
+                if let Err(e) = macos_remove_relaycraft_ca_from_system_keychain() {
+                    eprintln!("Warning: could not remove previous RelayCraft CA entries: {e}");
+                }
+
                 let status = Command::new("sudo")
                     .arg("security")
                     .arg("add-trusted-cert")
@@ -68,24 +75,37 @@ pub fn execute(action: CaAction) -> Result<()> {
                     .arg("-r")
                     .arg("trustRoot")
                     .arg("-k")
-                    .arg("/Library/Keychains/System.keychain")
+                    .arg(macos_system_keychain())
                     .arg(&cert)
                     .status()?;
 
                 if status.success() {
-                    println!();
-                    println!("CA certificate installed and trusted by macOS.");
-                    println!();
-                    println!("Next: configure your browser or system proxy to use relay-core.");
-                    println!("  HTTP Proxy: 127.0.0.1, Port: 8080");
-                    println!("  HTTPS Proxy: 127.0.0.1, Port: 8080");
+                    match get_file_sha1(&cert).and_then(macos_trust_status_for_local_cert) {
+                        Ok(MacosTrustStatus::Trusted) => {
+                            println!();
+                            println!("CA certificate installed and trusted by macOS.");
+                            print_proxy_setup_hint();
+                        }
+                        Ok(other) => {
+                            println!();
+                            println!("CA install command finished, but trust could not be verified:");
+                            println!("  {}", other.summary_line());
+                            print_proxy_setup_hint();
+                        }
+                        Err(e) => {
+                            println!();
+                            println!("CA install command finished (verify manually): {e}");
+                            print_proxy_setup_hint();
+                        }
+                    }
                 } else {
                     eprintln!(
                         "Failed to install CA certificate. Exit code: {:?}",
                         status.code()
                     );
                     eprintln!(
-                        "Try running: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {:?}",
+                        "Try: sudo security add-trusted-cert -d -r trustRoot -k {} {:?}",
+                        macos_system_keychain(),
                         cert
                     );
                 }
@@ -103,68 +123,159 @@ pub fn execute(action: CaAction) -> Result<()> {
         CaAction::Uninstall { cert } => {
             #[cfg(target_os = "macos")]
             {
-                println!("Uninstalling CA certificate from System Keychain (requires sudo)...");
-                let status = Command::new("sudo")
-                    .arg("security")
-                    .arg("remove-trusted-cert")
-                    .arg("-d")
-                    .arg(&cert)
-                    .status()?;
-
-                if status.success() {
-                    println!("CA certificate uninstalled successfully.");
-                } else {
-                    eprintln!(
-                        "Failed to uninstall CA certificate. Exit code: {:?}",
-                        status.code()
-                    );
+                println!("Uninstalling RelayCraft CA from System Keychain (requires sudo)...");
+                match macos_remove_relaycraft_ca_from_system_keychain() {
+                    Ok(removed) if removed > 0 => {
+                        println!(
+                            "Removed {removed} RelayCraft CA certificate(s) from the system keychain."
+                        );
+                    }
+                    Ok(_) => println!("No RelayCraft CA certificate found in the system keychain."),
+                    Err(e) => eprintln!("Failed to uninstall CA certificate: {e}"),
                 }
+                let _ = cert;
             }
         }
         CaAction::Status { cert } => {
             if !cert.exists() {
-                println!("Status: Not Initialized (File missing at {:?})", cert);
+                println!("Status: Not Initialized (file missing at {:?})", cert);
                 return Ok(());
             }
 
-            println!("Status: Initialized (File exists at {:?})", cert);
+            println!("Status: Initialized (file at {:?})", cert);
 
             #[cfg(target_os = "macos")]
             {
-                match get_file_sha1(&cert) {
-                    Ok(hash) => match is_cert_installed_macos(&hash) {
-                        Ok(true) => println!(
-                            "System Trust: Installed and Trusted (Found in System Keychain)"
-                        ),
-                        Ok(false) => {
-                            println!("System Trust: Not Installed (Not found in System Keychain)");
-                            println!(
-                                "Note: Local certificate (SHA1: {}) does not match System Keychain.",
-                                hash
-                            );
-                            println!("      Run 'ca install' to update system trust.");
-                        }
-                        Err(e) => println!("System Trust: Unknown (Check failed: {})", e),
-                    },
-                    Err(_) => {
-                        println!("System Trust: Unknown (Failed to compute local certificate hash)")
-                    }
+                match get_file_sha1(&cert).and_then(macos_trust_status_for_local_cert) {
+                    Ok(status) => println!("System Trust: {}", status.summary_line()),
+                    Err(e) => println!("System Trust: Unknown ({e})"),
                 }
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                println!("System Trust: (automatic check not available on this platform)");
             }
         }
     }
     Ok(())
 }
 
+fn print_proxy_setup_hint() {
+    println!();
+    println!("Next:");
+    println!("  1. relay run -l {DEFAULT_PROXY_LISTEN}");
+    println!("  2. Point your browser or OS HTTP/HTTPS proxy at the same host:port");
+    println!("     (change -l / --listen if you use a custom address)");
+}
+
 #[cfg(target_os = "macos")]
 use sha1::{Digest, Sha1};
 
 #[cfg(target_os = "macos")]
-fn get_file_sha1(path: &std::path::Path) -> Result<String> {
-    // Read PEM file content
-    let pem_content = std::fs::read_to_string(path)?;
+const RELAYCRAFT_CA_CN: &str = "RelayCraft CA";
 
-    // Parse PEM to get DER bytes
+#[cfg(target_os = "macos")]
+fn macos_system_keychain() -> &'static str {
+    "/Library/Keychains/System.keychain"
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MacosTrustStatus {
+    Trusted,
+    NotInKeychain,
+    StaleKeychain {
+        local_sha1: String,
+        keychain_sha1s: Vec<String>,
+    },
+    CheckFailed(String),
+}
+
+#[cfg(target_os = "macos")]
+impl MacosTrustStatus {
+    fn summary_line(&self) -> String {
+        match self {
+            Self::Trusted => format!("Installed and trusted (matches \"{RELAYCRAFT_CA_CN}\")"),
+            Self::NotInKeychain => {
+                "Not installed in the system keychain — run `ca install`".to_string()
+            }
+            Self::StaleKeychain {
+                local_sha1,
+                keychain_sha1s,
+            } => {
+                format!(
+                    "Keychain has {} older \"{}\" entr{} (SHA1 {}); local file is {} — run `ca install` to refresh",
+                    keychain_sha1s.len(),
+                    RELAYCRAFT_CA_CN,
+                    if keychain_sha1s.len() == 1 { "y" } else { "ies" },
+                    keychain_sha1s.join(", "),
+                    local_sha1
+                )
+            }
+            Self::CheckFailed(msg) => format!("Check failed ({msg})"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_trust_status_for_local_cert(local_sha1: String) -> Result<MacosTrustStatus> {
+    let keychain_sha1s = macos_list_relaycraft_ca_sha1_in_system_keychain()?;
+    if keychain_sha1s.is_empty() {
+        return Ok(MacosTrustStatus::NotInKeychain);
+    }
+    if keychain_sha1s.iter().any(|h| h == &local_sha1) {
+        return Ok(MacosTrustStatus::Trusted);
+    }
+    Ok(MacosTrustStatus::StaleKeychain {
+        local_sha1,
+        keychain_sha1s,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_list_relaycraft_ca_sha1_in_system_keychain() -> Result<Vec<String>> {
+    let output = Command::new("security")
+        .arg("find-certificate")
+        .arg("-c")
+        .arg(RELAYCRAFT_CA_CN)
+        .arg("-a")
+        .arg("-Z")
+        .arg(macos_system_keychain())
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    Ok(parse_sha1_hashes_from_security_z_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_remove_relaycraft_ca_from_system_keychain() -> Result<usize> {
+    let mut removed = 0usize;
+    loop {
+        let status = Command::new("sudo")
+            .arg("security")
+            .arg("delete-certificate")
+            .arg("-c")
+            .arg(RELAYCRAFT_CA_CN)
+            .arg(macos_system_keychain())
+            .status()?;
+        if status.success() {
+            removed += 1;
+        } else {
+            break;
+        }
+    }
+    Ok(removed)
+}
+
+#[cfg(target_os = "macos")]
+fn get_file_sha1(path: &std::path::Path) -> Result<String> {
+    let pem_content = std::fs::read_to_string(path)?;
     let mut reader = std::io::BufReader::new(std::io::Cursor::new(pem_content.as_bytes()));
     let cert_der = rustls_pemfile::certs(&mut reader)
         .collect::<Result<Vec<_>, _>>()?
@@ -172,35 +283,53 @@ fn get_file_sha1(path: &std::path::Path) -> Result<String> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("No certificate found in PEM file"))?;
 
-    // Compute SHA-1 of the DER bytes
     let mut hasher = Sha1::new();
     hasher.update(cert_der.as_ref());
-    let result = hasher.finalize();
-
-    Ok(hex::encode(result).to_uppercase())
+    Ok(hex::encode(hasher.finalize()).to_uppercase())
 }
 
+/// Parse `SHA-1 hash: <HEX>` lines from `security find-certificate -Z` output.
 #[cfg(target_os = "macos")]
-fn is_cert_installed_macos(sha1: &str) -> Result<bool> {
-    let output = Command::new("security")
-        .arg("find-certificate")
-        .arg("-c")
-        .arg("RelayCraft CA")
-        .arg("-Z") // Print SHA-1 hash
-        .arg("/Library/Keychains/System.keychain")
-        .output()?;
+fn parse_sha1_hashes_from_security_z_output(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("SHA-1 hash:")?;
+            let hash = rest.trim().replace(' ', "").to_uppercase();
+            if hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                Some(hash)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
-    // If command fails (e.g. cert not found), it might return non-zero
-    if !output.status.success() {
-        return Ok(false);
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "macos")]
+    use super::parse_sha1_hashes_from_security_z_output;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_security_z_output_collects_all_sha1_hashes() {
+        let sample = r#"SHA-256 hash: AAAA
+SHA-1 hash: 556DC870334A7E801C993FF1710815705A936B3D
+keychain: "/Library/Keychains/System.keychain"
+SHA-256 hash: BBBB
+SHA-1 hash: 404139F8ABA4A86B0D15613CB6397DB1DBF894D7
+"#;
+        let hashes = parse_sha1_hashes_from_security_z_output(sample);
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(hashes[0], "556DC870334A7E801C993FF1710815705A936B3D");
+        assert_eq!(hashes[1], "404139F8ABA4A86B0D15613CB6397DB1DBF894D7");
     }
 
-    // SHA-1 hash from security -Z is usually in format "SHA-1 hash: <HASH>"
-    let stdout = String::from_utf8_lossy(&output.stdout).to_uppercase();
-    // Normalize input SHA1 (remove spaces if any)
-    let target_sha1 = sha1.replace(" ", "").to_uppercase();
-    // Normalize output (remove spaces/newlines for robust check)
-    let clean_stdout = stdout.replace(" ", "").replace("\n", "");
-
-    Ok(clean_stdout.contains(&target_sha1))
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_security_z_output_ignores_sha256_lines() {
+        let sample = "SHA-256 hash: DEADBEEF\nSHA-1 hash: 134EDAF3BB29368DDCA26BE1858ABACE31A2485C\n";
+        let hashes = parse_sha1_hashes_from_security_z_output(sample);
+        assert_eq!(hashes, vec!["134EDAF3BB29368DDCA26BE1858ABACE31A2485C"]);
+    }
 }

@@ -88,11 +88,13 @@ relay-core-cli ca install
 relay-core-cli ca status
 ```
 
-**macOS**: The certificate is installed to the System Keychain and trusted automatically.
+**macOS**: The certificate is installed to the System Keychain (replaces older `RelayCraft CA` entries). `ca status` compares your local `ca_cert.pem` with the keychain by SHA-1 fingerprint.
+
 **Linux**: Copy the generated `ca_cert.pem` to `/usr/local/share/ca-certificates/` and run `update-ca-certificates`.
+
 **Windows**: Import `ca_cert.pem` via `certmgr.msc` into "Trusted Root Certification Authorities".
 
-After installation, configure your browser to use `127.0.0.1:8080` as the HTTP/HTTPS proxy.
+After `ca install`, start the proxy (`relay run -l 127.0.0.1:8080` by default) and set your browser or OS proxy to the same listen address.
 
 ## Search captured flows (REST)
 
