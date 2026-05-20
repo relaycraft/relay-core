@@ -1,9 +1,13 @@
+pub use crate::flow_query::{
+    flow_matches_filter, flow_matches_query, parse_flow_filter, FlowFilter,
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// 流量搜索条件，所有字段可选，多条件为 AND 关系。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FlowQuery {
     /// 主机名过滤（子串匹配）
     pub host: Option<String>,

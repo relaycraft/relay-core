@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
 use relay_core_api::flow::{Flow, Layer};
+use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
 use std::collections::VecDeque;
 
@@ -103,24 +104,13 @@ impl TuiApp {
 
     fn get_filtered_flows(&self) -> Vec<&Flow> {
         if self.filter_input.is_empty() {
-            self.flows.iter().collect()
-        } else {
-            self.flows
-                .iter()
-                .filter(|flow| match &flow.layer {
-                    Layer::Http(h) => {
-                        h.request.url.to_string().contains(&self.filter_input)
-                            || h.request.method.contains(&self.filter_input)
-                    }
-                    Layer::WebSocket(w) => w
-                        .handshake_request
-                        .url
-                        .to_string()
-                        .contains(&self.filter_input),
-                    _ => false,
-                })
-                .collect()
+            return self.flows.iter().collect();
         }
+        let filter = parse_flow_filter(&self.filter_input);
+        self.flows
+            .iter()
+            .filter(|flow| flow_matches_filter(flow, &filter))
+            .collect()
     }
 
     pub fn on_key(&mut self, event: KeyEvent) {
@@ -355,7 +345,7 @@ impl TuiApp {
             ]),
             Line::from(vec![
                 Span::styled(" /          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Filter flows by host/URL/method"),
+                Span::raw("Filter (host: path: method: status: err ws, or plain text)"),
             ]),
             Line::from(vec![
                 Span::styled(" Enter / →  ", Style::default().fg(Color::Cyan)),
@@ -1183,6 +1173,24 @@ mod tests {
 
         app.filter_input = "nonexistent".into();
         assert_eq!(app.get_filtered_flows().len(), 0);
+
+        app.filter_input = "host:api.example".into();
+        assert_eq!(app.get_filtered_flows().len(), 2);
+
+        app.filter_input = "method:POST".into();
+        assert_eq!(app.get_filtered_flows().len(), 1);
+    }
+
+    #[test]
+    fn test_filtering_plain_text_case_insensitive() {
+        let mut app = TuiApp::new(8080);
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://API.Example.com/x",
+            "GET",
+        ));
+        app.filter_input = "api.example".into();
+        assert_eq!(app.get_filtered_flows().len(), 1);
     }
 
     #[test]

@@ -131,9 +131,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Flows {
             control_url,
+            api_url,
             output,
+            filter,
+            host,
+            path,
+            method,
+            status_min,
+            status_max,
+            has_error,
+            websocket,
+            limit,
         } => {
-            commands::flows::execute(control_url, output).await?;
+            commands::flows::execute(commands::flows::FlowsOptions {
+                control_url,
+                api_url,
+                output,
+                filter,
+                host,
+                path,
+                method,
+                status_min,
+                status_max,
+                has_error,
+                websocket,
+                limit,
+            })
+            .await?;
         }
         Commands::Intercept {
             action,

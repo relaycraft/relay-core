@@ -1,6 +1,6 @@
 use lru::LruCache;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer, WebSocketMessage};
-use relay_core_api::modification::{FlowQuery, FlowSummary};
+use relay_core_api::modification::{flow_matches_query, FlowQuery, FlowSummary};
 use relay_core_storage::store::Store;
 use std::num::NonZeroUsize;
 use tokio::sync::{mpsc, oneshot};
@@ -131,72 +131,6 @@ impl FlowStoreActor {
             }
         }
     }
-}
-
-fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
-    let (host_str, path_str, method_str, status, is_ws) = match &flow.layer {
-        Layer::Http(h) => {
-            let s = h.response.as_ref().map(|r| r.status);
-            (
-                h.request.url.host_str().unwrap_or("").to_string(),
-                h.request.url.path().to_string(),
-                h.request.method.clone(),
-                s,
-                false,
-            )
-        }
-        Layer::WebSocket(ws) => (
-            ws.handshake_request
-                .url
-                .host_str()
-                .unwrap_or("")
-                .to_string(),
-            ws.handshake_request.url.path().to_string(),
-            ws.handshake_request.method.clone(),
-            Some(ws.handshake_response.status),
-            true,
-        ),
-        _ => return false,
-    };
-
-    if let Some(h) = &query.host
-        && !host_str.contains(h.as_str())
-    {
-        return false;
-    }
-    if let Some(p) = &query.path_contains
-        && !path_str.contains(p.as_str())
-    {
-        return false;
-    }
-    if let Some(m) = &query.method
-        && !method_str.eq_ignore_ascii_case(m)
-    {
-        return false;
-    }
-    if let Some(min) = query.status_min
-        && status.is_none_or(|s| s < min)
-    {
-        return false;
-    }
-    if let Some(max) = query.status_max
-        && status.is_none_or(|s| s > max)
-    {
-        return false;
-    }
-    if let Some(ws_only) = query.is_websocket
-        && is_ws != ws_only
-    {
-        return false;
-    }
-    if let Some(err_only) = query.has_error {
-        // has_error: status >= 500 or flow has "error" tag
-        let is_err = status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error");
-        if err_only != is_err {
-            return false;
-        }
-    }
-    true
 }
 
 fn flow_to_summary(flow: &Flow) -> FlowSummary {

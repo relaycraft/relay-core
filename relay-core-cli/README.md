@@ -69,7 +69,7 @@ Keyboard shortcuts:
 - `Esc` / `h` — focus flow list
 - `Tab` — switch detail tab (Overview / Request / Response / Messages)
 - `1-4` — jump to specific tab
-- `/` — filter flows by host/URL/method
+- `/` — filter flows (`host:api method:POST status:>=400 err ws`, or plain text)
 - `?` — show help overlay
 - `q` — quit
 
@@ -93,6 +93,17 @@ relay-core-cli ca status
 **Windows**: Import `ca_cert.pem` via `certmgr.msc` into "Trusted Root Certification Authorities".
 
 After installation, configure your browser to use `127.0.0.1:8080` as the HTTP/HTTPS proxy.
+
+## Search captured flows (REST)
+
+With the proxy running and `--api-port` enabled:
+
+```bash
+relay-core-cli flows --host api.example --method POST --status-min 400
+relay-core-cli flows --filter "host:api method:GET status:>=200"
+```
+
+Uses `GET /api/v1/flows` (default `--api-url http://127.0.0.1:8082`). Without query flags, `flows` streams live updates over the control WebSocket.
 
 ## HTTP API
 

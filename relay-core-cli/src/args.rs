@@ -109,15 +109,47 @@ pub enum Commands {
         #[command(subcommand)]
         action: ScriptsAction,
     },
-    /// Traffic Monitoring (Online)
+    /// Traffic Monitoring (Online): live WebSocket stream, or search via REST API
     Flows {
-        /// Control API URL
+        /// Control API URL (WebSocket stream when not searching)
         #[arg(long, default_value = "http://127.0.0.1:8081")]
         control_url: String,
+
+        /// REST API base URL for search mode (requires `relay run --api-port`)
+        #[arg(long, default_value = "http://127.0.0.1:8082")]
+        api_url: String,
 
         /// Output format (table, json, jsonl)
         #[arg(long, default_value = "table")]
         output: String,
+
+        /// Filter expression (same as TUI `/` bar): host:api method:POST status:>=400 err ws
+        #[arg(long)]
+        filter: Option<String>,
+
+        #[arg(long)]
+        host: Option<String>,
+
+        #[arg(long)]
+        path: Option<String>,
+
+        #[arg(long)]
+        method: Option<String>,
+
+        #[arg(long)]
+        status_min: Option<u16>,
+
+        #[arg(long)]
+        status_max: Option<u16>,
+
+        #[arg(long)]
+        has_error: bool,
+
+        #[arg(long)]
+        websocket: bool,
+
+        #[arg(long, default_value = "50")]
+        limit: usize,
     },
     /// Interception Control (Online)
     Intercept {
