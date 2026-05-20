@@ -1,5 +1,5 @@
 pub use crate::flow_query::{
-    flow_matches_filter, flow_matches_query, parse_flow_filter, FlowFilter,
+    FlowFilter, flow_matches_filter, flow_matches_query, parse_flow_filter,
 };
 
 use serde::{Deserialize, Serialize};

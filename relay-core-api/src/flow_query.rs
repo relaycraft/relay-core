@@ -197,13 +197,7 @@ fn flow_layer_fields(flow: &Flow) -> (String, String, String, Option<u16>, bool)
             Some(ws.handshake_response.status),
             true,
         ),
-        _ => (
-            String::new(),
-            String::new(),
-            String::new(),
-            None,
-            false,
-        ),
+        _ => (String::new(), String::new(), String::new(), None, false),
     }
 }
 
@@ -295,14 +289,8 @@ mod tests {
 
     #[test]
     fn parse_status_exact_and_range() {
-        assert_eq!(
-            parse_flow_filter("status:404").query.status_min,
-            Some(404)
-        );
-        assert_eq!(
-            parse_flow_filter("status:404").query.status_max,
-            Some(404)
-        );
+        assert_eq!(parse_flow_filter("status:404").query.status_min, Some(404));
+        assert_eq!(parse_flow_filter("status:404").query.status_max, Some(404));
         let r = parse_flow_filter("status:400-499");
         assert_eq!(r.query.status_min, Some(400));
         assert_eq!(r.query.status_max, Some(499));

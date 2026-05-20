@@ -1,0 +1,5 @@
+#!/bin/sh
+# Installed by scripts/install-git-hooks.sh — runs the same checks as CI before push.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+exec "$ROOT/scripts/ci-check.sh"

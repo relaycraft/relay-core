@@ -39,6 +39,16 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 *   **`relay-core-tauri`**: Tauri adapter used by the RelayCraft desktop application.
 
 ## 5. Key Commands
+
+### Quality gate (matches CI `quality` job — run before push or release)
+
+```bash
+./scripts/ci-check.sh          # fmt --check → clippy → test --workspace
+./scripts/install-git-hooks.sh # installs pre-push hook that runs ci-check.sh
+```
+
+GitHub Actions runs the same script in `.github/workflows/ci.yml`. Tag workflows (`release`, `publish-npm`, `publish`) also run `quality` before building.
+
 *   **Run Offline Tests**:
     ```bash
     cargo test --package relay-core-tauri --test offline_dev_tests
@@ -53,7 +63,7 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
     ```
 *   **Check Lints**:
     ```bash
-    $ cargo clippy --workspace
+    cargo clippy --workspace -- -D warnings
     ```
 
 ## 6. Commit Message Convention
@@ -91,6 +101,7 @@ chore: switch license to MIT
 
 ### Pre-commit checklist
 
+- [ ] `./scripts/ci-check.sh` passes (or pre-push hook installed)
 - [ ] Subject is single intent, ≤72 chars
 - [ ] Type is in the whitelist
 - [ ] No secrets, credentials, or generated keys committed

@@ -1,6 +1,6 @@
 use lru::LruCache;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer, WebSocketMessage};
-use relay_core_api::modification::{flow_matches_query, FlowQuery, FlowSummary};
+use relay_core_api::modification::{FlowQuery, FlowSummary, flow_matches_query};
 use relay_core_storage::store::Store;
 use std::num::NonZeroUsize;
 use tokio::sync::{mpsc, oneshot};

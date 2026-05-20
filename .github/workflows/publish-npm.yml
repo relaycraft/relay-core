@@ -5,7 +5,19 @@ on:
     tags: ["v*"]
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-workspace
+      - run: ./scripts/ci-check.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node npm/scripts/set-version.js ${{ github.ref_name }}
+
   publish-binaries:
+    needs: quality
     strategy:
       # Cancel remaining matrix legs once one fails — avoids many half-published platform versions.
       fail-fast: true

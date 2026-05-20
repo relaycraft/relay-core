@@ -1,7 +1,7 @@
 use crate::args::InterceptAction;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use relay_core_api::modification::{parse_flow_filter, FlowQuery, FlowSummary};
+use relay_core_api::modification::{FlowQuery, FlowSummary, parse_flow_filter};
 use serde::Deserialize;
 use tokio_tungstenite::connect_async;
 use tracing::info;
@@ -84,8 +84,8 @@ async fn execute_search(opts: FlowsOptions) -> Result<()> {
     let (query, text_tokens) = opts.to_flow_query();
 
     let base = opts.api_url.trim_end_matches('/');
-    let mut url = reqwest::Url::parse(&format!("{base}/api/v1/flows"))
-        .context("invalid --api-url")?;
+    let mut url =
+        reqwest::Url::parse(&format!("{base}/api/v1/flows")).context("invalid --api-url")?;
     {
         let mut pairs = url.query_pairs_mut();
         if let Some(h) = &query.host {
