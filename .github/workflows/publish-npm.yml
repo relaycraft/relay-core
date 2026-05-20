@@ -56,7 +56,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Set package versions from tag
-        run: node npm/scripts/set-version.js "${GITHUB_REF_NAME}"
+        run: node npm/scripts/set-version.js ${{ github.ref_name }}
 
       - name: Stage platform package binaries (unix)
         if: runner.os != 'Windows'
@@ -94,10 +94,10 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Set package versions from tag
-        run: node npm/scripts/set-version.js "${GITHUB_REF_NAME}"
+        run: node npm/scripts/set-version.js ${{ github.ref_name }}
 
       - name: Verify all platform packages on npm registry
-        run: node npm/scripts/verify-platform-packages.js "${GITHUB_REF_NAME}"
+        run: node npm/scripts/verify-platform-packages.js ${{ github.ref_name }}
 
       - name: Publish @relay-core/cli
         run: npm publish --access public
