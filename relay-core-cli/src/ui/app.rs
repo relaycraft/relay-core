@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -124,6 +124,10 @@ impl TuiApp {
     }
 
     pub fn on_key(&mut self, event: KeyEvent) {
+        // Ignore Repeat/Release — e.g. `?` Press opens Help, Repeat would instantly close it.
+        if event.kind != KeyEventKind::Press {
+            return;
+        }
         let key = event.code;
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match self.input_mode {
@@ -1077,6 +1081,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn key_repeat(code: KeyCode) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Repeat)
+    }
+
     fn make_http_flow(id: &str, url_str: &str, method: &str) -> Flow {
         Flow {
             id: uuid::Uuid::parse_str(id).unwrap(),
@@ -1229,6 +1237,17 @@ mod tests {
         assert_eq!(app.detail_tab, DetailTab::Messages);
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Overview);
+    }
+
+    #[test]
+    fn test_help_stays_open_on_key_repeat() {
+        let mut app = TuiApp::new(8080);
+        app.on_key(key(KeyCode::Char('?')));
+        assert_eq!(app.input_mode, InputMode::Help);
+        app.on_key(key_repeat(KeyCode::Char('?')));
+        assert_eq!(app.input_mode, InputMode::Help);
+        app.on_key(key(KeyCode::Char('?')));
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
