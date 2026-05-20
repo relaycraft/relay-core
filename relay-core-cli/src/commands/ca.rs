@@ -5,6 +5,7 @@ use relay_core_lib::tls::CertificateAuthority;
 use std::process::Command;
 
 /// Must match `Run` default in `args.rs`.
+#[cfg(target_os = "macos")]
 const DEFAULT_PROXY_LISTEN: &str = "127.0.0.1:8080";
 
 #[allow(unused_variables)]
@@ -163,6 +164,7 @@ pub fn execute(action: CaAction) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn print_proxy_setup_hint() {
     println!();
     println!("Next:");
