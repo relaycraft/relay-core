@@ -88,7 +88,9 @@ pub fn execute(action: CaAction) -> Result<()> {
                         }
                         Ok(other) => {
                             println!();
-                            println!("CA install command finished, but trust could not be verified:");
+                            println!(
+                                "CA install command finished, but trust could not be verified:"
+                            );
                             println!("  {}", other.summary_line());
                             print_proxy_setup_hint();
                         }
@@ -182,6 +184,7 @@ fn macos_system_keychain() -> &'static str {
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 enum MacosTrustStatus {
     Trusted,
     NotInKeychain,
@@ -208,7 +211,11 @@ impl MacosTrustStatus {
                     "Keychain has {} older \"{}\" entr{} (SHA1 {}); local file is {} — run `ca install` to refresh",
                     keychain_sha1s.len(),
                     RELAYCRAFT_CA_CN,
-                    if keychain_sha1s.len() == 1 { "y" } else { "ies" },
+                    if keychain_sha1s.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
                     keychain_sha1s.join(", "),
                     local_sha1
                 )
@@ -248,9 +255,9 @@ fn macos_list_relaycraft_ca_sha1_in_system_keychain() -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
 
-    Ok(parse_sha1_hashes_from_security_z_output(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(parse_sha1_hashes_from_security_z_output(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -328,7 +335,8 @@ SHA-1 hash: 404139F8ABA4A86B0D15613CB6397DB1DBF894D7
     #[cfg(target_os = "macos")]
     #[test]
     fn parse_security_z_output_ignores_sha256_lines() {
-        let sample = "SHA-256 hash: DEADBEEF\nSHA-1 hash: 134EDAF3BB29368DDCA26BE1858ABACE31A2485C\n";
+        let sample =
+            "SHA-256 hash: DEADBEEF\nSHA-1 hash: 134EDAF3BB29368DDCA26BE1858ABACE31A2485C\n";
         let hashes = parse_sha1_hashes_from_security_z_output(sample);
         assert_eq!(hashes, vec!["134EDAF3BB29368DDCA26BE1858ABACE31A2485C"]);
     }
