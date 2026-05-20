@@ -1,27 +1,34 @@
 # @relay-core/cli
 
-Standalone CLI and TUI for [RelayCore](https://github.com/relaycraft/relay-core) — a high-performance Rust traffic interception engine.
+CLI and TUI for **[RelayCore](https://relaycore.dev)** — a high-performance traffic interception proxy (MITM, rules, HAR, scripts).
 
-Native binaries are installed via npm optional dependencies (`@relay-core/binaries-<platform>-<arch>`), so corporate npm proxies and mirrors work without GitHub Releases downloads.
-
-## Quick Start
+## Install
 
 ```bash
-npx @relay-core/cli ca init && npx @relay-core/cli ca install
-npx @relay-core/cli run --ui
+npm i -g @relay-core/cli
+# or: npx @relay-core/cli --help
 ```
 
-The proxy listens on `127.0.0.1:8080`. Configure your system or browser to use it.
+- **Node** ≥ 18
+- **Platforms:** macOS (x64, arm64), Linux (x64, arm64), Windows (x64)
+- Native binaries ship via `@relay-core/binaries-*` on the npm registry (proxy/mirror friendly)
 
-## Commands
+## Quick start
 
-| Command | Description |
-|---------|-------------|
-| `run` | Start the proxy server. Add `--ui` for TUI mode. |
-| `ca {init,install,status,uninstall}` | Manage CA certificate for HTTPS interception |
-| `metrics` | View runtime metrics (requires `--api-port`) |
+```bash
+relay-core ca init && relay-core ca install   # HTTPS interception
+relay-core run --ui                           # proxy @ 127.0.0.1:8080
+```
 
-For a full command reference: `npx @relay-core/cli run --help`
+Point your system or browser at the proxy port. Full CLI reference: `relay-core run --help`.
+
+## Links
+
+| | |
+|---|---|
+| Docs | [relaycore.dev](https://relaycore.dev) |
+| MCP | [`@relay-core/mcp`](https://www.npmjs.com/package/@relay-core/mcp) |
+| Source | [github.com/relaycraft/relay-core](https://github.com/relaycraft/relay-core) |
 
 ## License
 

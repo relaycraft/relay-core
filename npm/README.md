@@ -1,42 +1,41 @@
-# RelayCore npm distribution
+# RelayCore — npm packages
 
-Native binaries are published as optional platform packages (esbuild-style), not downloaded from GitHub in `postinstall`.
+User-facing docs: **[relaycore.dev](https://relaycore.dev)**
 
-## Packages
+## Published packages
 
-| Package | Role |
-|---------|------|
-| `@relay-core/cli` | CLI/TUI wrapper (`relay-core` bin → `relay-core-cli`) |
-| `@relay-core/mcp` | MCP wrapper (`relay-core-probe` bin → `relay-core-probe`) |
-| `@relay-core/binaries-<platform>-<arch>` | Per-platform `relay-core-cli` + `relay-core-probe` binaries |
+| Package | Install | Purpose |
+|---------|---------|---------|
+| [`@relay-core/cli`](https://www.npmjs.com/package/@relay-core/cli) | `npx @relay-core/cli` | CLI / TUI wrapper → `relay-core-cli` |
+| [`@relay-core/mcp`](https://www.npmjs.com/package/@relay-core/mcp) | `npx @relay-core/mcp` | MCP wrapper → `relay-core-probe` |
+| `@relay-core/binaries-<platform>-<arch>` | *(automatic)* | Per-platform native binaries |
 
-Platform ids match Node: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `win32-x64`.
+Platform ids: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `win32-x64`.
 
-## Release (CI)
+Binaries are **optional dependencies** (esbuild-style), not downloaded from GitHub in `postinstall`.
 
-On tag `v*`, `.github/workflows/publish-npm.yml`:
+## Maintainer: release
 
-1. Matrix-build Rust artifacts (same targets as GitHub Releases); `fail-fast: true` cancels sibling jobs if one platform fails.
-2. Publish each `@relay-core/binaries-*` package with binaries under `bin/`.
-3. **`verify-platform-packages.js`** — all 5 platform packages must exist on the registry at this version before wrappers ship.
-4. Publish `@relay-core/cli` and `@relay-core/mcp` (JS only; `optionalDependencies` pin platform package versions).
+Tag `v*` triggers [`.github/workflows/publish-npm.yml`](../.github/workflows/publish-npm.yml):
 
-If step 2 is incomplete, step 4 does not run (no broken wrapper release). Note: npm cannot republish the same version — fix failed matrix jobs and use a **new** tag if some platform packages already landed.
+1. Matrix-build and publish all `@relay-core/binaries-*`
+2. `verify-platform-packages.js` — all five must exist on the registry
+3. Publish `@relay-core/cli` and `@relay-core/mcp`
 
-## Bump version locally
+Bump versions (including `optionalDependencies`):
 
 ```bash
 node npm/scripts/set-version.js 0.3.9
 ```
 
-Updates all `npm/packages/*/package.json`, `npm/cli`, and `npm/mcp` (including `optionalDependencies` ranges).
+`cargo release` runs the same sync via `scripts/sync-npm-version.py`.
 
-## Local dev (link platform package)
+If a release is incomplete, **bump a new version** — npm cannot republish the same version.
+
+## Maintainer: local dev
 
 ```bash
 cargo build --release -p relay-core-cli -p relay-core-probe
 PKG=npm/packages/binaries-$(node -p "process.platform + '-' + process.arch")
 cp target/release/relay-core-cli target/release/relay-core-probe "$PKG/bin/"
-cd npm/cli && npm link && cd ../packages/binaries-darwin-arm64 && npm link
-# install @relay-core/cli with linked optional dep as needed
 ```

@@ -3,6 +3,8 @@
   "version": "0.3.8",
   "description": "RelayCore MCP server — AI agent traffic control via Model Context Protocol",
   "license": "MIT",
+  "homepage": "https://relaycore.dev",
+  "bugs": "https://github.com/relaycraft/relay-core/issues",
   "repository": "github:relaycraft/relay-core",
   "bin": {
     "relay-core-probe": "./bin/mcp-probe"

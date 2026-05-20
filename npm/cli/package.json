@@ -3,6 +3,8 @@
   "version": "0.3.8",
   "description": "RelayCore CLI — high-performance Rust traffic interception proxy with TUI",
   "license": "MIT",
+  "homepage": "https://relaycore.dev",
+  "bugs": "https://github.com/relaycraft/relay-core/issues",
   "repository": "github:relaycraft/relay-core",
   "bin": {
     "relay-core": "./bin/relay-core"
