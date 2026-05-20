@@ -43,25 +43,26 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 ### Quality gate (matches CI `quality` job — run before push or release)
 
 ```bash
-./scripts/ci-check.sh          # fmt → clippy → test; on macOS also Linux Docker parity
-./scripts/install-git-hooks.sh # pre-push hook → ci-check.sh
+./scripts/ci-check.sh              # fmt → clippy → test (host; fast)
+./scripts/install-git-hooks.sh     # pre-push → ci-check.sh
+./scripts/release-preflight.sh X.Y.Z  # before tag: local check + origin/main CI green
 ```
 
 GitHub Actions runs the same script on **ubuntu-latest** (`.github/workflows/ci.yml`). Tag workflows (`release`, `publish-npm`, `publish`) run `quality` first.
 
-**macOS developers:** host `cargo clippy` uses `target_os = "macos"`, so symbols only used on macOS can pass locally but fail Linux CI (`dead_code`). `ci-check.sh` therefore re-runs the gate inside Docker (same deps as CI). Requires Docker Desktop; skip with `RELAY_SKIP_LINUX_PARITY=1` only when you accept that risk.
+**Cross-platform (macOS dev, Linux CI):** platform-only code must use `#[cfg(target_os = "...")]`. Host clippy does not catch Linux-only `dead_code`; rely on **main CI green before tagging**, not local Docker.
 
 ### Release discipline (avoid mid-release fixes and noisy notes)
 
-1. **Land features on `main` first** — feat/fix commits only; CI green on `main` before any version bump.
-2. **One bump, one tag** — `chore: bump version to X.Y.Z` is the last commit; then tag once.
-3. **Preflight before tag** (includes Linux parity on macOS):
+1. **Land feat/fix on `main`**, push, **wait for CI green**.
+2. **Version bump** (`chore: bump version to X.Y.Z`) as the last commit → push → **wait for CI green again**.
+3. **Preflight, then tag once** (requires `gh` CLI):
    ```bash
    ./scripts/release-preflight.sh X.Y.Z
-   git push origin main && git tag vX.Y.Z && git push origin vX.Y.Z
+   git tag vX.Y.Z && git push origin vX.Y.Z
    ```
-4. **If a tag push fails CI** — do **not** delete/retag the same version. Fix on `main`, bump to **next patch** (e.g. failed `0.3.11` → ship `0.3.12`). Retagging pollutes Actions history and Release Notes.
-5. **Release Notes** — generated from `feat`/`fix` subjects only; `chore`/`ci` are omitted from the LLM prompt.
+4. **If tag CI fails** — do **not** delete/retag; fix on `main`, bump **next patch**, repeat from step 2.
+5. **Release Notes** — workflow uses `feat`/`fix` subjects only; `chore`/`ci` are not expanded in the LLM prompt.
 
 *   **Run Offline Tests**:
     ```bash

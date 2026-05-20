@@ -12,6 +12,6 @@ if [[ ! -d "$ROOT/.git" ]]; then
 fi
 
 cp "$SRC" "$DST"
-chmod +x "$DST" "$ROOT/scripts/ci-check.sh" "$ROOT/scripts/ci-check-linux-docker.sh"
+chmod +x "$DST" "$ROOT/scripts/ci-check.sh" "$ROOT/scripts/release-preflight.sh"
 echo "Installed pre-push hook -> $DST"
-echo "Runs: scripts/ci-check.sh (host + Linux Docker parity on macOS)"
+echo "Runs: scripts/ci-check.sh (host). Before tag: release-preflight.sh after main CI is green."
