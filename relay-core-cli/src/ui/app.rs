@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
@@ -10,6 +10,8 @@ use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
 use std::collections::VecDeque;
+
+use super::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum DetailTab {
@@ -314,70 +316,80 @@ impl TuiApp {
         let lines = vec![
             Line::from(vec![Span::styled(
                 "Keyboard Shortcuts",
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Yellow),
+                Theme::accent_bold(),
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::styled(" j / ↓      ", Style::default().fg(Color::Cyan)),
-                Span::raw("Move selection down"),
+                Span::styled(" j / ↓      ", Theme::label()),
+                Span::styled("Move selection down", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" k / ↑      ", Style::default().fg(Color::Cyan)),
-                Span::raw("Move selection up"),
+                Span::styled(" k / ↑      ", Theme::label()),
+                Span::styled("Move selection up", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" g / End    ", Style::default().fg(Color::Cyan)),
-                Span::raw("Jump to newest flow (detail: scroll to top)"),
+                Span::styled(" g / End    ", Theme::label()),
+                Span::styled("Jump to newest flow (detail: scroll to top)", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" G / Home   ", Style::default().fg(Color::Cyan)),
-                Span::raw("Jump to oldest flow (detail: scroll to bottom)"),
+                Span::styled(" G / Home   ", Theme::label()),
+                Span::styled(
+                    "Jump to oldest flow (detail: scroll to bottom)",
+                    Theme::text(),
+                ),
             ]),
             Line::from(vec![
-                Span::styled(" Ctrl+d     ", Style::default().fg(Color::Cyan)),
-                Span::raw("Scroll detail panel down 10 lines"),
+                Span::styled(" Ctrl+d     ", Theme::label()),
+                Span::styled("Scroll detail panel down 10 lines", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" Ctrl+u     ", Style::default().fg(Color::Cyan)),
-                Span::raw("Scroll detail panel up 10 lines"),
+                Span::styled(" Ctrl+u     ", Theme::label()),
+                Span::styled("Scroll detail panel up 10 lines", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" /          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Filter (host: path: method: status: err ws, or plain text)"),
+                Span::styled(" /          ", Theme::label()),
+                Span::styled(
+                    "Filter (host: path: method: status: err ws, or plain text)",
+                    Theme::text(),
+                ),
             ]),
             Line::from(vec![
-                Span::styled(" Enter / →  ", Style::default().fg(Color::Cyan)),
-                Span::raw("Focus detail panel"),
+                Span::styled(" Enter / →  ", Theme::label()),
+                Span::styled("Focus detail panel", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" Esc / ←    ", Style::default().fg(Color::Cyan)),
-                Span::raw("Focus flow list"),
+                Span::styled(" Esc / ←    ", Theme::label()),
+                Span::styled("Focus flow list", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" Tab        ", Style::default().fg(Color::Cyan)),
-                Span::raw("Switch detail tab (Overview→Request→Response→Messages)"),
+                Span::styled(" Tab        ", Theme::label()),
+                Span::styled(
+                    "Switch detail tab (Overview→Request→Response→Messages)",
+                    Theme::text(),
+                ),
             ]),
             Line::from(vec![
-                Span::styled(" 1-4        ", Style::default().fg(Color::Cyan)),
-                Span::raw("Jump to tab 1=Overview 2=Request 3=Response 4=Messages"),
+                Span::styled(" 1-4        ", Theme::label()),
+                Span::styled(
+                    "Jump to tab 1=Overview 2=Request 3=Response 4=Messages",
+                    Theme::text(),
+                ),
             ]),
             Line::from(vec![
-                Span::styled(" PgUp / PgDown ", Style::default().fg(Color::Cyan)),
-                Span::raw("Scroll detail panel"),
+                Span::styled(" PgUp / PgDown ", Theme::label()),
+                Span::styled("Scroll detail panel", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" ?          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Toggle this help"),
+                Span::styled(" ?          ", Theme::label()),
+                Span::styled("Toggle this help", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" q          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Quit"),
+                Span::styled(" q          ", Theme::label()),
+                Span::styled("Quit", Theme::text()),
             ]),
             Line::from(vec![
-                Span::styled(" d          ", Style::default().fg(Color::Cyan)),
-                Span::raw("Delete selected flow"),
+                Span::styled(" d          ", Theme::label()),
+                Span::styled("Delete selected flow", Theme::text()),
             ]),
         ];
 
@@ -388,7 +400,7 @@ impl TuiApp {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Help (? to close) ")
-            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+            .style(Style::default().bg(Theme::BG_ELEVATED));
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(Clear, area);
         f.render_widget(paragraph, area);
@@ -440,27 +452,8 @@ impl TuiApp {
                     ),
                 };
 
-                let method_color = match method.as_str() {
-                    "GET" => Color::Blue,
-                    "POST" => Color::Green,
-                    "PUT" => Color::Yellow,
-                    "DELETE" => Color::Red,
-                    "PATCH" => Color::Cyan,
-                    "HEAD" => Color::Magenta,
-                    "OPTIONS" => Color::White,
-                    "WS" => Color::Magenta,
-                    _ => Color::Gray,
-                };
-
-                let status_color = if status.starts_with('2') {
-                    Color::Green
-                } else if status.starts_with('3') {
-                    Color::Yellow
-                } else if status.starts_with('4') || status.starts_with('5') {
-                    Color::Red
-                } else {
-                    Color::Gray
-                };
+                let method_color = Theme::method(&method);
+                let status_color = Theme::status(&status);
 
                 let url_cell = if filtering {
                     let lower_url = url.to_lowercase();
@@ -473,9 +466,7 @@ impl TuiApp {
                         }
                         spans.push(Span::styled(
                             url[idx..idx + filter.len()].to_string(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
+                            Theme::filter_hit(),
                         ));
                         last = idx + filter.len();
                     }
@@ -484,7 +475,7 @@ impl TuiApp {
                     }
                     Cell::from(Line::from(spans))
                 } else {
-                    Cell::from(url)
+                    Cell::from(Span::styled(url, Theme::text()))
                 };
 
                 if wide {
@@ -504,11 +495,7 @@ impl TuiApp {
             })
             .collect();
 
-        let border_style = if self.active_area == ActiveArea::FlowList {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowList);
 
         let (header, widths): (Vec<&str>, Vec<Constraint>) = if wide {
             (
@@ -532,7 +519,7 @@ impl TuiApp {
         };
 
         let header_row = Row::new(header)
-            .style(Style::default().add_modifier(Modifier::BOLD))
+            .style(Theme::table_header())
             .bottom_margin(1);
 
         let table = Table::new(rows, widths)
@@ -543,11 +530,7 @@ impl TuiApp {
                     .title("Flows")
                     .border_style(border_style),
             )
-            .row_highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .bg(Color::DarkGray),
-            )
+            .row_highlight_style(Theme::row_highlight())
             .highlight_symbol("► ");
 
         f.render_stateful_widget(table, area, &mut self.table_state);
@@ -569,7 +552,7 @@ impl TuiApp {
 
         let tabs = Tabs::new(titles)
             .block(Block::default().borders(Borders::ALL).title("Detail"))
-            .highlight_style(Style::default().fg(Color::Yellow))
+            .highlight_style(Theme::accent())
             .select(self.detail_tab as usize);
         f.render_widget(tabs, chunks[0]);
 
@@ -599,11 +582,7 @@ impl TuiApp {
     }
 
     fn render_overview(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = if self.active_area == ActiveArea::FlowDetail {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Overview")
@@ -613,56 +592,53 @@ impl TuiApp {
             Layer::Http(h) => {
                 let mut lines = vec![
                     Line::from(vec![
-                        Span::styled("ID:       ", Style::default().fg(Color::Cyan)),
-                        Span::raw(flow.id.to_string()),
+                        Span::styled("ID:       ", Theme::label()),
+                        Span::styled(flow.id.to_string(), Theme::value()),
                     ]),
                     Line::from(vec![
-                        Span::styled("URL:      ", Style::default().fg(Color::Cyan)),
-                        Span::raw(h.request.url.to_string()),
+                        Span::styled("URL:      ", Theme::label()),
+                        Span::styled(h.request.url.to_string(), Theme::value()),
                     ]),
                     Line::from(vec![
-                        Span::styled("Method:   ", Style::default().fg(Color::Cyan)),
-                        Span::raw(&h.request.method),
+                        Span::styled("Method:   ", Theme::label()),
+                        Span::styled(&h.request.method, Theme::value()),
                     ]),
                     Line::from(vec![
-                        Span::styled("Version:  ", Style::default().fg(Color::Cyan)),
-                        Span::raw(&h.request.version),
+                        Span::styled("Version:  ", Theme::label()),
+                        Span::styled(&h.request.version, Theme::value()),
                     ]),
                 ];
                 if let Some(resp) = &h.response {
                     lines.push(Line::from(vec![
-                        Span::styled("Status:   ", Style::default().fg(Color::Cyan)),
-                        Span::raw(resp.status.to_string()),
+                        Span::styled("Status:   ", Theme::label()),
+                        Span::styled(resp.status.to_string(), Theme::value()),
                     ]));
                     lines.push(Line::from(vec![
-                        Span::styled("Reason:   ", Style::default().fg(Color::Cyan)),
-                        Span::raw(&resp.status_text),
+                        Span::styled("Reason:   ", Theme::label()),
+                        Span::styled(&resp.status_text, Theme::value()),
                     ]));
                 }
                 if let Some(err) = &h.error {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "Error:    ",
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(err, Style::default().fg(Color::Red)),
+                        Span::styled("Error:    ", Theme::error_bold()),
+                        Span::styled(err, Theme::error()),
                     ]));
                 }
                 lines
             }
             Layer::WebSocket(w) => vec![
                 Line::from(vec![
-                    Span::styled("ID:       ", Style::default().fg(Color::Cyan)),
-                    Span::raw(flow.id.to_string()),
+                    Span::styled("ID:       ", Theme::label()),
+                    Span::styled(flow.id.to_string(), Theme::value()),
                 ]),
                 Line::from(vec![
-                    Span::styled("URL:      ", Style::default().fg(Color::Cyan)),
-                    Span::raw(w.handshake_request.url.to_string()),
+                    Span::styled("URL:      ", Theme::label()),
+                    Span::styled(w.handshake_request.url.to_string(), Theme::value()),
                 ]),
                 Line::from(vec![
-                    Span::styled("Type:     ", Style::default().fg(Color::Cyan)),
-                    Span::raw("WebSocket"),
+                    Span::styled("Type:     ", Theme::label()),
+                    Span::styled("WebSocket", Theme::value()),
                 ]),
             ],
             _ => vec![Line::from("Unknown Layer")],
@@ -676,11 +652,7 @@ impl TuiApp {
     }
 
     fn render_request(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = if self.active_area == ActiveArea::FlowDetail {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Request")
@@ -688,29 +660,16 @@ impl TuiApp {
 
         match &flow.layer {
             Layer::Http(h) => {
-                let mut text = vec![Line::from(Span::styled(
-                    "Headers:",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::Blue),
-                ))];
+                let mut text = vec![Line::from(Span::styled("Headers:", Theme::section()))];
                 for header in &h.request.headers {
                     text.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {}: ", header.0),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::raw(&header.1),
+                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(&header.1, Theme::value()),
                     ]));
                 }
 
                 text.push(Line::from(""));
-                text.push(Line::from(Span::styled(
-                    "Body:",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::Blue),
-                )));
+                text.push(Line::from(Span::styled("Body:", Theme::section())));
 
                 if let Some(body) = &h.request.body {
                     text.push(Line::from(format!(
@@ -749,17 +708,12 @@ impl TuiApp {
             Layer::WebSocket(w) => {
                 let mut text = vec![Line::from(Span::styled(
                     "Handshake Request Headers:",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::Blue),
+                    Theme::section(),
                 ))];
                 for header in &w.handshake_request.headers {
                     text.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {}: ", header.0),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::raw(&header.1),
+                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(&header.1, Theme::value()),
                     ]));
                 }
                 let p = Paragraph::new(text)
@@ -773,11 +727,7 @@ impl TuiApp {
     }
 
     fn render_response(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = if self.active_area == ActiveArea::FlowDetail {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Response")
@@ -786,29 +736,16 @@ impl TuiApp {
         match &flow.layer {
             Layer::Http(h) => {
                 if let Some(resp) = &h.response {
-                    let mut text = vec![Line::from(Span::styled(
-                        "Headers:",
-                        Style::default()
-                            .add_modifier(Modifier::BOLD)
-                            .fg(Color::Blue),
-                    ))];
+                    let mut text = vec![Line::from(Span::styled("Headers:", Theme::section()))];
                     for header in &resp.headers {
                         text.push(Line::from(vec![
-                            Span::styled(
-                                format!("  {}: ", header.0),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::raw(&header.1),
+                            Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                            Span::styled(&header.1, Theme::value()),
                         ]));
                     }
 
                     text.push(Line::from(""));
-                    text.push(Line::from(Span::styled(
-                        "Body:",
-                        Style::default()
-                            .add_modifier(Modifier::BOLD)
-                            .fg(Color::Blue),
-                    )));
+                    text.push(Line::from(Span::styled("Body:", Theme::section())));
 
                     if let Some(body) = &resp.body {
                         text.push(Line::from(format!(
@@ -850,17 +787,12 @@ impl TuiApp {
             Layer::WebSocket(w) => {
                 let mut text = vec![Line::from(Span::styled(
                     "Handshake Response Headers:",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::Blue),
+                    Theme::section(),
                 ))];
                 for header in &w.handshake_response.headers {
                     text.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {}: ", header.0),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::raw(&header.1),
+                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(&header.1, Theme::value()),
                     ]));
                 }
                 let p = Paragraph::new(text)
@@ -874,11 +806,7 @@ impl TuiApp {
     }
 
     fn render_messages(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = if self.active_area == ActiveArea::FlowDetail {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Messages")
@@ -894,9 +822,9 @@ impl TuiApp {
                             relay_core_api::flow::Direction::ClientToServer => "->",
                             relay_core_api::flow::Direction::ServerToClient => "<-",
                         };
-                        let color = match msg.direction {
-                            relay_core_api::flow::Direction::ClientToServer => Color::Green,
-                            relay_core_api::flow::Direction::ServerToClient => Color::Blue,
+                        let dir_style = match msg.direction {
+                            relay_core_api::flow::Direction::ClientToServer => Theme::ws_outbound(),
+                            relay_core_api::flow::Direction::ServerToClient => Theme::ws_inbound(),
                         };
 
                         let content = if msg.content.size > 50 {
@@ -910,12 +838,9 @@ impl TuiApp {
                         };
 
                         Line::from(vec![
-                            Span::styled(format!("{} ", direction), Style::default().fg(color)),
-                            Span::styled(
-                                format!("[{}] ", msg.opcode),
-                                Style::default().fg(Color::Yellow),
-                            ),
-                            Span::raw(content),
+                            Span::styled(format!("{} ", direction), dir_style),
+                            Span::styled(format!("[{}] ", msg.opcode), Theme::ws_opcode()),
+                            Span::styled(content, Theme::text()),
                         ])
                     })
                     .collect();
@@ -958,66 +883,45 @@ impl TuiApp {
                     ActiveArea::FlowDetail => "DETAIL",
                 };
                 vec![
-                    Span::styled(
-                        format!("Flows: {} ", count_str),
-                        Style::default().fg(Color::Green),
-                    ),
-                    Span::raw("| "),
-                    Span::styled(
-                        format!("Total: {} ", self.flow_count_total),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::raw("| "),
-                    Span::styled(
-                        format!("Up: {} ", uptime),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::raw("| "),
-                    Span::styled(
-                        format!("Port: {} ", self.proxy_port),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::raw("| "),
-                    Span::styled(
-                        format!("[{}] ", active),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("| "),
-                    Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" quit | "),
-                    Span::styled("/", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" filter | "),
-                    Span::styled("?", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" help"),
+                    Span::styled("Flows: ", Theme::label()),
+                    Span::styled(format!("{} ", count_str), Theme::stat_ok()),
+                    Span::styled("| ", Theme::muted()),
+                    Span::styled("Total: ", Theme::label()),
+                    Span::styled(format!("{} ", self.flow_count_total), Theme::text()),
+                    Span::styled("| ", Theme::muted()),
+                    Span::styled("Up: ", Theme::label()),
+                    Span::styled(format!("{} ", uptime), Theme::uptime()),
+                    Span::styled("| ", Theme::muted()),
+                    Span::styled("Port: ", Theme::label()),
+                    Span::styled(format!("{} ", self.proxy_port), Theme::stat_info()),
+                    Span::styled("| ", Theme::muted()),
+                    Span::styled(format!("[{}] ", active), Theme::accent_bold()),
+                    Span::styled("| ", Theme::muted()),
+                    Span::styled("q", Theme::hotkey()),
+                    Span::styled(" quit | ", Theme::muted()),
+                    Span::styled("/", Theme::hotkey()),
+                    Span::styled(" filter | ", Theme::muted()),
+                    Span::styled("?", Theme::hotkey()),
+                    Span::styled(" help", Theme::muted()),
                 ]
             }
             InputMode::Filtering => {
                 vec![
-                    Span::raw("Filter: "),
-                    Span::styled(
-                        self.filter_input.as_str(),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" | "),
-                    Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" apply | "),
-                    Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" cancel"),
+                    Span::styled("Filter: ", Theme::label()),
+                    Span::styled(self.filter_input.as_str(), Theme::accent()),
+                    Span::styled(" | ", Theme::muted()),
+                    Span::styled("Enter", Theme::hotkey()),
+                    Span::styled(" apply | ", Theme::muted()),
+                    Span::styled("Esc", Theme::hotkey()),
+                    Span::styled(" cancel", Theme::muted()),
                 ]
             }
             InputMode::Help => {
                 vec![
-                    Span::styled(
-                        "HELP",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" — press "),
-                    Span::styled("? or Esc", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(" to close"),
+                    Span::styled("HELP", Theme::accent_bold()),
+                    Span::styled(" — press ", Theme::muted()),
+                    Span::styled("? or Esc", Theme::hotkey()),
+                    Span::styled(" to close", Theme::muted()),
                 ]
             }
         };
