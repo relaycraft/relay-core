@@ -70,8 +70,11 @@ Keyboard shortcuts:
 - `Tab` — switch detail tab (Overview / Request / Response / Messages)
 - `1-4` — jump to specific tab
 - `/` — filter flows (`host:api method:POST status:>=400 err ws`, or plain text)
+- `y` — copy selected flow as cURL (clipboard on macOS/Linux when available)
 - `?` — show help overlay
 - `q` — quit
+
+Wide terminals (≥120 columns) show **Method**, **Code**, **Dur**, **Size**, **Host**, and **Path** columns. Narrow terminals (&lt;80 columns) use single-pane mode: list or detail full screen (`Enter` / `Esc` to switch).
 
 ## HTTPS Interception
 

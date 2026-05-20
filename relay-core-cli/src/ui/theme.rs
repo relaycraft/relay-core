@@ -70,10 +70,21 @@ impl Theme {
     }
 
     pub fn row_highlight() -> Style {
-        Style::default()
-            .fg(Self::TEXT)
-            .add_modifier(Modifier::BOLD)
-            .bg(Self::ROW_SELECTED)
+        Style::default().fg(Self::ACCENT).bg(Self::ROW_SELECTED)
+    }
+
+    pub fn accent_dim() -> Style {
+        Style::default().fg(Self::ACCENT_DIM)
+    }
+
+    pub fn duration_color(ms: u64) -> Color {
+        if ms < 100 {
+            Self::STAT_OK
+        } else if ms < 500 {
+            Self::ACCENT_DIM
+        } else {
+            Color::Rgb(248, 113, 113)
+        }
     }
 
     pub fn table_header() -> Style {

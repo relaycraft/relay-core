@@ -10,7 +10,13 @@ use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
 use std::collections::VecDeque;
+use url::Url;
 
+use super::format::{
+    LAYOUT_NARROW_MAX, TABLE_WIDE_MIN, copy_to_clipboard, display_method, display_path,
+    flow_duration_ms, flow_list_title, format_duration_ms, format_size, host_from_url,
+    http_flow_to_curl, smart_truncate,
+};
 use super::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -31,14 +37,22 @@ impl DetailTab {
         }
     }
 
-    fn title(&self) -> &str {
+    fn tab_line(&self) -> Line<'static> {
         match self {
-            Self::Overview => "Overview (1)",
-            Self::Request => "Request (2)",
-            Self::Response => "Response (3)",
-            Self::Messages => "Messages (4)",
+            Self::Overview => tab_line_pair("Overview", '1'),
+            Self::Request => tab_line_pair("Request", '2'),
+            Self::Response => tab_line_pair("Response", '3'),
+            Self::Messages => tab_line_pair("Messages", '4'),
         }
     }
+}
+
+fn tab_line_pair(label: &'static str, num: char) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label, Theme::section()),
+        Span::raw(" "),
+        Span::styled(num.to_string(), Theme::accent_dim()),
+    ])
 }
 
 #[derive(PartialEq, Debug)]
@@ -67,6 +81,8 @@ pub struct TuiApp {
     pub start_time: std::time::Instant,
     pub flow_count_total: u64,
     pub proxy_port: u16,
+    /// One-shot message for status bar (e.g. copy confirmation).
+    pub toast: Option<String>,
 }
 
 impl TuiApp {
@@ -84,6 +100,7 @@ impl TuiApp {
             start_time: std::time::Instant::now(),
             flow_count_total: 0,
             proxy_port: port,
+            toast: None,
         };
         app.table_state.select(Some(0));
         app
@@ -115,11 +132,34 @@ impl TuiApp {
             .collect()
     }
 
+    fn selected_flow(&self) -> Option<&Flow> {
+        self.table_state
+            .selected()
+            .and_then(|i| self.get_filtered_flows().get(i).copied())
+    }
+
+    fn copy_curl_selection(&mut self) {
+        let Some(flow) = self.selected_flow() else {
+            self.toast = Some("No flow selected".into());
+            return;
+        };
+        let Some(curl) = http_flow_to_curl(flow) else {
+            self.toast = Some("cURL: not an HTTP/WebSocket flow".into());
+            return;
+        };
+        if copy_to_clipboard(&curl) {
+            self.toast = Some("cURL copied to clipboard".into());
+        } else {
+            self.toast = Some("cURL built (install pbcopy/xclip for clipboard)".into());
+        }
+    }
+
     pub fn on_key(&mut self, event: KeyEvent) {
         // Ignore Repeat/Release — e.g. `?` Press opens Help, Repeat would instantly close it.
         if event.kind != KeyEventKind::Press {
             return;
         }
+        self.toast = None;
         let key = event.code;
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match self.input_mode {
@@ -170,6 +210,7 @@ impl TuiApp {
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('/') => self.input_mode = InputMode::Filtering,
                         KeyCode::Char('?') => self.input_mode = InputMode::Help,
+                        KeyCode::Char('y') => self.copy_curl_selection(),
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                             self.active_area = ActiveArea::FlowDetail
                         }
@@ -202,6 +243,7 @@ impl TuiApp {
                         KeyCode::Char('2') => self.detail_tab = DetailTab::Request,
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
+                        KeyCode::Char('y') => self.copy_curl_selection(),
                         _ => {}
                     },
                 }
@@ -287,24 +329,32 @@ impl TuiApp {
             .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
             .split(area);
 
-        let (list_width, detail_width) = if area.width < 100 {
-            (50, 50)
-        } else if area.width < 140 {
-            (40, 60)
+        let narrow = area.width < LAYOUT_NARROW_MAX;
+        if narrow {
+            match self.active_area {
+                ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
+                ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
+            }
         } else {
-            (35, 65)
-        };
+            let (list_width, detail_width) = if area.width < 100 {
+                (50, 50)
+            } else if area.width < 140 {
+                (40, 60)
+            } else {
+                (35, 65)
+            };
 
-        let main_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(list_width),
-                Constraint::Percentage(detail_width),
-            ])
-            .split(chunks[0]);
+            let main_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(list_width),
+                    Constraint::Percentage(detail_width),
+                ])
+                .split(chunks[0]);
 
-        self.render_flow_list(f, main_chunks[0]);
-        self.render_flow_detail(f, main_chunks[1]);
+            self.render_flow_list(f, main_chunks[0]);
+            self.render_flow_detail(f, main_chunks[1]);
+        }
         self.render_status_bar(f, chunks[1]);
 
         if self.input_mode == InputMode::Help {
@@ -391,6 +441,10 @@ impl TuiApp {
                 Span::styled(" d          ", Theme::label()),
                 Span::styled("Delete selected flow", Theme::text()),
             ]),
+            Line::from(vec![
+                Span::styled(" y          ", Theme::label()),
+                Span::styled("Copy selected flow as cURL", Theme::text()),
+            ]),
         ];
 
         let help_width = 70;
@@ -408,111 +462,38 @@ impl TuiApp {
 
     fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
         let filtered_flows = self.get_filtered_flows();
-        let wide = area.width >= 120;
+        let table_wide = area.width >= TABLE_WIDE_MIN;
         let filter = &self.filter_input;
         let filtering = !filter.is_empty();
+        let path_budget = usize::from(area.width.saturating_sub(if table_wide { 52 } else { 28 }));
 
         let rows: Vec<Row> = filtered_flows
             .iter()
-            .map(|flow| {
-                let (method, url, status, size_str) = match &flow.layer {
-                    Layer::Http(h) => {
-                        let size = h
-                            .response
-                            .as_ref()
-                            .and_then(|r| r.body.as_ref())
-                            .map(|b| b.size)
-                            .unwrap_or(0);
-                        (
-                            h.request.method.clone(),
-                            h.request.url.to_string(),
-                            if let Some(resp) = &h.response {
-                                resp.status.to_string()
-                            } else {
-                                "---".to_string()
-                            },
-                            if size > 0 {
-                                format_size(size)
-                            } else {
-                                String::new()
-                            },
-                        )
-                    }
-                    Layer::WebSocket(w) => (
-                        "WS".to_string(),
-                        w.handshake_request.url.to_string(),
-                        w.handshake_response.status.to_string(),
-                        String::new(),
-                    ),
-                    _ => (
-                        "UNKNOWN".to_string(),
-                        "Unknown".to_string(),
-                        "---".to_string(),
-                        String::new(),
-                    ),
-                };
-
-                let method_color = Theme::method(&method);
-                let status_color = Theme::status(&status);
-
-                let url_cell = if filtering {
-                    let lower_url = url.to_lowercase();
-                    let lower_filter = filter.to_lowercase();
-                    let mut spans = Vec::new();
-                    let mut last = 0;
-                    for (idx, _) in lower_url.match_indices(&lower_filter) {
-                        if idx > last {
-                            spans.push(Span::raw(url[last..idx].to_string()));
-                        }
-                        spans.push(Span::styled(
-                            url[idx..idx + filter.len()].to_string(),
-                            Theme::filter_hit(),
-                        ));
-                        last = idx + filter.len();
-                    }
-                    if last < url.len() {
-                        spans.push(Span::raw(url[last..].to_string()));
-                    }
-                    Cell::from(Line::from(spans))
-                } else {
-                    Cell::from(Span::styled(url, Theme::text()))
-                };
-
-                if wide {
-                    Row::new(vec![
-                        Cell::from(Span::styled(method, Style::default().fg(method_color))),
-                        Cell::from(Span::styled(status, Style::default().fg(status_color))),
-                        Cell::from(size_str),
-                        url_cell,
-                    ])
-                } else {
-                    Row::new(vec![
-                        Cell::from(Span::styled(method, Style::default().fg(method_color))),
-                        Cell::from(Span::styled(status, Style::default().fg(status_color))),
-                        url_cell,
-                    ])
-                }
-            })
+            .map(|flow| flow_table_row(flow, table_wide, path_budget, filter, filtering))
             .collect();
 
         let border_style = Theme::border(self.active_area == ActiveArea::FlowList);
+        let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
 
-        let (header, widths): (Vec<&str>, Vec<Constraint>) = if wide {
+        let (header, widths): (Vec<&str>, Vec<Constraint>) = if table_wide {
             (
-                vec!["Method", "Code", "Size", "URL"],
+                vec!["Method", "Code", "Dur", "Size", "Host", "Path"],
                 vec![
-                    Constraint::Length(8),
-                    Constraint::Length(5),
+                    Constraint::Length(6),
+                    Constraint::Length(4),
+                    Constraint::Length(7),
                     Constraint::Length(9),
+                    Constraint::Length(18),
                     Constraint::Min(10),
                 ],
             )
         } else {
             (
-                vec!["Method", "Code", "URL"],
+                vec!["Method", "Code", "Dur", "URL"],
                 vec![
-                    Constraint::Length(8),
-                    Constraint::Length(5),
+                    Constraint::Length(6),
+                    Constraint::Length(4),
+                    Constraint::Length(7),
                     Constraint::Min(10),
                 ],
             )
@@ -527,36 +508,42 @@ impl TuiApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Flows")
+                    .title(Span::styled(title, Theme::section()))
                     .border_style(border_style),
             )
             .row_highlight_style(Theme::row_highlight())
-            .highlight_symbol("► ");
+            .highlight_symbol("▌ ");
 
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
     fn render_flow_detail(&self, f: &mut Frame, area: Rect) {
+        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" Detail ", Theme::section()))
+            .border_style(border_style);
+        let inner = block.inner(area);
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
-            .split(area);
+            .constraints([Constraint::Length(1), Constraint::Min(0)].as_ref())
+            .split(inner);
 
-        // Render Tabs
         let titles = vec![
-            DetailTab::Overview.title(),
-            DetailTab::Request.title(),
-            DetailTab::Response.title(),
-            DetailTab::Messages.title(),
+            DetailTab::Overview.tab_line(),
+            DetailTab::Request.tab_line(),
+            DetailTab::Response.tab_line(),
+            DetailTab::Messages.tab_line(),
         ];
 
         let tabs = Tabs::new(titles)
-            .block(Block::default().borders(Borders::ALL).title("Detail"))
             .highlight_style(Theme::accent())
             .select(self.detail_tab as usize);
+        f.render_widget(block, area);
         f.render_widget(tabs, chunks[0]);
 
-        // Render Content
+        let content_block = Block::default();
         let filtered_flows = self.get_filtered_flows();
         if let Some(selected) = self.table_state.selected() {
             if let Some(flow) = filtered_flows.get(selected) {
@@ -568,14 +555,13 @@ impl TuiApp {
                 }
             } else {
                 f.render_widget(
-                    Paragraph::new("Flow not found").block(Block::default().borders(Borders::ALL)),
+                    Paragraph::new("Flow not found").block(content_block),
                     chunks[1],
                 );
             }
         } else {
             f.render_widget(
-                Paragraph::new("Select a flow to view details")
-                    .block(Block::default().borders(Borders::ALL)),
+                Paragraph::new("Select a flow to view details").block(content_block),
                 chunks[1],
             );
         }
@@ -882,7 +868,7 @@ impl TuiApp {
                     ActiveArea::FlowList => "LIST",
                     ActiveArea::FlowDetail => "DETAIL",
                 };
-                vec![
+                let mut spans = vec![
                     Span::styled("Flows: ", Theme::label()),
                     Span::styled(format!("{} ", count_str), Theme::stat_ok()),
                     Span::styled("| ", Theme::muted()),
@@ -902,8 +888,15 @@ impl TuiApp {
                     Span::styled("/", Theme::hotkey()),
                     Span::styled(" filter | ", Theme::muted()),
                     Span::styled("?", Theme::hotkey()),
-                    Span::styled(" help", Theme::muted()),
-                ]
+                    Span::styled(" help | ", Theme::muted()),
+                    Span::styled("y", Theme::hotkey()),
+                    Span::styled(" cURL", Theme::muted()),
+                ];
+                if let Some(ref msg) = self.toast {
+                    spans.push(Span::styled(" | ", Theme::muted()));
+                    spans.push(Span::styled(msg.as_str(), Theme::accent()));
+                }
+                spans
             }
             InputMode::Filtering => {
                 vec![
@@ -932,14 +925,123 @@ impl TuiApp {
     }
 }
 
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}K", bytes as f64 / 1024.0)
+fn flow_table_row(
+    flow: &Flow,
+    table_wide: bool,
+    path_budget: usize,
+    filter: &str,
+    filtering: bool,
+) -> Row<'static> {
+    let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
+        Layer::Http(h) => {
+            let size = h
+                .response
+                .as_ref()
+                .and_then(|r| r.body.as_ref())
+                .map(|b| b.size)
+                .unwrap_or(0);
+            (
+                h.request.method.clone(),
+                h.request.url.clone(),
+                if let Some(resp) = &h.response {
+                    resp.status.to_string()
+                } else {
+                    "---".to_string()
+                },
+                format_size(size),
+                h.request.body.is_some(),
+                !h.request.query.is_empty() || h.request.url.query().is_some(),
+            )
+        }
+        Layer::WebSocket(w) => (
+            "WS".to_string(),
+            w.handshake_request.url.clone(),
+            w.handshake_response.status.to_string(),
+            String::new(),
+            false,
+            w.handshake_request.url.query().is_some(),
+        ),
+        _ => (
+            "???".to_string(),
+            Url::parse("http://unknown/").unwrap(),
+            "---".to_string(),
+            String::new(),
+            false,
+            false,
+        ),
+    };
+
+    let method_label = display_method(&method, has_body);
+    let method_color = Theme::method(method_label.trim_end_matches('+'));
+    let status_color = Theme::status(&status);
+    let dur_ms = flow_duration_ms(flow);
+    let dur_label = format_duration_ms(dur_ms);
+    let dur_style = dur_ms
+        .map(|ms| Style::default().fg(Theme::duration_color(ms)))
+        .unwrap_or(Theme::muted());
+
+    let method_cell = Cell::from(Span::styled(
+        method_label,
+        Style::default().fg(method_color),
+    ));
+    let status_cell = Cell::from(Span::styled(
+        status.clone(),
+        Style::default().fg(status_color),
+    ));
+    let dur_cell = Cell::from(Span::styled(dur_label, dur_style));
+
+    if table_wide {
+        let host = host_from_url(&url);
+        let path = display_path(&url, path_budget, has_query);
+        Row::new(vec![
+            method_cell,
+            status_cell,
+            dur_cell,
+            Cell::from(size_str),
+            styled_text_cell(&host, filter, filtering, Theme::muted()),
+            styled_text_cell(&path, filter, filtering, Theme::text()),
+        ])
     } else {
-        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
+        let url_text = smart_truncate(url.as_str(), path_budget);
+        Row::new(vec![
+            method_cell,
+            status_cell,
+            dur_cell,
+            styled_text_cell(&url_text, filter, filtering, Theme::text()),
+        ])
     }
+}
+
+fn styled_text_cell(text: &str, filter: &str, filtering: bool, base: Style) -> Cell<'static> {
+    if filtering && !filter.is_empty() {
+        Cell::from(Line::from(highlight_filter_spans(text, filter, base)))
+    } else {
+        Cell::from(Span::styled(text.to_string(), base))
+    }
+}
+
+fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'static>> {
+    let lower_text = text.to_lowercase();
+    let lower_filter = filter.to_lowercase();
+    let mut spans = Vec::new();
+    let mut last = 0;
+    for (idx, _) in lower_text.match_indices(&lower_filter) {
+        if idx > last {
+            spans.push(Span::styled(text[last..idx].to_string(), base));
+        }
+        spans.push(Span::styled(
+            text[idx..idx + filter.len()].to_string(),
+            Theme::filter_hit(),
+        ));
+        last = idx + filter.len();
+    }
+    if last < text.len() {
+        spans.push(Span::styled(text[last..].to_string(), base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base));
+    }
+    spans
 }
 
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
@@ -1174,6 +1276,35 @@ mod tests {
         assert_eq!(app.filter_input, "api");
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_copy_curl_sets_toast() {
+        let mut app = TuiApp::new(8080);
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://api.example.com/v1",
+            "GET",
+        ));
+        app.on_key(key(KeyCode::Char('y')));
+        assert!(app.toast.is_some());
+        assert!(
+            app.toast
+                .as_deref()
+                .unwrap()
+                .to_lowercase()
+                .contains("curl")
+        );
+    }
+
+    #[test]
+    fn test_narrow_layout_switches_pane_on_enter_esc() {
+        let mut app = TuiApp::new(8080);
+        assert_eq!(app.active_area, ActiveArea::FlowList);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.active_area, ActiveArea::FlowDetail);
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.active_area, ActiveArea::FlowList);
     }
 
     #[test]
