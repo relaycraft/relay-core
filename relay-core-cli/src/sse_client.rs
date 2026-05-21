@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 
 const INITIAL_RECONNECT_DELAY_MS: u64 = 200;
 const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
+const MAX_SSE_BUFFER_BYTES: usize = 1_048_576; // 1 MB
 
 pub struct ApiClient {
     http: reqwest::Client,
@@ -82,6 +83,10 @@ impl ApiClient {
                         match resp.chunk().await {
                             Ok(Some(chunk)) => {
                                 buf.push_str(&String::from_utf8_lossy(&chunk));
+                                // Cap buffer to prevent OOM on malformed stream
+                                if buf.len() > MAX_SSE_BUFFER_BYTES {
+                                    let _ = buf.drain(..buf.len() - MAX_SSE_BUFFER_BYTES / 2);
+                                }
                                 while let Some(pos) = buf.find("\n\n") {
                                     let frame = buf[..pos].to_string();
                                     buf = buf[pos + 2..].to_string();
