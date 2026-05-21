@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
@@ -10,6 +10,7 @@ use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::time::Instant;
 use url::Url;
 
 use super::format::{
@@ -83,6 +84,12 @@ pub struct TuiApp {
     pub proxy_port: u16,
     /// One-shot message for status bar (e.g. copy confirmation).
     pub toast: Option<String>,
+    /// Pause list updates (proxy still runs, TUI stops appending).
+    pub paused: bool,
+    /// Flows received while paused (shown as live hint).
+    pub pending_count: u64,
+    /// Sliding window of flow arrival timestamps for req/s calculation.
+    pub req_timestamps: VecDeque<Instant>,
 }
 
 impl TuiApp {
@@ -101,22 +108,39 @@ impl TuiApp {
             flow_count_total: 0,
             proxy_port: port,
             toast: None,
+            paused: false,
+            pending_count: 0,
+            req_timestamps: VecDeque::with_capacity(64),
         };
         app.table_state.select(Some(0));
         app
     }
 
     pub fn on_flow(&mut self, flow: Flow) {
+        // Track arrival for req/s sliding window (always, even when paused).
+        let now = Instant::now();
+        self.req_timestamps.push_back(now);
+        // Prune timestamps older than 5 seconds.
+        while self.req_timestamps.front().is_some_and(|t| now.duration_since(*t).as_secs() > 5) {
+            self.req_timestamps.pop_front();
+        }
+
         if let Some(pos) = self.flows.iter().position(|f| f.id == flow.id) {
             self.flows[pos] = flow;
         } else {
-            self.flows.push_front(flow);
             self.flow_count_total = self.flow_count_total.saturating_add(1);
+            if self.paused {
+                self.pending_count = self.pending_count.saturating_add(1);
+                return;
+            }
+            self.flows.push_front(flow);
             if self.flows.len() > 1000 {
                 self.flows.pop_back();
             }
             if self.auto_scroll {
                 self.table_state.select(Some(0));
+            } else {
+                self.pending_count = self.pending_count.saturating_add(1);
             }
         }
     }
@@ -175,6 +199,16 @@ impl TuiApp {
                             self.delete_selected();
                             self.detail_scroll = 0;
                         }
+                        KeyCode::Char('p') => {
+                            self.paused = !self.paused;
+                            self.pending_count = 0;
+                        }
+                        KeyCode::Char('c') => {
+                            self.flows.clear();
+                            self.pending_count = 0;
+                            self.table_state.select(None);
+                            self.detail_scroll = 0;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
                             self.auto_scroll = false;
@@ -195,9 +229,10 @@ impl TuiApp {
                             self.detail_scroll = 0;
                         }
                         KeyCode::End | KeyCode::Char('g') => {
-                            // Jump to first (newest) flow
+                            // Jump to first (newest) flow, re-enable auto_scroll, clear pending
                             self.table_state.select(Some(0));
                             self.auto_scroll = true;
+                            self.pending_count = 0;
                             self.detail_scroll = 0;
                         }
                         KeyCode::Tab => {
@@ -445,6 +480,14 @@ impl TuiApp {
                 Span::styled(" y          ", Theme::label()),
                 Span::styled("Copy selected flow as cURL", Theme::text()),
             ]),
+            Line::from(vec![
+                Span::styled(" p          ", Theme::label()),
+                Span::styled("Pause / resume list (proxy keeps running)", Theme::text()),
+            ]),
+            Line::from(vec![
+                Span::styled(" c          ", Theme::label()),
+                Span::styled("Clear flow list", Theme::text()),
+            ]),
         ];
 
         let help_width = 70;
@@ -574,63 +617,192 @@ impl TuiApp {
             .title("Overview")
             .border_style(border_style);
 
-        let text = match &flow.layer {
+        let mut lines: Vec<Line> = Vec::new();
+
+        // ── Identity ──
+        lines.push(Line::from(vec![
+            Span::styled("ID:  ", Theme::label()),
+            Span::styled(flow.id.to_string(), Theme::muted()),
+        ]));
+
+        match &flow.layer {
             Layer::Http(h) => {
-                let mut lines = vec![
-                    Line::from(vec![
-                        Span::styled("ID:       ", Theme::label()),
-                        Span::styled(flow.id.to_string(), Theme::value()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("URL:      ", Theme::label()),
-                        Span::styled(h.request.url.to_string(), Theme::value()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Method:   ", Theme::label()),
-                        Span::styled(&h.request.method, Theme::value()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Version:  ", Theme::label()),
-                        Span::styled(&h.request.version, Theme::value()),
-                    ]),
-                ];
-                if let Some(resp) = &h.response {
-                    lines.push(Line::from(vec![
-                        Span::styled("Status:   ", Theme::label()),
-                        Span::styled(resp.status.to_string(), Theme::value()),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("Reason:   ", Theme::label()),
-                        Span::styled(&resp.status_text, Theme::value()),
-                    ]));
-                }
+                let url_str = h.request.url.to_string();
+                lines.push(Line::from(vec![
+                    Span::styled("URL: ", Theme::label()),
+                    Span::styled(url_str, Theme::value()),
+                ]));
+                lines.push(Line::from(""));
+
+                // ── Status line: Method + Status + Size + Duration ──
+                let method_color = Theme::method(&h.request.method);
+                let method_display = display_method(&h.request.method, h.request.body.is_some());
+                let status_str = h
+                    .response
+                    .as_ref()
+                    .map(|r| r.status.to_string())
+                    .unwrap_or_else(|| "---".to_string());
+                let status_color = Theme::status(&status_str);
+                let size = h
+                    .response
+                    .as_ref()
+                    .and_then(|r| r.body.as_ref())
+                    .map(|b| b.size)
+                    .unwrap_or(0);
+                let size_str = format_size(size);
+                let dur_ms = flow_duration_ms(flow);
+                let dur_str = format_duration_ms(dur_ms);
+                let dur_color = dur_ms
+                    .map(Theme::duration_color)
+                    .unwrap_or(Theme::MUTED);
+
+                // Use String (owned) for 'static lifetime
+                let md = method_display.to_string();
+                let ss = status_str.to_string();
+                let sz = size_str.to_string();
+                let ds = dur_str.to_string();
+                lines.push(Line::from(vec![
+                    Span::styled(md, Style::default().fg(method_color).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(ss, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(sz, Theme::muted()),
+                    Span::raw("  "),
+                    Span::styled(ds, Style::default().fg(dur_color)),
+                ]));
+
                 if let Some(err) = &h.error {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
-                        Span::styled("Error:    ", Theme::error_bold()),
+                        Span::styled("Error: ", Theme::error_bold()),
                         Span::styled(err, Theme::error()),
                     ]));
                 }
-                lines
             }
-            Layer::WebSocket(w) => vec![
-                Line::from(vec![
-                    Span::styled("ID:       ", Theme::label()),
-                    Span::styled(flow.id.to_string(), Theme::value()),
-                ]),
-                Line::from(vec![
-                    Span::styled("URL:      ", Theme::label()),
+            Layer::WebSocket(w) => {
+                lines.push(Line::from(vec![
+                    Span::styled("URL: ", Theme::label()),
                     Span::styled(w.handshake_request.url.to_string(), Theme::value()),
-                ]),
-                Line::from(vec![
-                    Span::styled("Type:     ", Theme::label()),
-                    Span::styled("WebSocket", Theme::value()),
-                ]),
-            ],
-            _ => vec![Line::from("Unknown Layer")],
+                ]));
+                lines.push(Line::from(""));
+                let status_str = w.handshake_response.status.to_string();
+                let status_color = Theme::status(&status_str);
+                // Use String (owned) for 'static lifetime
+                let ws_status = status_str.to_string();
+                lines.push(Line::from(vec![
+                    Span::styled("WebSocket", Style::default().fg(Theme::method("WS")).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(ws_status, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(format!("{} messages", w.messages.len()), Theme::muted()),
+                ]));
+            }
+            _ => {
+                lines.push(Line::from("Unknown Layer"));
+            }
+        }
+
+        // ── Network ──
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("── Network ──", Theme::section())));
+        let net = &flow.network;
+        let mut net_parts: Vec<Span> = vec![
+            Span::styled("Client: ", Theme::label()),
+            Span::styled(format!("{}:{}  ", net.client_ip, net.client_port), Theme::value()),
+            Span::styled("Server: ", Theme::label()),
+            Span::styled(format!("{}:{}  ", net.server_ip, net.server_port), Theme::value()),
+        ];
+        if net.tls {
+            net_parts.push(Span::styled("TLS ", Theme::stat_ok()));
+            if let Some(ref ver) = net.tls_version {
+                net_parts.push(Span::styled(format!("{} ", ver), Theme::value()));
+            }
+        }
+        if let Some(ref sni) = net.sni {
+            net_parts.push(Span::styled("SNI: ", Theme::label()));
+            net_parts.push(Span::styled(sni, Theme::value()));
+        }
+        lines.push(Line::from(net_parts));
+
+        // ── Tags ──
+        if !flow.tags.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("── Tags ──", Theme::section())));
+            lines.push(Line::from(vec![Span::styled(
+                flow.tags.join("  "),
+                Theme::accent_dim(),
+            )]));
+        }
+
+        // ── Timing ──
+        let timing_present = match &flow.layer {
+            Layer::Http(h) => {
+                h.response
+                    .as_ref()
+                    .is_some_and(|r| r.timing.time_to_first_byte.is_some())
+            }
+            Layer::WebSocket(w) => w
+                .handshake_response
+                .timing
+                .time_to_first_byte
+                .is_some(),
+            _ => false,
         };
 
-        let p = Paragraph::new(text)
+        if timing_present || flow.end_time.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("── Timing ──", Theme::section())));
+
+            let (ttfb, ttlb, connect, ssl) = match &flow.layer {
+                Layer::Http(h) => {
+                    if let Some(ref resp) = h.response {
+                        (
+                            resp.timing.time_to_first_byte,
+                            resp.timing.time_to_last_byte,
+                            resp.timing.connect_time_ms,
+                            resp.timing.ssl_time_ms,
+                        )
+                    } else {
+                        (None, None, None, None)
+                    }
+                }
+                Layer::WebSocket(w) => {
+                    let t = &w.handshake_response.timing;
+                    (
+                        t.time_to_first_byte,
+                        t.time_to_last_byte,
+                        t.connect_time_ms,
+                        t.ssl_time_ms,
+                    )
+                }
+                _ => (None, None, None, None),
+            };
+
+            let total_ms = flow
+                .end_time
+                .map(|e| (e - flow.start_time).num_milliseconds() as u64)
+                .or(ttlb);
+
+            let timing_spans: Vec<Span> = vec![
+                timing_label_val("Total:  ", total_ms),
+                Span::raw("  "),
+                timing_label_val("TTFB:   ", ttfb),
+                Span::raw("  "),
+                timing_label_val("TTLB:   ", ttlb),
+            ];
+            lines.push(Line::from(timing_spans));
+
+            if connect.is_some() || ssl.is_some() {
+                let conn_spans: Vec<Span> = vec![
+                    timing_label_val("Connect:", connect),
+                    Span::raw("  "),
+                    timing_label_val("SSL:    ", ssl),
+                ];
+                lines.push(Line::from(conn_spans));
+            }
+        }
+
+        let p = Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: true })
             .scroll((self.detail_scroll, 0));
@@ -662,23 +834,12 @@ impl TuiApp {
                         "  Size: {} bytes, Encoding: {}",
                         body.size, body.encoding
                     )));
-                    // Basic body preview with JSON formatting
                     if body.size > 0 {
                         text.push(Line::from(""));
-
-                        let content =
-                            if let Ok(json_val) = serde_json::from_str::<Value>(&body.content) {
-                                if let Ok(pretty) = serde_json::to_string_pretty(&json_val) {
-                                    pretty
-                                } else {
-                                    body.content.clone()
-                                }
-                            } else {
-                                body.content.clone()
-                            };
-
-                        for line in content.lines() {
-                            text.push(Line::from(format!("  {}", line)));
+                        for line in render_body_lines(&body.content) {
+                            let mut spans = vec![Span::raw("  ")];
+                            spans.extend(line);
+                            text.push(Line::from(spans));
                         }
                     }
                 } else {
@@ -740,21 +901,10 @@ impl TuiApp {
                         )));
                         if body.size > 0 {
                             text.push(Line::from(""));
-
-                            let content = if let Ok(json_val) =
-                                serde_json::from_str::<Value>(&body.content)
-                            {
-                                if let Ok(pretty) = serde_json::to_string_pretty(&json_val) {
-                                    pretty
-                                } else {
-                                    body.content.clone()
-                                }
-                            } else {
-                                body.content.clone()
-                            };
-
-                            for line in content.lines() {
-                                text.push(Line::from(format!("  {}", line)));
+                            for line in render_body_lines(&body.content) {
+                                let mut spans = vec![Span::raw("  ")];
+                                spans.extend(line);
+                                text.push(Line::from(spans));
                             }
                         }
                     } else {
@@ -849,6 +999,16 @@ impl TuiApp {
         } else {
             flow_count.to_string()
         };
+
+        // req/s: count timestamps in the last 1 second
+        let now = Instant::now();
+        let req_per_sec = self
+            .req_timestamps
+            .iter()
+            .rev()
+            .take_while(|t| now.duration_since(**t).as_secs() < 1)
+            .count();
+
         let elapsed = self.start_time.elapsed();
         let uptime = if elapsed.as_secs() < 60 {
             format!("{}s", elapsed.as_secs())
@@ -864,38 +1024,86 @@ impl TuiApp {
 
         let bar_text = match self.input_mode {
             InputMode::Normal => {
+                let rec = if self.paused {
+                    Span::styled("[⏸ PAUSED] ", Theme::error_bold())
+                } else {
+                    Span::styled("[●REC] ", Theme::stat_ok())
+                };
+
+                let pending = if self.pending_count > 0 {
+                    Span::styled(
+                        format!("↓{} new ", self.pending_count),
+                        Theme::accent_bold(),
+                    )
+                } else {
+                    Span::raw("")
+                };
+
                 let active = match self.active_area {
                     ActiveArea::FlowList => "LIST",
                     ActiveArea::FlowDetail => "DETAIL",
                 };
-                let mut spans = vec![
+
+                // Left section
+                let left = vec![
+                    rec,
+                    pending,
                     Span::styled("Flows: ", Theme::label()),
                     Span::styled(format!("{} ", count_str), Theme::stat_ok()),
+                    Span::styled(format!("{}req/s ", req_per_sec), Theme::stat_info()),
                     Span::styled("| ", Theme::muted()),
                     Span::styled("Total: ", Theme::label()),
-                    Span::styled(format!("{} ", self.flow_count_total), Theme::text()),
-                    Span::styled("| ", Theme::muted()),
-                    Span::styled("Up: ", Theme::label()),
-                    Span::styled(format!("{} ", uptime), Theme::uptime()),
-                    Span::styled("| ", Theme::muted()),
-                    Span::styled("Port: ", Theme::label()),
-                    Span::styled(format!("{} ", self.proxy_port), Theme::stat_info()),
-                    Span::styled("| ", Theme::muted()),
+                    Span::styled(format!("{}", self.flow_count_total), Theme::text()),
+                ];
+
+                // Middle section
+                let middle = vec![
+                    Span::styled(" :{} ", Theme::uptime()),
+                    Span::styled(format!("{}", self.proxy_port), Theme::uptime()),
+                    Span::styled(" ", Theme::muted()),
+                    Span::styled(format!("up {}", uptime), Theme::uptime()),
+                ];
+
+                // Right section
+                let mut right = vec![
                     Span::styled(format!("[{}] ", active), Theme::accent_bold()),
-                    Span::styled("| ", Theme::muted()),
                     Span::styled("q", Theme::hotkey()),
-                    Span::styled(" quit | ", Theme::muted()),
+                    Span::styled(" quit ", Theme::muted()),
                     Span::styled("/", Theme::hotkey()),
-                    Span::styled(" filter | ", Theme::muted()),
-                    Span::styled("?", Theme::hotkey()),
-                    Span::styled(" help | ", Theme::muted()),
-                    Span::styled("y", Theme::hotkey()),
-                    Span::styled(" cURL", Theme::muted()),
+                    Span::styled(" filter ", Theme::muted()),
+                    Span::styled("p", Theme::hotkey()),
+                    Span::styled(" rec ", Theme::muted()),
+                    Span::styled("c", Theme::hotkey()),
+                    Span::styled(" clear", Theme::muted()),
                 ];
                 if let Some(ref msg) = self.toast {
-                    spans.push(Span::styled(" | ", Theme::muted()));
-                    spans.push(Span::styled(msg.as_str(), Theme::accent()));
+                    right.push(Span::styled(" | ", Theme::muted()));
+                    right.push(Span::styled(msg.as_str(), Theme::accent()));
                 }
+
+                // Build bar: measure widths first, then build final spans
+                let left_text = Text::from(Line::from(left.clone()));
+                let middle_text = Text::from(Line::from(middle.clone()));
+                let right_text = Text::from(Line::from(right.clone()));
+
+                let left_width = left_text.width() as u16;
+                let middle_width = middle_text.width() as u16;
+                let right_width = right_text.width() as u16;
+                let total_width = area.width.saturating_sub(2); // account for borders
+
+                let spacer1 = if left_width + middle_width + right_width < total_width {
+                    (total_width - left_width - middle_width - right_width) / 2
+                } else {
+                    1
+                };
+                let spacer2 = total_width.saturating_sub(left_width + spacer1 + middle_width + right_width);
+
+                let mut spans: Vec<Span> = Vec::new();
+                spans.extend(left);
+                spans.push(Span::raw(" ".repeat(spacer1 as usize)));
+                spans.extend(middle);
+                spans.push(Span::raw(" ".repeat(spacer2 as usize)));
+                spans.extend(right);
                 spans
             }
             InputMode::Filtering => {
@@ -990,24 +1198,42 @@ fn flow_table_row(
     ));
     let dur_cell = Cell::from(Span::styled(dur_label, dur_style));
 
+    // Build tags suffix (shown after path/url if any tags present).
+    let tags_str = if flow.tags.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", flow.tags.join(" "))
+    };
+
     if table_wide {
         let host = host_from_url(&url);
+        let host_color = Theme::host_color(&host);
         let path = display_path(&url, path_budget, has_query);
+        let path_with_tags = if tags_str.is_empty() {
+            path
+        } else {
+            format!("{}{}", path, tags_str)
+        };
         Row::new(vec![
             method_cell,
             status_cell,
             dur_cell,
             Cell::from(size_str),
-            styled_text_cell(&host, filter, filtering, Theme::muted()),
-            styled_text_cell(&path, filter, filtering, Theme::text()),
+            Cell::from(Span::styled(host, Style::default().fg(host_color))),
+            styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
         ])
     } else {
         let url_text = smart_truncate(url.as_str(), path_budget);
+        let url_with_tags = if tags_str.is_empty() {
+            url_text
+        } else {
+            format!("{}{}", url_text, tags_str)
+        };
         Row::new(vec![
             method_cell,
             status_cell,
             dur_cell,
-            styled_text_cell(&url_text, filter, filtering, Theme::text()),
+            styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
         ])
     }
 }
@@ -1042,6 +1268,150 @@ fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'st
         spans.push(Span::styled(text.to_string(), base));
     }
     spans
+}
+
+/// Format a timing label+value pair, showing "—" when value is None.
+fn timing_label_val(label: &'static str, ms: Option<u64>) -> Span<'static> {
+    match ms {
+        Some(v) => Span::styled(format!("{}{}ms", label, v), Theme::text()),
+        None => Span::styled(format!("{}—", label), Theme::muted()),
+    }
+}
+
+/// Maximum body bytes to render before truncating.
+const BODY_RENDER_LIMIT: usize = 4096;
+
+/// Render body content as styled lines. Handles JSON colouring and 4 KB truncation.
+fn render_body_lines(body_content: &str) -> Vec<Line<'static>> {
+    let truncated = body_content.len() > BODY_RENDER_LIMIT;
+    let display = if truncated {
+        &body_content[..BODY_RENDER_LIMIT]
+    } else {
+        body_content
+    };
+
+    let is_json = serde_json::from_str::<Value>(display).is_ok();
+
+    let mut lines: Vec<Line> = if is_json {
+        // JSON syntax highlighting
+        display
+            .lines()
+            .map(|line| {
+                Line::from(
+                    highlight_json_line(line)
+                        .into_iter()
+                        .map(|(text, style)| Span::styled(text, style))
+                        .collect::<Vec<Span>>(),
+                )
+            })
+            .collect()
+    } else {
+        display
+            .lines()
+            .map(|line| Line::from(Span::styled(line.to_string(), Theme::text())))
+            .collect()
+    };
+
+    if truncated {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "… showing first {} of {} bytes",
+                format_size(BODY_RENDER_LIMIT as u64),
+                format_size(body_content.len() as u64)
+            ),
+            Theme::muted(),
+        )));
+    }
+
+    lines
+}
+
+/// Simple JSON line highlighter: returns (text, style) pairs.
+fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
+    let mut parts: Vec<(String, Style)> = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    let len = chars.len();
+
+    while i < len {
+        let c = chars[i];
+
+        // Whitespace
+        if c.is_whitespace() {
+            let start = i;
+            while i < len && chars[i].is_whitespace() {
+                i += 1;
+            }
+            parts.push((chars[start..i].iter().collect(), Theme::text()));
+            continue;
+        }
+
+        // String (double-quoted)
+        if c == '"' {
+            let start = i;
+            i += 1;
+            while i < len {
+                if chars[i] == '\\' && i + 1 < len {
+                    i += 2;
+                } else if chars[i] == '"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            let s: String = chars[start..i].iter().collect();
+            // Check if this string is a key (followed by :)
+            let is_key = chars.get(i).is_some_and(|&_nc| {
+                let rest: String = chars[i..].iter().collect();
+                rest.trim_start().starts_with(':')
+            });
+            parts.push((
+                s,
+                if is_key {
+                    Theme::json_key()
+                } else {
+                    Theme::json_string()
+                },
+            ));
+            continue;
+        }
+
+        // Number
+        if c == '-' || c.is_ascii_digit() {
+            let start = i;
+            if c == '-' {
+                i += 1;
+            }
+            while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            parts.push((chars[start..i].iter().collect(), Theme::json_number()));
+            continue;
+        }
+
+        // Boolean / null
+        if c == 't' || c == 'f' || c == 'n' {
+            let start = i;
+            while i < len && chars[i].is_alphabetic() {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            if word == "true" || word == "false" || word == "null" {
+                parts.push((word, Theme::json_bool()));
+                continue;
+            }
+            // Not a keyword, backtrack
+            i = start;
+        }
+
+        // Structural chars (brackets, braces, commas, colons)
+        parts.push((c.to_string(), Theme::muted()));
+        i += 1;
+    }
+
+    parts
 }
 
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {

@@ -160,4 +160,39 @@ impl Theme {
     pub fn ws_opcode() -> Style {
         Style::default().fg(Self::ACCENT_DIM)
     }
+
+    // JSON syntax highlighting
+    pub fn json_key() -> Style {
+        Style::default().fg(Self::LABEL)
+    }
+
+    pub fn json_string() -> Style {
+        Style::default().fg(Color::Rgb(165, 214, 167))
+    }
+
+    pub fn json_number() -> Style {
+        Style::default().fg(Color::Rgb(247, 140, 108))
+    }
+
+    pub fn json_bool() -> Style {
+        Style::default().fg(Color::Rgb(130, 170, 255))
+    }
+
+    /// Deterministic colour from host string for visual grouping.
+    pub fn host_color(host: &str) -> Color {
+        let palette = [
+            Color::Rgb(96, 165, 250),   // blue
+            Color::Rgb(74, 222, 128),   // green
+            Color::Rgb(250, 204, 21),   // yellow
+            Color::Rgb(248, 113, 113),  // red
+            Color::Rgb(192, 132, 252),  // purple
+            Color::Rgb(45, 212, 191),   // teal
+            Color::Rgb(251, 146, 60),   // orange
+            Color::Rgb(148, 163, 184),  // slate
+        ];
+        let hash: u64 = host
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        palette[hash as usize % palette.len()]
+    }
 }
