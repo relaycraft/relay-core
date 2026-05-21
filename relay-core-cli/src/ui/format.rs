@@ -163,14 +163,14 @@ pub fn copy_to_clipboard(text: &str) -> bool {
         use std::process::{Command, Stdio};
         for cmd in ["wl-copy", "xclip -selection clipboard"] {
             let mut parts = cmd.split_whitespace();
-            if let Some(bin) = parts.next() {
-                if let Ok(mut child) = Command::new(bin).args(parts).stdin(Stdio::piped()).spawn() {
-                    if let Some(stdin) = child.stdin.as_mut() {
-                        let _ = stdin.write_all(text.as_bytes());
-                    }
-                    if child.wait().map(|s| s.success()).unwrap_or(false) {
-                        return true;
-                    }
+            if let Some(bin) = parts.next()
+                && let Ok(mut child) = Command::new(bin).args(parts).stdin(Stdio::piped()).spawn()
+            {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                if child.wait().map(|s| s.success()).unwrap_or(false) {
+                    return true;
                 }
             }
         }
