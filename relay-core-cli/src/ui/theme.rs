@@ -181,14 +181,14 @@ impl Theme {
     /// Deterministic colour from host string for visual grouping.
     pub fn host_color(host: &str) -> Color {
         let palette = [
-            Color::Rgb(96, 165, 250),   // blue
-            Color::Rgb(74, 222, 128),   // green
-            Color::Rgb(250, 204, 21),   // yellow
-            Color::Rgb(248, 113, 113),  // red
-            Color::Rgb(192, 132, 252),  // purple
-            Color::Rgb(45, 212, 191),   // teal
-            Color::Rgb(251, 146, 60),   // orange
-            Color::Rgb(148, 163, 184),  // slate
+            Color::Rgb(96, 165, 250),  // blue
+            Color::Rgb(74, 222, 128),  // green
+            Color::Rgb(250, 204, 21),  // yellow
+            Color::Rgb(248, 113, 113), // red
+            Color::Rgb(192, 132, 252), // purple
+            Color::Rgb(45, 212, 191),  // teal
+            Color::Rgb(251, 146, 60),  // orange
+            Color::Rgb(148, 163, 184), // slate
         ];
         let hash: u64 = host
             .bytes()

@@ -8,6 +8,7 @@ use ratatui::{
 };
 use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
+use relay_core_api::rule::Rule;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -67,6 +68,16 @@ pub enum InputMode {
 pub enum ActiveArea {
     FlowList,
     FlowDetail,
+    RulesPanel,
+}
+
+/// Whether the TUI is connected to the HTTP API for richer features.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ApiMode {
+    /// API available: SSE feed + rules panel + 4-panel layout
+    Connected,
+    /// No API: broadcast-channel-only, 2-panel layout (legacy)
+    Offline,
 }
 
 pub struct TuiApp {
@@ -82,18 +93,18 @@ pub struct TuiApp {
     pub start_time: std::time::Instant,
     pub flow_count_total: u64,
     pub proxy_port: u16,
-    /// One-shot message for status bar (e.g. copy confirmation).
     pub toast: Option<String>,
-    /// Pause list updates (proxy still runs, TUI stops appending).
     pub paused: bool,
-    /// Flows received while paused (shown as live hint).
     pub pending_count: u64,
-    /// Sliding window of flow arrival timestamps for req/s calculation.
     pub req_timestamps: VecDeque<Instant>,
+    pub api_mode: ApiMode,
+    pub rules: Vec<Rule>,
+    pub rules_table_state: TableState,
+    pub intercept_summary: serde_json::Value,
 }
 
 impl TuiApp {
-    pub fn new(port: u16) -> Self {
+    pub fn new(port: u16, api_mode: ApiMode) -> Self {
         let mut app = Self {
             flows: VecDeque::with_capacity(1000),
             table_state: TableState::default(),
@@ -111,6 +122,10 @@ impl TuiApp {
             paused: false,
             pending_count: 0,
             req_timestamps: VecDeque::with_capacity(64),
+            api_mode,
+            rules: Vec::new(),
+            rules_table_state: TableState::default(),
+            intercept_summary: serde_json::Value::Null,
         };
         app.table_state.select(Some(0));
         app
@@ -121,7 +136,11 @@ impl TuiApp {
         let now = Instant::now();
         self.req_timestamps.push_back(now);
         // Prune timestamps older than 5 seconds.
-        while self.req_timestamps.front().is_some_and(|t| now.duration_since(*t).as_secs() > 5) {
+        while self
+            .req_timestamps
+            .front()
+            .is_some_and(|t| now.duration_since(*t).as_secs() > 5)
+        {
             self.req_timestamps.pop_front();
         }
 
@@ -209,6 +228,9 @@ impl TuiApp {
                             self.table_state.select(None);
                             self.detail_scroll = 0;
                         }
+                        KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
+                            self.active_area = ActiveArea::RulesPanel;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
                             self.auto_scroll = false;
@@ -220,7 +242,6 @@ impl TuiApp {
                             self.detail_scroll = 0;
                         }
                         KeyCode::Home | KeyCode::Char('G') => {
-                            // Jump to last (oldest) flow
                             let len = self.get_filtered_flows().len();
                             if len > 0 {
                                 self.table_state.select(Some(len - 1));
@@ -229,7 +250,6 @@ impl TuiApp {
                             self.detail_scroll = 0;
                         }
                         KeyCode::End | KeyCode::Char('g') => {
-                            // Jump to first (newest) flow, re-enable auto_scroll, clear pending
                             self.table_state.select(Some(0));
                             self.auto_scroll = true;
                             self.pending_count = 0;
@@ -244,7 +264,6 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('/') => self.input_mode = InputMode::Filtering,
-                        KeyCode::Char('?') => self.input_mode = InputMode::Help,
                         KeyCode::Char('y') => self.copy_curl_selection(),
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                             self.active_area = ActiveArea::FlowDetail
@@ -255,6 +274,9 @@ impl TuiApp {
                         KeyCode::Char('q') => self.should_quit = true,
                         KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                             self.active_area = ActiveArea::FlowList
+                        }
+                        KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
+                            self.active_area = ActiveArea::RulesPanel;
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.detail_scroll = self.detail_scroll.saturating_add(1)
@@ -279,6 +301,31 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('y') => self.copy_curl_selection(),
+                        _ => {}
+                    },
+                    ActiveArea::RulesPanel => match key {
+                        KeyCode::Char('q') => self.should_quit = true,
+                        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                            self.active_area = ActiveArea::FlowList
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let len = self.rules.len();
+                            let i = self
+                                .rules_table_state
+                                .selected()
+                                .map(|i| if i + 1 < len { i + 1 } else { 0 })
+                                .unwrap_or(0);
+                            self.rules_table_state.select(Some(i));
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let len = self.rules.len();
+                            let i = self
+                                .rules_table_state
+                                .selected()
+                                .map(|i| if i > 0 { i - 1 } else { len.saturating_sub(1) })
+                                .unwrap_or(0);
+                            self.rules_table_state.select(Some(i));
+                        }
                         _ => {}
                     },
                 }
@@ -365,10 +412,14 @@ impl TuiApp {
             .split(area);
 
         let narrow = area.width < LAYOUT_NARROW_MAX;
-        if narrow {
+
+        if self.api_mode == ApiMode::Connected && !narrow {
+            self.render_four_panel(f, chunks[0]);
+        } else if narrow {
             match self.active_area {
                 ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
                 ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
+                ActiveArea::RulesPanel => self.render_rules_panel(f, chunks[0]),
             }
         } else {
             let (list_width, detail_width) = if area.width < 100 {
@@ -394,6 +445,60 @@ impl TuiApp {
 
         if self.input_mode == InputMode::Help {
             self.render_help_overlay(f);
+        }
+    }
+
+    fn render_four_panel(&mut self, f: &mut Frame, area: Rect) {
+        let vert = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(area);
+
+        let top = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(vert[0]);
+
+        let bottom = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(vert[1]);
+
+        self.render_flow_list(f, top[0]);
+        self.render_flow_detail(f, top[1]);
+        self.render_rules_panel(f, bottom[0]);
+
+        let border_style = Theme::border(self.active_area == ActiveArea::RulesPanel);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Intercepts ")
+            .border_style(border_style);
+        let inner = block.inner(bottom[1]);
+        f.render_widget(block, bottom[1]);
+
+        if self.intercept_summary.is_null() {
+            let p = Paragraph::new("(no intercepts)")
+                .style(Theme::muted())
+                .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(p, inner);
+        } else {
+            let pending = self.intercept_summary["pending_count"]
+                .as_u64()
+                .unwrap_or(0);
+            let ws = self.intercept_summary["ws_pending_count"]
+                .as_u64()
+                .unwrap_or(0);
+            let text = Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled("Pending: ", Theme::label()),
+                    Span::styled(pending.to_string(), Theme::value()),
+                ]),
+                Line::from(vec![
+                    Span::styled("WS Pending: ", Theme::label()),
+                    Span::styled(ws.to_string(), Theme::value()),
+                ]),
+            ]);
+            f.render_widget(text, inner);
         }
     }
 
@@ -487,6 +592,10 @@ impl TuiApp {
             Line::from(vec![
                 Span::styled(" c          ", Theme::label()),
                 Span::styled("Clear flow list", Theme::text()),
+            ]),
+            Line::from(vec![
+                Span::styled(" r          ", Theme::label()),
+                Span::styled("Focus rules panel (API mode only)", Theme::text()),
             ]),
         ];
 
@@ -652,9 +761,7 @@ impl TuiApp {
                 let size_str = format_size(size);
                 let dur_ms = flow_duration_ms(flow);
                 let dur_str = format_duration_ms(dur_ms);
-                let dur_color = dur_ms
-                    .map(Theme::duration_color)
-                    .unwrap_or(Theme::MUTED);
+                let dur_color = dur_ms.map(Theme::duration_color).unwrap_or(Theme::MUTED);
 
                 // Use String (owned) for 'static lifetime
                 let md = method_display.to_string();
@@ -662,9 +769,19 @@ impl TuiApp {
                 let sz = size_str.to_string();
                 let ds = dur_str.to_string();
                 lines.push(Line::from(vec![
-                    Span::styled(md, Style::default().fg(method_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        md,
+                        Style::default()
+                            .fg(method_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw("  "),
-                    Span::styled(ss, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        ss,
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw("  "),
                     Span::styled(sz, Theme::muted()),
                     Span::raw("  "),
@@ -690,9 +807,19 @@ impl TuiApp {
                 // Use String (owned) for 'static lifetime
                 let ws_status = status_str.to_string();
                 lines.push(Line::from(vec![
-                    Span::styled("WebSocket", Style::default().fg(Theme::method("WS")).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "WebSocket",
+                        Style::default()
+                            .fg(Theme::method("WS"))
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw("  "),
-                    Span::styled(ws_status, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        ws_status,
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw("  "),
                     Span::styled(format!("{} messages", w.messages.len()), Theme::muted()),
                 ]));
@@ -708,9 +835,15 @@ impl TuiApp {
         let net = &flow.network;
         let mut net_parts: Vec<Span> = vec![
             Span::styled("Client: ", Theme::label()),
-            Span::styled(format!("{}:{}  ", net.client_ip, net.client_port), Theme::value()),
+            Span::styled(
+                format!("{}:{}  ", net.client_ip, net.client_port),
+                Theme::value(),
+            ),
             Span::styled("Server: ", Theme::label()),
-            Span::styled(format!("{}:{}  ", net.server_ip, net.server_port), Theme::value()),
+            Span::styled(
+                format!("{}:{}  ", net.server_ip, net.server_port),
+                Theme::value(),
+            ),
         ];
         if net.tls {
             net_parts.push(Span::styled("TLS ", Theme::stat_ok()));
@@ -736,16 +869,11 @@ impl TuiApp {
 
         // ── Timing ──
         let timing_present = match &flow.layer {
-            Layer::Http(h) => {
-                h.response
-                    .as_ref()
-                    .is_some_and(|r| r.timing.time_to_first_byte.is_some())
-            }
-            Layer::WebSocket(w) => w
-                .handshake_response
-                .timing
-                .time_to_first_byte
-                .is_some(),
+            Layer::Http(h) => h
+                .response
+                .as_ref()
+                .is_some_and(|r| r.timing.time_to_first_byte.is_some()),
+            Layer::WebSocket(w) => w.handshake_response.timing.time_to_first_byte.is_some(),
             _ => false,
         };
 
@@ -991,6 +1119,74 @@ impl TuiApp {
         }
     }
 
+    fn render_rules_panel(&mut self, f: &mut Frame, area: Rect) {
+        let border_style = Theme::border(self.active_area == ActiveArea::RulesPanel);
+        let count = self.rules.len();
+        let title = format!(" Rules ({count}) ");
+
+        if self.rules.is_empty() {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(title, Theme::section()))
+                .border_style(border_style);
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            let p = Paragraph::new("(no rules loaded)")
+                .style(Theme::muted())
+                .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(p, inner);
+            return;
+        }
+
+        let widths = [
+            Constraint::Length(3),
+            Constraint::Length(16),
+            Constraint::Length(14),
+            Constraint::Min(10),
+        ];
+
+        let header = Row::new(vec!["On", "Stage", "Termination", "Name"])
+            .style(Theme::table_header())
+            .bottom_margin(1);
+
+        let rows: Vec<Row> = self
+            .rules
+            .iter()
+            .map(|r| {
+                let on = if r.active { "✓" } else { "✗" };
+                let stage = format!("{:?}", r.stage);
+                let term = match r.termination {
+                    relay_core_api::rule::RuleTermination::Continue => "→",
+                    relay_core_api::rule::RuleTermination::Stop => "■",
+                };
+                Row::new(vec![
+                    Cell::from(on),
+                    Cell::from(stage),
+                    Cell::from(term),
+                    Cell::from(r.name.clone()),
+                ])
+                .style(if r.active {
+                    Style::default()
+                } else {
+                    Theme::muted()
+                })
+            })
+            .collect();
+
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(title, Theme::section()))
+                    .border_style(border_style),
+            )
+            .row_highlight_style(Theme::row_highlight())
+            .highlight_symbol("▌ ");
+
+        f.render_stateful_widget(table, area, &mut self.rules_table_state);
+    }
+
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let flow_count = self.flows.len();
         let filtered_count = self.get_filtered_flows().len();
@@ -1042,6 +1238,7 @@ impl TuiApp {
                 let active = match self.active_area {
                     ActiveArea::FlowList => "LIST",
                     ActiveArea::FlowDetail => "DETAIL",
+                    ActiveArea::RulesPanel => "RULES",
                 };
 
                 // Left section
@@ -1096,7 +1293,8 @@ impl TuiApp {
                 } else {
                     1
                 };
-                let spacer2 = total_width.saturating_sub(left_width + spacer1 + middle_width + right_width);
+                let spacer2 =
+                    total_width.saturating_sub(left_width + spacer1 + middle_width + right_width);
 
                 let mut spans: Vec<Span> = Vec::new();
                 spans.extend(left);
@@ -1486,7 +1684,7 @@ mod tests {
 
     #[test]
     fn test_new_app_has_selection() {
-        let app = TuiApp::new(8080);
+        let app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.detail_tab, DetailTab::Overview);
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -1496,7 +1694,7 @@ mod tests {
 
     #[test]
     fn test_next_previous_wraps_around() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         for i in 0..5 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -1519,7 +1717,7 @@ mod tests {
 
     #[test]
     fn test_filtering_filters_by_url_and_method() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/users",
@@ -1559,7 +1757,7 @@ mod tests {
 
     #[test]
     fn test_filtering_plain_text_case_insensitive() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://API.Example.com/x",
@@ -1571,7 +1769,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_updates_existing_and_adds_new() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         let id = "00000000-0000-0000-0000-000000000001";
 
         let flow1 = make_http_flow(id, "http://example.com/original", "GET");
@@ -1590,7 +1788,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_caps_at_1000() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         for i in 0..1100 {
             app.on_flow(make_http_flow(
                 &format!("00000000-0000-0000-0000-{i:012x}"),
@@ -1604,14 +1802,14 @@ mod tests {
 
     #[test]
     fn test_key_quit() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.on_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_detail_tab_cycle() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.detail_tab, DetailTab::Overview);
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Request);
@@ -1625,7 +1823,7 @@ mod tests {
 
     #[test]
     fn test_help_stays_open_on_key_repeat() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.on_key(key(KeyCode::Char('?')));
         assert_eq!(app.input_mode, InputMode::Help);
         app.on_key(key_repeat(KeyCode::Char('?')));
@@ -1636,7 +1834,7 @@ mod tests {
 
     #[test]
     fn test_filter_mode_toggle() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.input_mode, InputMode::Normal);
         app.on_key(key(KeyCode::Char('/')));
         assert_eq!(app.input_mode, InputMode::Filtering);
@@ -1650,7 +1848,7 @@ mod tests {
 
     #[test]
     fn test_copy_curl_sets_toast() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/v1",
@@ -1669,7 +1867,7 @@ mod tests {
 
     #[test]
     fn test_narrow_layout_switches_pane_on_enter_esc() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.active_area, ActiveArea::FlowList);
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.active_area, ActiveArea::FlowDetail);
@@ -1679,7 +1877,7 @@ mod tests {
 
     #[test]
     fn test_keyboard_navigation_moves_selection() {
-        let mut app = TuiApp::new(8080);
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
         for i in 0..10 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
