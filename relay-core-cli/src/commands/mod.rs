@@ -1,3 +1,4 @@
+pub mod analyze;
 pub mod ca;
 pub mod flows;
 pub mod metrics;

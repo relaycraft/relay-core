@@ -10,6 +10,8 @@ Examples:
   relay run                      Start proxy in background (default)
   relay run --ui                 Start proxy with interactive TUI
   relay flows --output table     View captured flows in table format
+  relay analyze --file flows.jsonl           Analyze captured flow data
+  relay analyze --file export.har --format har  Analyze HAR export
   relay ca init                  Generate a CA certificate for HTTPS interception
   relay ca install               Install CA to system trust store (macOS)
   relay rules validate rules.json   Validate a rules file
@@ -175,6 +177,24 @@ pub enum Commands {
     Proxy {
         #[command(subcommand)]
         action: TransparentAction,
+    },
+    /// Analyze offline flow data from a JSONL or HAR file
+    Analyze {
+        /// Path to flow dump file (JSONL from --save-stream, or HAR export)
+        #[arg(short, long)]
+        file: PathBuf,
+
+        /// Input format: jsonl (default) or har
+        #[arg(long, default_value = "jsonl")]
+        format: String,
+
+        /// Output format: table (default) or json
+        #[arg(long, default_value = "table")]
+        output: String,
+
+        /// Number of top slow requests to show
+        #[arg(long, default_value = "10")]
+        top_n: usize,
     },
 }
 

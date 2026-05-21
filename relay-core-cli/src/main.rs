@@ -4,6 +4,7 @@ use clap::Parser;
 pub mod args;
 pub mod commands;
 pub mod server;
+pub mod sse_client;
 mod ui;
 pub mod utils;
 
@@ -167,6 +168,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Metrics { proxy_url, output } => {
             commands::metrics::execute(proxy_url, output).await?;
+        }
+        Commands::Analyze {
+            file,
+            format,
+            output,
+            top_n,
+        } => {
+            commands::analyze::execute(commands::analyze::AnalyzeOptions {
+                file,
+                format,
+                output,
+                top_n,
+            })?;
         }
     }
 
