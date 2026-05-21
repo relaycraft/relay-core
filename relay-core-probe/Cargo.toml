@@ -14,13 +14,14 @@ path = "src/main.rs"
 [features]
 default = ["transport-stdio"]
 transport-stdio = ["rmcp/transport-io"]
-transport-sse = ["rmcp/transport-streamable-http-server"]
+transport-sse = ["rmcp/transport-streamable-http-server", "dep:axum"]
 
 [dependencies]
 relay-core-api.workspace = true
 relay-core-lib.workspace = true
 relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.11" }
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
+axum = { version = "0.8", optional = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

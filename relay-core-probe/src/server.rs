@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 
 use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
+use relay_core_runtime::audit::AuditEventKind;
 use relay_core_runtime::services::{
     AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
     RuntimeStatusService, ScriptService,
@@ -92,40 +93,116 @@ impl ProbeServer {
                 });
                 running.waiting().await?;
             }
+            #[cfg(feature = "transport-sse")]
+            ProbeTransport::Sse { port, bind } => {
+                use rmcp::transport::streamable_http_server::{
+                    StreamableHttpServerConfig, StreamableHttpService,
+                    session::local::LocalSessionManager,
+                };
+
+                let addr = SocketAddr::new(*bind, *port);
+                let config = StreamableHttpServerConfig {
+                    sse_keep_alive: Some(std::time::Duration::from_secs(15)),
+                    ..Default::default()
+                };
+
+                let srv = self.clone();
+
+                let service = StreamableHttpService::new(
+                    move || Ok(srv.clone()),
+                    Arc::new(LocalSessionManager::default()),
+                    config,
+                );
+
+                tokio::spawn(async move {
+                    tracing::info!(
+                        "relay-core MCP SSE transport: resource change notifications \
+                         (K3) are not supported in SSE mode with the current rmcp session API. \
+                         MCP clients can poll resources directly."
+                    );
+                });
+
+                let router = axum::Router::new().nest_service("/mcp", service);
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                tracing::info!("relay-core MCP SSE listening on http://{}/mcp", addr);
+                axum::serve(listener, router).await?;
+            }
+            #[cfg(not(feature = "transport-sse"))]
             ProbeTransport::Sse { port, bind } => {
                 let addr = SocketAddr::new(*bind, *port);
-                tracing::warn!("SSE transport not compiled in; ignoring port {}", addr);
+                eprintln!(
+                    "Error: SSE transport was requested (--transport=sse, port {}) \
+                     but relay-core-probe was compiled without the 'transport-sse' feature.\n\
+                     Rebuild with: cargo build --release --features transport-sse",
+                    addr
+                );
+                std::process::exit(1);
             }
         }
         Ok(())
     }
 
-    /// 启动实时订阅循环：监听 broadcast，在有新流量时通知 MCP 客户端刷新资源。
+    /// K3 extended: subscribes to flow + audit events and notifies peers.
+    /// Used by Stdio transport (single peer).
     pub async fn run_subscription_loop(ctx: Arc<ProbeContext>, peer: rmcp::Peer<RoleServer>) {
-        let mut rx: broadcast::Receiver<FlowUpdate> = ctx.flow_events.subscribe_flow_updates();
+        let mut flow_rx: broadcast::Receiver<FlowUpdate> = ctx.flow_events.subscribe_flow_updates();
+        let mut audit_rx = ctx.audit.subscribe_audit_events();
+
         loop {
-            match rx.recv().await {
-                Ok(FlowUpdate::Full(flow)) => {
-                    let flow_id = flow.id.to_string();
-                    let _ =
-                        peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(
-                            format!("flows://{}", flow_id),
-                        ))
-                        .await;
-                    let _ = peer.notify_resource_list_changed().await;
+            tokio::select! {
+                flow_event = flow_rx.recv() => {
+                    match flow_event {
+                        Ok(FlowUpdate::Full(flow)) => {
+                            let flow_id = flow.id.to_string();
+                            let _ = peer.notify_resource_updated(
+                                ResourceUpdatedNotificationParam::new(
+                                    format!("flows://{}", flow_id),
+                                ),
+                            ).await;
+                            let _ = peer.notify_resource_list_changed().await;
+                        }
+                        Ok(FlowUpdate::WebSocketMessage { flow_id, .. })
+                        | Ok(FlowUpdate::HttpBody { flow_id, .. }) => {
+                            let _ = peer.notify_resource_updated(
+                                ResourceUpdatedNotificationParam::new(
+                                    format!("flows://{}", flow_id),
+                                ),
+                            ).await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("probe flow subscriber lagged, dropped {} updates", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Ok(FlowUpdate::WebSocketMessage { flow_id, .. })
-                | Ok(FlowUpdate::HttpBody { flow_id, .. }) => {
-                    let _ =
-                        peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(
-                            format!("flows://{}", flow_id),
-                        ))
-                        .await;
+                audit_event = audit_rx.recv() => {
+                    match audit_event {
+                        Ok(event) => {
+                            match event.kind {
+                                AuditEventKind::RuleChanged | AuditEventKind::InterceptResolved => {
+                                    let _ = peer.notify_resource_updated(
+                                        ResourceUpdatedNotificationParam::new("rules://".to_string()),
+                                    ).await;
+                                }
+                                AuditEventKind::PolicyUpdated => {
+                                    let _ = peer.notify_resource_updated(
+                                        ResourceUpdatedNotificationParam::new("proxy://status".to_string()),
+                                    ).await;
+                                }
+                                AuditEventKind::ScriptReloaded => {
+                                    let _ = peer.notify_resource_list_changed().await;
+                                }
+                            }
+                            let _ = peer.notify_resource_updated(
+                                ResourceUpdatedNotificationParam::new("audit://recent".to_string()),
+                            ).await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("probe audit subscriber lagged, dropped {} events", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("probe subscriber lagged, dropped {} updates", n);
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     }

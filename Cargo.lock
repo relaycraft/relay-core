@@ -4722,6 +4722,7 @@ name = "relay-core-probe"
 version = "0.3.11"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "dirs",
  "regex",

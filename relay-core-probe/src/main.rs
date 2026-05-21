@@ -1,6 +1,7 @@
 use relay_core_lib::tls::CertificateAuthority;
 use relay_core_probe::{ProbeConfig, ProbeServer, ProbeTransport};
 use relay_core_runtime::{CoreState, ProxyConfig};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -59,13 +60,33 @@ async fn main() {
     }
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // ——— Serve MCP ———
-    let probe_config = ProbeConfig {
-        transport: ProbeTransport::Stdio,
-    };
+    // ——— Transport selection ———
+    let transport = parse_transport();
+
+    let probe_config = ProbeConfig { transport };
     if let Err(e) = ProbeServer::new(probe_config, state).run().await {
         eprintln!("Probe server error: {}", e);
         std::process::exit(1);
+    }
+}
+
+fn parse_transport() -> ProbeTransport {
+    let transport_arg = parse_arg_env("--transport=", "RELAY_PROBE_TRANSPORT");
+
+    match transport_arg.as_deref() {
+        Some("sse") => {
+            let sse_port = parse_arg_env("--probe-port=", "RELAY_PROBE_PORT")
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(3000);
+            let sse_bind = parse_arg_env("--probe-bind=", "RELAY_PROBE_BIND")
+                .and_then(|b| b.parse::<IpAddr>().ok())
+                .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+            ProbeTransport::Sse {
+                port: sse_port,
+                bind: sse_bind,
+            }
+        }
+        _ => ProbeTransport::Stdio,
     }
 }
 
