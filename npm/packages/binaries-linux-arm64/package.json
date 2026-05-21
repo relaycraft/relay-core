@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/binaries-linux-arm64",
-  "version": "0.3.11",
+  "version": "0.4.0",
   "description": "RelayCore native binaries (relay-core-cli, relay-core-probe) for Linux ARM64",
   "license": "MIT",
   "homepage": "https://relaycore.dev",
