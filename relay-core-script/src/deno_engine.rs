@@ -12,13 +12,20 @@ use relay_core_lib::interceptor::{
     BoxError, HttpBody, RequestAction, ResponseAction, WebSocketMessageAction,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::thread;
 use tokio::sync::{mpsc, oneshot};
 
 #[op2(fast)]
-fn op_log(#[string] msg: String) {
-    println!("[Deno] {}", msg);
+fn op_log_level(#[string] level: String, #[string] msg: String) {
+    match level.as_str() {
+        "error" => tracing::error!("[User Script] {}", msg),
+        "warn" => tracing::warn!("[User Script] {}", msg),
+        "info" => tracing::info!("[User Script] {}", msg),
+        "debug" => tracing::debug!("[User Script] {}", msg),
+        _ => tracing::info!("[User Script] {}", msg),
+    }
 }
 
 #[op2(async)]
@@ -39,6 +46,43 @@ async fn op_read_body(
 #[op2(fast)]
 fn op_close_body(state: &mut OpState, #[smi] rid: ResourceId) {
     state.resource_table.take_any(rid).ok();
+}
+
+// ── S1: sharedState ops ────────────────────────────────────────
+
+fn shared_state(state: &mut OpState) -> &mut HashMap<String, serde_json::Value> {
+    state.borrow_mut::<HashMap<String, serde_json::Value>>()
+}
+
+#[op2]
+#[serde]
+fn op_shared_state_get(state: &mut OpState, #[string] key: String) -> Option<serde_json::Value> {
+    shared_state(state).get(&key).cloned()
+}
+
+#[op2]
+fn op_shared_state_set(
+    state: &mut OpState,
+    #[string] key: String,
+    #[serde] value: serde_json::Value,
+) {
+    shared_state(state).insert(key, value);
+}
+
+#[op2(fast)]
+fn op_shared_state_delete(state: &mut OpState, #[string] key: String) -> bool {
+    shared_state(state).remove(&key).is_some()
+}
+
+#[op2(fast)]
+fn op_shared_state_clear(state: &mut OpState) {
+    shared_state(state).clear();
+}
+
+#[op2]
+#[serde]
+fn op_shared_state_keys(state: &mut OpState) -> Vec<String> {
+    shared_state(state).keys().cloned().collect()
 }
 
 enum DenoCommand {
@@ -87,10 +131,18 @@ impl DenoScriptEngine {
                 let ext = Extension {
                     name: "relay_core",
                     ops: std::borrow::Cow::Borrowed(&[
-                        op_log::DECL,
+                        op_log_level::DECL,
                         op_read_body::DECL,
                         op_close_body::DECL,
+                        op_shared_state_get::DECL,
+                        op_shared_state_set::DECL,
+                        op_shared_state_delete::DECL,
+                        op_shared_state_clear::DECL,
+                        op_shared_state_keys::DECL,
                     ]),
+                    op_state_fn: Some(Box::new(|state| {
+                        state.put(HashMap::<String, serde_json::Value>::new());
+                    })),
                     ..Default::default()
                 };
 
@@ -99,42 +151,48 @@ impl DenoScriptEngine {
                     ..Default::default()
                 });
 
-                // Polyfill console.log and Bootstrap API
+                // Bootstrap JS — S1/S3: sharedState + console levels
                 let bootstrap = r#"
                     globalThis.console = {
                         log: (...args) => {
-                            const msg = args.map(arg => {
-                                if (typeof arg === 'object') {
-                                    try {
-                                        return JSON.stringify(arg);
-                                    } catch {
-                                        return String(arg);
-                                    }
-                                }
-                                return String(arg);
-                            }).join(" ");
-                            Deno.core.ops.op_log(msg);
-                        }
+                            Deno.core.ops.op_log_level("log", _format(args));
+                        },
+                        info: (...args) => {
+                            Deno.core.ops.op_log_level("info", _format(args));
+                        },
+                        warn: (...args) => {
+                            Deno.core.ops.op_log_level("warn", _format(args));
+                        },
+                        error: (...args) => {
+                            Deno.core.ops.op_log_level("error", _format(args));
+                        },
+                        debug: (...args) => {
+                            Deno.core.ops.op_log_level("debug", _format(args));
+                        },
                     };
 
+                    function _format(args) {
+                        return args.map(arg => {
+                            if (typeof arg === 'object') {
+                                try { return JSON.stringify(arg); }
+                                catch { return String(arg); }
+                            }
+                            return String(arg);
+                        }).join(" ");
+                    }
+
                     class RelayBody {
-                        constructor(rid) {
-                            this.rid = rid;
-                        }
-                        
+                        constructor(rid) { this.rid = rid; }
                         async read(limit) {
                             return await Deno.core.ops.op_read_body(this.rid, limit || 65536);
                         }
-                        
                         close() {
                             Deno.core.ops.op_close_body(this.rid);
                         }
-                        
                         async text() {
-                            const bytes = await this.read(10 * 1024 * 1024); // 10MB limit
+                            const bytes = await this.read(10 * 1024 * 1024);
                             return new TextDecoder().decode(bytes);
                         }
-                        
                         async json() {
                             const txt = await this.text();
                             return JSON.parse(txt);
@@ -144,7 +202,25 @@ impl DenoScriptEngine {
 
                     globalThis.relay = {
                         log: globalThis.console.log,
-                        // Future: add more helpers like base64, etc.
+                    };
+
+                    // S1: sharedState — cross-hook shared map per isolate
+                    globalThis.sharedState = {
+                        get(key) {
+                            return Deno.core.ops.op_shared_state_get(key);
+                        },
+                        set(key, value) {
+                            Deno.core.ops.op_shared_state_set(key, value);
+                        },
+                        delete(key) {
+                            return Deno.core.ops.op_shared_state_delete(key);
+                        },
+                        clear() {
+                            Deno.core.ops.op_shared_state_clear();
+                        },
+                        keys() {
+                            return Deno.core.ops.op_shared_state_keys();
+                        },
                     };
                 "#;
                 js_runtime.execute_script("bootstrap", bootstrap).unwrap();
@@ -193,6 +269,37 @@ impl DenoScriptEngine {
         Self { tx }
     }
 
+    // ── S2: onError dispatch ─────────────────────────────────
+
+    fn try_call_on_error(runtime: &mut JsRuntime, flow: &Flow, error: &str, stage: &str) {
+        let check_code = "typeof globalThis.onError === 'function'";
+        let exists = runtime
+            .execute_script("check_onError_v2", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                let val = deno_core::v8::Local::new(&mut scope, v);
+                val.is_true()
+            })
+            .unwrap_or(false);
+
+        if !exists {
+            return;
+        }
+
+        let flow_json = match serde_json::to_string(flow) {
+            Ok(j) => j,
+            Err(_) => return,
+        };
+        let error_escaped = error.replace('\\', "\\\\").replace('\'', "\\'");
+        let code = format!(
+            "globalThis.onError({{}}, {}, '{}', '{}')",
+            flow_json, error_escaped, stage
+        );
+
+        let _ = runtime.execute_script("call_onError_v2", code);
+    }
+
     fn handle_on_request_headers(
         runtime: &mut JsRuntime,
         flow: Flow,
@@ -201,10 +308,13 @@ impl DenoScriptEngine {
         let check_code = "typeof globalThis.onRequestHeaders === 'function'";
         let exists = runtime
             .execute_script("check_onRequestHeaders", check_code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequestHeaders");
+                e.to_string()
+            })?;
         {
-            let scope = &mut runtime.handle_scope();
-            let exists_val = deno_core::v8::Local::new(scope, exists);
+            let mut scope = runtime.handle_scope();
+            let exists_val = deno_core::v8::Local::new(&mut scope, exists);
             if !exists_val.is_true() {
                 return Ok(None);
             }
@@ -212,14 +322,25 @@ impl DenoScriptEngine {
         let code = format!("globalThis.onRequestHeaders({{}}, {})", flow_json);
         let result = runtime
             .execute_script("call_onRequestHeaders", code)
-            .map_err(|e| e.to_string())?;
-        let scope = &mut runtime.handle_scope();
-        let result_val = deno_core::v8::Local::new(scope, result);
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequestHeaders");
+                e.to_string()
+            })?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
         if result_val.is_undefined() || result_val.is_null() {
             return Ok(None);
         }
-        let modified_flow: Flow = deno_core::serde_v8::from_v8(scope, result_val)
-            .map_err(|e| format!("Failed to deserialize flow: {}", e))?;
+        let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
+        drop(scope);
+        let modified_flow = match deser {
+            Ok(f) => f,
+            Err(e) => {
+                let err_str = format!("Failed to deserialize flow: {}", e);
+                Self::try_call_on_error(runtime, &flow, &err_str, "onRequestHeaders");
+                return Err(err_str);
+            }
+        };
         Ok(Some(modified_flow))
     }
 
@@ -231,10 +352,13 @@ impl DenoScriptEngine {
         let check_code = "typeof globalThis.onResponseHeaders === 'function'";
         let exists = runtime
             .execute_script("check_onResponseHeaders", check_code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponseHeaders");
+                e.to_string()
+            })?;
         {
-            let scope = &mut runtime.handle_scope();
-            let exists_val = deno_core::v8::Local::new(scope, exists);
+            let mut scope = runtime.handle_scope();
+            let exists_val = deno_core::v8::Local::new(&mut scope, exists);
             if !exists_val.is_true() {
                 return Ok(None);
             }
@@ -242,14 +366,25 @@ impl DenoScriptEngine {
         let code = format!("globalThis.onResponseHeaders({{}}, {})", flow_json);
         let result = runtime
             .execute_script("call_onResponseHeaders", code)
-            .map_err(|e| e.to_string())?;
-        let scope = &mut runtime.handle_scope();
-        let result_val = deno_core::v8::Local::new(scope, result);
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponseHeaders");
+                e.to_string()
+            })?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
         if result_val.is_undefined() || result_val.is_null() {
             return Ok(None);
         }
-        let modified_flow: Flow = deno_core::serde_v8::from_v8(scope, result_val)
-            .map_err(|e| format!("Failed to deserialize flow: {}", e))?;
+        let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
+        drop(scope);
+        let modified_flow = match deser {
+            Ok(f) => f,
+            Err(e) => {
+                let err_str = format!("Failed to deserialize flow: {}", e);
+                Self::try_call_on_error(runtime, &flow, &err_str, "onResponseHeaders");
+                return Err(err_str);
+            }
+        };
         Ok(Some(modified_flow))
     }
 
@@ -270,7 +405,10 @@ impl DenoScriptEngine {
         let check_code = "typeof globalThis.onRequest === 'function'";
         let exists = runtime
             .execute_script("check_onRequest", check_code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
+                e.to_string()
+            })?;
 
         let exists_bool = {
             let scope = &mut runtime.handle_scope();
@@ -279,7 +417,6 @@ impl DenoScriptEngine {
         };
 
         if !exists_bool {
-            // Not found, return original body via resource
             let resource = {
                 let op_state_rc = runtime.op_state();
                 let mut state = op_state_rc.borrow_mut();
@@ -306,25 +443,37 @@ impl DenoScriptEngine {
         );
         let result = runtime
             .execute_script("call_onRequest", code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
+                e.to_string()
+            })?;
 
-        let result = runtime.resolve(result).await.map_err(|e| e.to_string())?;
+        let result = runtime.resolve(result).await.map_err(|e| {
+            Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
+            e.to_string()
+        })?;
 
         let (is_empty, modified_flow) = {
-            let scope = &mut runtime.handle_scope();
-            let result_val = deno_core::v8::Local::new(scope, result);
+            let mut scope = runtime.handle_scope();
+            let result_val = deno_core::v8::Local::new(&mut scope, result);
 
             if result_val.is_undefined() || result_val.is_null() {
                 (true, None)
             } else {
-                let flow: Flow = deno_core::serde_v8::from_v8(scope, result_val)
-                    .map_err(|e| format!("Failed to deserialize flow: {}", e))?;
-                (false, Some(flow))
+                let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
+                drop(scope);
+                match deser {
+                    Ok(f) => (false, Some(f)),
+                    Err(e) => {
+                        let err_str = format!("Failed to deserialize flow: {}", e);
+                        Self::try_call_on_error(runtime, &flow, &err_str, "onRequest");
+                        return Err(err_str);
+                    }
+                }
             }
         };
 
         if is_empty {
-            // JS returned nothing, continue with original body
             let resource = {
                 let op_state_rc = runtime.op_state();
                 let mut state = op_state_rc.borrow_mut();
@@ -354,8 +503,6 @@ impl DenoScriptEngine {
         };
 
         let new_body: HttpBody = if let Some(res) = resource {
-            // Original body stream is available.
-            // Check if JS provided a NEW body in `modified_flow`.
             let has_new_body = if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer
             {
                 http.request
@@ -368,8 +515,6 @@ impl DenoScriptEngine {
             };
 
             if has_new_body {
-                // JS provided new body content. Use it.
-                // And we drop the original resource (and its reader).
                 if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
                     if let Some(b) = &http.request.body {
                         let bytes: Bytes = if b.encoding == "base64" {
@@ -394,12 +539,9 @@ impl DenoScriptEngine {
                         .boxed()
                 }
             } else {
-                // JS did not provide new body content. Use original stream.
                 crate::streams::create_body_from_resource(&res)
             }
         } else if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
-            // Resource is gone (JS consumed it or closed it).
-            // We must use whatever is in `modified_flow`.
             if let Some(b) = &http.request.body {
                 let bytes: Bytes = if b.encoding == "base64" {
                     base64::engine::general_purpose::STANDARD
@@ -443,7 +585,10 @@ impl DenoScriptEngine {
         let check_code = "typeof globalThis.onResponse === 'function'";
         let exists = runtime
             .execute_script("check_onResponse", check_code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+                e.to_string()
+            })?;
 
         let exists_bool = {
             let scope = &mut runtime.handle_scope();
@@ -478,19 +623,32 @@ impl DenoScriptEngine {
         );
         let result = runtime
             .execute_script("call_onResponse", code)
-            .map_err(|e| e.to_string())?;
-        let result = runtime.resolve(result).await.map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+                e.to_string()
+            })?;
+        let result = runtime.resolve(result).await.map_err(|e| {
+            Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+            e.to_string()
+        })?;
 
         let (is_empty, modified_flow) = {
-            let scope = &mut runtime.handle_scope();
-            let result_val = deno_core::v8::Local::new(scope, result);
+            let mut scope = runtime.handle_scope();
+            let result_val = deno_core::v8::Local::new(&mut scope, result);
 
             if result_val.is_undefined() || result_val.is_null() {
                 (true, None)
             } else {
-                let flow: Flow = deno_core::serde_v8::from_v8(scope, result_val)
-                    .map_err(|e| format!("Failed to deserialize flow: {}", e))?;
-                (false, Some(flow))
+                let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
+                drop(scope);
+                match deser {
+                    Ok(f) => (false, Some(f)),
+                    Err(e) => {
+                        let err_str = format!("Failed to deserialize flow: {}", e);
+                        Self::try_call_on_error(runtime, &flow, &err_str, "onResponse");
+                        return Err(err_str);
+                    }
+                }
             }
         };
 
@@ -612,10 +770,13 @@ impl DenoScriptEngine {
         let check_code = "typeof globalThis.onWebSocketMessage === 'function'";
         let exists = runtime
             .execute_script("check_onWebSocketMessage", check_code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onWebSocketMessage");
+                e.to_string()
+            })?;
         {
-            let scope = &mut runtime.handle_scope();
-            let exists_val = deno_core::v8::Local::new(scope, exists);
+            let mut scope = runtime.handle_scope();
+            let exists_val = deno_core::v8::Local::new(&mut scope, exists);
             if !exists_val.is_true() {
                 return Ok(WebSocketMessageAction::Continue(message));
             }
@@ -627,25 +788,36 @@ impl DenoScriptEngine {
         );
         let result = runtime
             .execute_script("call_onWebSocketMessage", code)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onWebSocketMessage");
+                e.to_string()
+            })?;
 
-        let scope = &mut runtime.handle_scope();
-        let result_val = deno_core::v8::Local::new(scope, result);
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
 
         if result_val.is_undefined() || result_val.is_null() {
             return Ok(WebSocketMessageAction::Continue(message));
         }
 
-        // Check if user returned "DROP" (string) or a modified WebSocketMessage
         if result_val.is_string() {
-            let s = result_val.to_rust_string_lossy(scope);
+            let s = result_val.to_rust_string_lossy(&mut scope);
             if s == "DROP" {
                 return Ok(WebSocketMessageAction::Drop);
             }
         }
 
-        let modified_message: WebSocketMessage = deno_core::serde_v8::from_v8(scope, result_val)
-            .map_err(|e| format!("Failed to deserialize message: {}", e))?;
+        let deser: Result<WebSocketMessage, _> =
+            deno_core::serde_v8::from_v8(&mut scope, result_val);
+        drop(scope);
+        let modified_message = match deser {
+            Ok(m) => m,
+            Err(e) => {
+                let err_str = format!("Failed to deserialize message: {}", e);
+                Self::try_call_on_error(runtime, &flow, &err_str, "onWebSocketMessage");
+                return Err(err_str);
+            }
+        };
 
         Ok(WebSocketMessageAction::Continue(modified_message))
     }

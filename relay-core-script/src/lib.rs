@@ -17,10 +17,114 @@ use relay_core_lib::interceptor::{
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::RwLock;
+
+/// S4: Per-hook script execution metrics exposed via Prometheus/text.
+pub struct ScriptMetrics {
+    pub on_request_headers_duration_us: AtomicU64,
+    pub on_request_headers_invocations: AtomicU64,
+    pub on_request_headers_errors: AtomicU64,
+
+    pub on_request_duration_us: AtomicU64,
+    pub on_request_invocations: AtomicU64,
+    pub on_request_errors: AtomicU64,
+
+    pub on_response_headers_duration_us: AtomicU64,
+    pub on_response_headers_invocations: AtomicU64,
+    pub on_response_headers_errors: AtomicU64,
+
+    pub on_response_duration_us: AtomicU64,
+    pub on_response_invocations: AtomicU64,
+    pub on_response_errors: AtomicU64,
+
+    pub on_websocket_message_duration_us: AtomicU64,
+    pub on_websocket_message_invocations: AtomicU64,
+    pub on_websocket_message_errors: AtomicU64,
+}
+
+impl Default for ScriptMetrics {
+    fn default() -> Self {
+        Self {
+            on_request_headers_duration_us: AtomicU64::new(0),
+            on_request_headers_invocations: AtomicU64::new(0),
+            on_request_headers_errors: AtomicU64::new(0),
+            on_request_duration_us: AtomicU64::new(0),
+            on_request_invocations: AtomicU64::new(0),
+            on_request_errors: AtomicU64::new(0),
+            on_response_headers_duration_us: AtomicU64::new(0),
+            on_response_headers_invocations: AtomicU64::new(0),
+            on_response_headers_errors: AtomicU64::new(0),
+            on_response_duration_us: AtomicU64::new(0),
+            on_response_invocations: AtomicU64::new(0),
+            on_response_errors: AtomicU64::new(0),
+            on_websocket_message_duration_us: AtomicU64::new(0),
+            on_websocket_message_invocations: AtomicU64::new(0),
+            on_websocket_message_errors: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ScriptMetrics {
+    pub fn prometheus_lines(&self) -> String {
+        let mut out = String::new();
+        macro_rules! push_metric {
+            ($name:expr, $dur:expr, $inv:expr, $err:expr) => {
+                out.push_str(&format!(
+                    "relay_core_script_hook_duration_us{{hook=\"{}\"}} {}\n",
+                    $name,
+                    $dur.load(Ordering::Relaxed)
+                ));
+                out.push_str(&format!(
+                    "relay_core_script_hook_invocations_total{{hook=\"{}\"}} {}\n",
+                    $name,
+                    $inv.load(Ordering::Relaxed)
+                ));
+                out.push_str(&format!(
+                    "relay_core_script_hook_errors_total{{hook=\"{}\"}} {}\n",
+                    $name,
+                    $err.load(Ordering::Relaxed)
+                ));
+            };
+        }
+        push_metric!(
+            "onRequestHeaders",
+            &self.on_request_headers_duration_us,
+            &self.on_request_headers_invocations,
+            &self.on_request_headers_errors
+        );
+        push_metric!(
+            "onRequest",
+            &self.on_request_duration_us,
+            &self.on_request_invocations,
+            &self.on_request_errors
+        );
+        push_metric!(
+            "onResponseHeaders",
+            &self.on_response_headers_duration_us,
+            &self.on_response_headers_invocations,
+            &self.on_response_headers_errors
+        );
+        push_metric!(
+            "onResponse",
+            &self.on_response_duration_us,
+            &self.on_response_invocations,
+            &self.on_response_errors
+        );
+        push_metric!(
+            "onWebSocketMessage",
+            &self.on_websocket_message_duration_us,
+            &self.on_websocket_message_invocations,
+            &self.on_websocket_message_errors
+        );
+        out
+    }
+}
 
 pub struct ScriptInterceptor {
     engines: Vec<RwLock<Box<dyn ScriptEngineTrait>>>,
+    pub metrics: ScriptMetrics,
 }
 
 impl ScriptInterceptor {
@@ -35,7 +139,10 @@ impl ScriptInterceptor {
             engines.push(RwLock::new(engine));
         }
 
-        Ok(Self { engines })
+        Ok(Self {
+            engines,
+            metrics: ScriptMetrics::default(),
+        })
     }
 
     pub async fn load_script(&self, script: &str) -> Result<(), BoxError> {
@@ -80,17 +187,23 @@ impl ScriptInterceptor {
 #[async_trait]
 impl Interceptor for ScriptInterceptor {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        let start = Instant::now();
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
-        match engine.on_request_headers(flow).await {
+        let result = match engine.on_request_headers(flow).await {
             Ok(Some(modified_flow)) => {
                 *flow = modified_flow;
                 InterceptionResult::ModifiedRequest(match &flow.layer {
                     relay_core_api::flow::Layer::Http(h) => h.request.clone(),
                     relay_core_api::flow::Layer::WebSocket(w) => w.handshake_request.clone(),
-                    _ => return InterceptionResult::Continue,
+                    _ => {
+                        self.metrics
+                            .on_request_headers_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                        return InterceptionResult::Continue;
+                    }
                 })
             }
             Ok(None) => InterceptionResult::Continue,
@@ -100,31 +213,66 @@ impl Interceptor for ScriptInterceptor {
                 if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
                     http.error = Some(format!("Script Error: {}", e));
                 }
+                self.metrics
+                    .on_request_headers_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 InterceptionResult::Continue
+            }
+        };
+        let dur_us = start.elapsed().as_micros() as u64;
+        self.metrics
+            .on_request_headers_duration_us
+            .fetch_add(dur_us, Ordering::Relaxed);
+        self.metrics
+            .on_request_headers_invocations
+            .fetch_add(1, Ordering::Relaxed);
+        result
+    }
+
+    async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
+        let start = Instant::now();
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        match engine.on_request(flow, body).await {
+            Ok(action) => {
+                let dur_us = start.elapsed().as_micros() as u64;
+                self.metrics
+                    .on_request_duration_us
+                    .fetch_add(dur_us, Ordering::Relaxed);
+                self.metrics
+                    .on_request_invocations
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(action)
+            }
+            Err(e) => {
+                self.metrics
+                    .on_request_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(e)
             }
         }
     }
 
-    async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
-        let index = self.get_engine_index();
-        let engine_lock = &self.engines[index];
-        let engine = engine_lock.read().await;
-
-        engine.on_request(flow, body).await
-    }
-
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        let start = Instant::now();
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
-        match engine.on_response_headers(flow).await {
+        let result = match engine.on_response_headers(flow).await {
             Ok(Some(modified_flow)) => {
                 *flow = modified_flow;
                 InterceptionResult::ModifiedResponse(match &flow.layer {
                     relay_core_api::flow::Layer::Http(h) => h.response.clone().unwrap(),
                     relay_core_api::flow::Layer::WebSocket(w) => w.handshake_response.clone(),
-                    _ => return InterceptionResult::Continue,
+                    _ => {
+                        self.metrics
+                            .on_response_headers_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                        return InterceptionResult::Continue;
+                    }
                 })
             }
             Ok(None) => InterceptionResult::Continue,
@@ -134,9 +282,20 @@ impl Interceptor for ScriptInterceptor {
                 if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
                     http.error = Some(format!("Script Error: {}", e));
                 }
+                self.metrics
+                    .on_response_headers_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 InterceptionResult::Continue
             }
-        }
+        };
+        let dur_us = start.elapsed().as_micros() as u64;
+        self.metrics
+            .on_response_headers_duration_us
+            .fetch_add(dur_us, Ordering::Relaxed);
+        self.metrics
+            .on_response_headers_invocations
+            .fetch_add(1, Ordering::Relaxed);
+        result
     }
 
     async fn on_response(
@@ -144,11 +303,29 @@ impl Interceptor for ScriptInterceptor {
         flow: &mut Flow,
         body: HttpBody,
     ) -> Result<ResponseAction, BoxError> {
+        let start = Instant::now();
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
-        engine.on_response(flow, body).await
+        match engine.on_response(flow, body).await {
+            Ok(action) => {
+                let dur_us = start.elapsed().as_micros() as u64;
+                self.metrics
+                    .on_response_duration_us
+                    .fetch_add(dur_us, Ordering::Relaxed);
+                self.metrics
+                    .on_response_invocations
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(action)
+            }
+            Err(e) => {
+                self.metrics
+                    .on_response_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(e)
+            }
+        }
     }
 
     async fn on_websocket_message(
@@ -156,15 +333,28 @@ impl Interceptor for ScriptInterceptor {
         flow: &mut Flow,
         mut message: WebSocketMessage,
     ) -> Result<WebSocketMessageAction, BoxError> {
+        let start = Instant::now();
         let index = self.get_engine_index();
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
         match engine.on_websocket_message(flow, &mut message).await {
-            Ok(action) => Ok(action),
+            Ok(action) => {
+                let dur_us = start.elapsed().as_micros() as u64;
+                self.metrics
+                    .on_websocket_message_duration_us
+                    .fetch_add(dur_us, Ordering::Relaxed);
+                self.metrics
+                    .on_websocket_message_invocations
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(action)
+            }
             Err(e) => {
                 tracing::error!("Script execution error (on_websocket_message): {}", e);
                 flow.tags.push("script-error".to_string());
+                self.metrics
+                    .on_websocket_message_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 Ok(WebSocketMessageAction::Continue(message))
             }
         }

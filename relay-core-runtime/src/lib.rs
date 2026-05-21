@@ -383,7 +383,12 @@ impl CoreState {
     }
 
     pub async fn get_metrics_prometheus_text(&self) -> String {
-        self.get_metrics().await.to_prometheus_text()
+        let mut text = self.get_metrics().await.to_prometheus_text();
+        #[cfg(feature = "script")]
+        {
+            text.push_str(&self.script_interceptor.metrics.prometheus_lines());
+        }
+        text
     }
 
     pub fn status_snapshot(&self) -> CoreStatusSnapshot {
