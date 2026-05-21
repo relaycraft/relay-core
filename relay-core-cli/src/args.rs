@@ -12,6 +12,8 @@ Examples:
   relay flows --output table     View captured flows in table format
   relay analyze --file flows.jsonl           Analyze captured flow data
   relay analyze --file export.har --format har  Analyze HAR export
+  relay scripts init                        Scaffold a new script project
+  relay scripts build                       Bundle script with esbuild
   relay ca init                  Generate a CA certificate for HTTPS interception
   relay ca install               Install CA to system trust store (macOS)
   relay rules validate rules.json   Validate a rules file
@@ -280,6 +282,32 @@ pub enum ScriptsAction {
         /// Path to sample flow JSON
         #[arg(long)]
         flow: PathBuf,
+    },
+    /// Scaffold a new script project with esbuild bundling
+    Init {
+        /// Target directory (created if missing)
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Bundle script with esbuild for production use
+    Build {
+        /// Entry script file (default: src/index.ts)
+        #[arg(default_value = "src/index.ts")]
+        entry: PathBuf,
+
+        /// Output file (default: dist/bundle.js)
+        #[arg(short, long, default_value = "dist/bundle.js")]
+        out: PathBuf,
+    },
+    /// Watch and auto-bundle script on changes
+    Dev {
+        /// Entry script file (default: src/index.ts)
+        #[arg(default_value = "src/index.ts")]
+        entry: PathBuf,
+
+        /// Output file (default: dist/bundle.js)
+        #[arg(short, long, default_value = "dist/bundle.js")]
+        out: PathBuf,
     },
 }
 
