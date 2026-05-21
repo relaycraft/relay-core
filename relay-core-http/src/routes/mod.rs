@@ -3,4 +3,6 @@ pub mod flows;
 pub mod intercepts;
 pub mod metrics;
 pub mod rules;
+#[cfg(feature = "script")]
+pub mod scripts;
 pub mod version;

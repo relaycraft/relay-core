@@ -12,6 +12,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use relay_core_runtime::CoreState;
+#[cfg(feature = "script")]
+use relay_core_runtime::services::ScriptService;
 use relay_core_runtime::services::{
     AuditService, FlowEventHub, FlowReadService, InterceptService, RuleService,
     RuntimeStatusService,
@@ -60,6 +62,8 @@ pub struct HttpApiContext {
     pub intercepts: Arc<dyn InterceptService>,
     pub audit: Arc<dyn AuditService>,
     pub status: Arc<dyn RuntimeStatusService>,
+    #[cfg(feature = "script")]
+    pub scripts: Arc<dyn ScriptService>,
 }
 
 impl HttpApiContext {
@@ -71,6 +75,8 @@ impl HttpApiContext {
             intercepts: core.clone(),
             audit: core.clone(),
             status: core.clone(),
+            #[cfg(feature = "script")]
+            scripts: core.clone(),
         }
     }
 }
@@ -115,7 +121,12 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
         .merge(routes::flows::router(ctx.clone()))
         .merge(routes::rules::router(ctx.clone()))
         .merge(routes::intercepts::router(ctx.clone()))
-        .merge(routes::events::router(ctx))
+        .merge(routes::events::router(ctx.clone()));
+
+    #[cfg(feature = "script")]
+    let router = router.merge(routes::scripts::router(ctx.clone()));
+
+    let router = router
         .route_layer(middleware::from_fn_with_state(
             config.clone(),
             require_bearer_token,

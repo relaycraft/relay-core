@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "REST/SSE HTTP API adapter for relay-core: language-agnostic integration boundary for external tools"
 
+[features]
+default = ["script"]
+script = ["relay-core-runtime/script"]
+
 [dependencies]
 relay-core-api.workspace = true
 relay-core-runtime = { path = "../relay-core-runtime", version = "0.3.11" }
