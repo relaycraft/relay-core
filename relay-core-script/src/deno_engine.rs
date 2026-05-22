@@ -12,7 +12,7 @@ use relay_core_lib::interceptor::{
     BoxError, HttpBody, RequestAction, ResponseAction, WebSocketMessageAction,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::thread;
 use tokio::sync::{mpsc, oneshot};
@@ -85,6 +85,23 @@ fn op_shared_state_keys(state: &mut OpState) -> Vec<String> {
     shared_state(state).keys().cloned().collect()
 }
 
+// ── S5: relay.env — whitelisted environment variable access ────
+
+fn env_allow(state: &OpState) -> &HashSet<String> {
+    state
+        .borrow::<HashSet<String>>()
+}
+
+#[op2]
+#[string]
+fn op_env_get(state: &OpState, #[string] key: String) -> Option<String> {
+    let allowed = env_allow(state);
+    if allowed.is_empty() || !allowed.contains(&key) {
+        return None;
+    }
+    std::env::var(&key).ok()
+}
+
 enum DenoCommand {
     LoadScript(String, oneshot::Sender<Result<(), String>>),
     OnRequestHeaders(Flow, oneshot::Sender<Result<Option<Flow>, String>>),
@@ -113,12 +130,12 @@ pub struct DenoScriptEngine {
 
 impl Default for DenoScriptEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new(HashSet::new())
     }
 }
 
 impl DenoScriptEngine {
-    pub fn new() -> Self {
+    pub fn new(env_allow: HashSet<String>) -> Self {
         let (tx, mut rx) = mpsc::channel(32);
 
         thread::spawn(move || {
@@ -128,6 +145,7 @@ impl DenoScriptEngine {
                 .unwrap();
 
             rt.block_on(async move {
+                let env_allow = env_allow; // capture into async block
                 let ext = Extension {
                     name: "relay_core",
                     ops: std::borrow::Cow::Borrowed(&[
@@ -139,9 +157,14 @@ impl DenoScriptEngine {
                         op_shared_state_delete::DECL,
                         op_shared_state_clear::DECL,
                         op_shared_state_keys::DECL,
+                        op_env_get::DECL,
                     ]),
-                    op_state_fn: Some(Box::new(|state| {
-                        state.put(HashMap::<String, serde_json::Value>::new());
+                    op_state_fn: Some(Box::new({
+                        let env_allow = env_allow.clone();
+                        move |state| {
+                            state.put(HashMap::<String, serde_json::Value>::new());
+                            state.put(env_allow.clone());
+                        }
                     })),
                     ..Default::default()
                 };
@@ -202,6 +225,9 @@ impl DenoScriptEngine {
 
                     globalThis.relay = {
                         log: globalThis.console.log,
+                        env: function(name) {
+                            return Deno.core.ops.op_env_get(name);
+                        },
                     };
 
                     // S1: sharedState — cross-hook shared map per isolate

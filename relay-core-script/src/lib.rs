@@ -16,6 +16,7 @@ use relay_core_lib::interceptor::{
     WebSocketMessageAction,
 };
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -125,35 +126,46 @@ impl ScriptMetrics {
 pub struct ScriptInterceptor {
     engines: Vec<RwLock<Box<dyn ScriptEngineTrait>>>,
     pub metrics: ScriptMetrics,
+    env_allow: RwLock<HashSet<String>>,
 }
 
 impl ScriptInterceptor {
     pub async fn new() -> Result<Self, BoxError> {
+        Self::new_with_env(HashSet::new()).await
+    }
+
+    pub async fn new_with_env(env_allow: HashSet<String>) -> Result<Self, BoxError> {
         let pool_size = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
         let mut engines = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
-            let engine: Box<dyn ScriptEngineTrait> = Box::new(DenoScriptEngine::new());
+            let engine: Box<dyn ScriptEngineTrait> =
+                Box::new(DenoScriptEngine::new(env_allow.clone()));
             engines.push(RwLock::new(engine));
         }
 
         Ok(Self {
             engines,
             metrics: ScriptMetrics::default(),
+            env_allow: RwLock::new(env_allow),
         })
+    }
+
+    pub async fn set_env_allow(&self, env_allow: HashSet<String>) {
+        let mut guard = self.env_allow.write().await;
+        *guard = env_allow;
     }
 
     pub async fn load_script(&self, script: &str) -> Result<(), BoxError> {
         // Load script into ALL engines to keep them consistent.
-        // Optimization: Load into new engines first to avoid blocking request processing,
-        // then swap them in quickly.
         let pool_size = self.engines.len();
         let mut new_engines = Vec::with_capacity(pool_size);
 
+        let env = self.env_allow.read().await.clone();
         for _ in 0..pool_size {
-            let mut engine = DenoScriptEngine::new();
+            let mut engine = DenoScriptEngine::new(env.clone());
             engine.load_script(script).await?;
             new_engines.push(Box::new(engine) as Box<dyn ScriptEngineTrait>);
         }

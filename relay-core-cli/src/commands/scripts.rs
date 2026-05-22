@@ -173,7 +173,7 @@ pub async fn execute(action: ScriptsAction) -> Result<()> {
     match action {
         ScriptsAction::Validate { file } => {
             let content = std::fs::read_to_string(&file)?;
-            let mut engine = DenoScriptEngine::new();
+            let mut engine = DenoScriptEngine::new(std::collections::HashSet::new());
             match engine.load_script(&content).await {
                 Ok(_) => println!("Script syntax is valid."),
                 Err(e) => {
@@ -186,7 +186,7 @@ pub async fn execute(action: ScriptsAction) -> Result<()> {
             let content = std::fs::read_to_string(&file)?;
             let mut flow_data = load_flow(&flow)?;
 
-            let mut engine = DenoScriptEngine::new();
+            let mut engine = DenoScriptEngine::new(std::collections::HashSet::new());
             engine
                 .load_script(&content)
                 .await

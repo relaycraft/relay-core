@@ -304,6 +304,7 @@ pub async fn execute(
     rules: Option<PathBuf>,
     #[cfg(feature = "script")] script: Option<PathBuf>,
     #[cfg(feature = "script")] script_watch: bool,
+    #[cfg(feature = "script")] script_env_allow: Option<String>,
     ui: bool,
     transparent: bool,
     output: String,
@@ -394,6 +395,17 @@ pub async fn execute(
 
     #[cfg(feature = "script")]
     let _watcher = {
+        // S5: Set env var whitelist for relay.env() before loading script
+        #[cfg(feature = "script")]
+        if let Some(ref allowed) = script_env_allow {
+            let env_allow: std::collections::HashSet<String> = allowed
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            state.set_script_env_allow(env_allow).await;
+        }
+
         let mut watcher: Option<RecommendedWatcher> = None;
         if let Some(script_path) = &script {
             // Initial load

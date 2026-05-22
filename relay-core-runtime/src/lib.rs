@@ -1110,6 +1110,12 @@ impl CoreState {
         result
     }
 
+    /// S5: Set the env var whitelist for relay.env() in user scripts.
+    #[cfg(feature = "script")]
+    pub async fn set_script_env_allow(&self, env_allow: std::collections::HashSet<String>) {
+        self.script_interceptor.set_env_allow(env_allow).await;
+    }
+
     fn record_audit_event(&self, event: AuditEvent) {
         const AUDIT_HISTORY_LIMIT: usize = 200;
         self.audit_events_total.fetch_add(1, Ordering::Relaxed);

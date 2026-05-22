@@ -96,6 +96,11 @@ pub enum Commands {
         /// CORS allowed origins (comma-separated), e.g. "https://app.example.com,http://localhost:3000"
         #[arg(long)]
         api_cors: Option<String>,
+
+        /// Comma-separated list of env vars accessible via relay.env(name) in scripts
+        #[cfg(feature = "script")]
+        #[arg(long)]
+        script_env_allow: Option<String>,
     },
     /// Manage Certificate Authority
     Ca {
