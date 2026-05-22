@@ -79,6 +79,12 @@ pub struct ProxyPolicy {
     #[serde(default = "default_max_body_bytes")]
     pub max_body_size: usize,
 
+    /// P1: Maximum bytes to buffer for rule body inspection.
+    /// When exceeded, body-stage rules are skipped with budget_exceeded tag.
+    /// Default: 1 MB. Set to 0 to disable rule body inspection entirely.
+    #[serde(default = "default_rule_body_inspect_budget")]
+    pub rule_body_inspect_budget: usize,
+
     /// Request timeout in milliseconds (connect + send request + receive response headers)
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
@@ -152,6 +158,7 @@ impl Default for ProxyPolicy {
             sandbox_root: None,
             max_local_file_bytes: 10 * 1024 * 1024, // 10MB
             max_body_size: 10 * 1024 * 1024,        // 10MB
+            rule_body_inspect_budget: 1024 * 1024,  // 1MB
             request_timeout_ms: 30_000,             // 30 seconds
             transparent_enabled: false,
             transparent_require_original_dst: true,
@@ -204,6 +211,9 @@ fn default_max_file_bytes() -> usize {
 }
 fn default_max_body_bytes() -> usize {
     10 * 1024 * 1024
+}
+fn default_rule_body_inspect_budget() -> usize {
+    1024 * 1024 // 1MB
 }
 fn default_request_timeout_ms() -> u64 {
     30_000

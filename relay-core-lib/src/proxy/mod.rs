@@ -11,6 +11,7 @@
 //! - `tap`: Tapping body streams for UI updates.
 
 pub mod body_codec;
+pub mod budget;
 pub mod http;
 pub mod http_utils;
 pub mod server;

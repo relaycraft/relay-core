@@ -7,6 +7,7 @@ use relay_core_lib::interceptor::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
     WebSocketMessageAction,
 };
+use relay_core_lib::proxy::budget::BudgetedBody;
 use relay_core_lib::proxy::http_utils::mock_to_response;
 use relay_core_lib::rule::{RuleStage, RuleTraceSummary, TerminalReason};
 use relay_core_runtime::CoreState;
@@ -46,16 +47,24 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
 
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
         let engine = self.state.get_rule_engine().await;
+        let policy = self.state.policy_snapshot();
 
         // 0. Check if we need to intercept body for rules
         if !engine.has_rules_for_stage(RuleStage::RequestBody) {
-            // Optimization: If no rules for RequestBody, just continue.
-            // The body is already wrapped in TapBody by the proxy, so streaming visualization works.
             return Ok(RequestAction::Continue(body));
         }
 
-        // 1. Collect Body (fallback to buffering if rules exist)
-        let body_bytes = body.collect().await?.to_bytes();
+        // P1: Budget-aware body collection
+        let budget = policy.rule_body_inspect_budget;
+        let mut budgeted = BudgetedBody::new(body, budget);
+        let body_bytes = (&mut budgeted).collect().await?.to_bytes();
+
+        // If budget exceeded, skip rule execution and pass through
+        if budgeted.budget_exceeded {
+            flow.tags.push("rule_skipped:budget_exceeded".to_string());
+            let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
+            return Ok(RequestAction::Continue(new_body));
+        }
 
         // 2. Update Flow
         self.update_flow_request_body(flow, &body_bytes);
@@ -138,16 +147,23 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         body: HttpBody,
     ) -> Result<ResponseAction, BoxError> {
         let engine = self.state.get_rule_engine().await;
+        let policy = self.state.policy_snapshot();
 
         // 0. Check if we need to intercept body for rules
         if !engine.has_rules_for_stage(RuleStage::ResponseBody) {
-            // Optimization: If no rules for ResponseBody, just continue.
-            // The body is already wrapped in TapBody by the proxy, so streaming visualization works.
             return Ok(ResponseAction::Continue(body));
         }
 
-        // 1. Collect Body
-        let body_bytes = body.collect().await?.to_bytes();
+        // P1: Budget-aware body collection
+        let budget = policy.rule_body_inspect_budget;
+        let mut budgeted = BudgetedBody::new(body, budget);
+        let body_bytes = (&mut budgeted).collect().await?.to_bytes();
+
+        if budgeted.budget_exceeded {
+            flow.tags.push("rule_skipped:budget_exceeded".to_string());
+            let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
+            return Ok(ResponseAction::Continue(new_body));
+        }
 
         // 2. Update Flow
         self.update_flow_response_body(flow, &body_bytes);
