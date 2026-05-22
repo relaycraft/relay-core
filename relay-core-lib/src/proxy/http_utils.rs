@@ -97,7 +97,6 @@ pub fn is_hop_by_hop(name: &str) -> bool {
         || name.eq_ignore_ascii_case("trailers")
         || name.eq_ignore_ascii_case("transfer-encoding")
         || name.eq_ignore_ascii_case("upgrade")
-        || name.eq_ignore_ascii_case("content-length")
 }
 
 pub fn create_initial_flow(

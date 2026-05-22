@@ -68,6 +68,24 @@ impl ProtocolLayer for GenericProtocolLayer {
     }
 }
 
+/// P4: Structured trace of resilience-related events during a proxy request.
+/// Not yet attached to flow struct — will be wired in P4b via HttpLayer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResilienceTrace {
+    /// Number of retry attempts for this request.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Whether the circuit breaker was open when this request was attempted.
+    #[serde(default)]
+    pub circuit_open: bool,
+    /// Whether the request body budget was exceeded (rules skipped).
+    #[serde(default)]
+    pub budget_exceeded: bool,
+    /// Upstream errors encountered (non-2xx, connection errors).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_errors: Vec<String>,
+}
+
 /// The central data structure representing a captured traffic flow.
 /// Designed to support L3/L4 layers initially, with L7 (HTTP) as a specialized layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
