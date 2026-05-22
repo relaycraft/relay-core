@@ -196,9 +196,8 @@ async fn test_h1_basic_get() {
 }
 
 /// P2-02: Body forwarding with Content-Length.
-/// NOTE: currently the proxy strips Content-Length as hop-by-hop,
-/// causing the upstream server to see an empty body. This is a known
-/// gap to address in P1 (streaming-first body pipeline).
+/// Content-Length is no longer stripped (fixed in P1a), so the upstream
+/// server receives the full body.
 #[tokio::test]
 async fn test_h1_body_forwarding() {
     let echo = start_chunked_echo(SocketAddr::from(([127, 0, 0, 1], 0))).await;
@@ -215,15 +214,15 @@ async fn test_h1_body_forwarding() {
     let res = sender.send_request(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let resp_body = res.collect().await.unwrap().to_bytes();
-    assert!(
-        resp_body.is_empty() || resp_body == Bytes::from(data),
-        "body: {}",
-        String::from_utf8_lossy(&resp_body)
+    assert_eq!(
+        resp_body,
+        Bytes::from(data),
+        "body should be forwarded correctly"
     );
 }
 
-/// P2-03: Chunked transfer-encoding — verifies the proxy handles
-/// a request body sent without Content-Length (auto-chunked by hyper).
+/// P2-03: Chunked transfer-encoding — verifies the proxy correctly
+/// forwards a body with known Content-Length through the proxy.
 #[tokio::test]
 async fn test_h1_chunked_body() {
     let echo = start_chunked_echo(SocketAddr::from(([127, 0, 0, 1], 0))).await;
@@ -240,10 +239,10 @@ async fn test_h1_chunked_body() {
     let res = sender.send_request(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let resp_body = res.collect().await.unwrap().to_bytes();
-    assert!(
-        resp_body.is_empty() || resp_body == Bytes::from(data),
-        "body: {}",
-        String::from_utf8_lossy(&resp_body)
+    assert_eq!(
+        resp_body,
+        Bytes::from(data),
+        "chunked body should be forwarded correctly"
     );
 }
 

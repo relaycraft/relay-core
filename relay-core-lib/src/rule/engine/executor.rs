@@ -18,7 +18,9 @@ pub struct ExecutionContext {
     pub policy: Option<Arc<ProxyPolicy>>,
     pub summary: RuleTraceSummary,
     pub state_store: Arc<dyn RuleStateStore>,
-    /// RE2: Throttle rate in bytes/sec set by Throttle action for body pipeline use (P1).
+    // RE2: Throttle bytes/sec set by Throttle action.
+    // Wiring into the body pipeline requires P1 streaming-first changes
+    // (ThrottleBody wrapping in http.rs body forwarding path).
     pub throttle_bytes_per_sec: Option<u64>,
 }
 

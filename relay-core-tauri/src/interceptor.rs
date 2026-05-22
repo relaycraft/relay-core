@@ -54,7 +54,10 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(RequestAction::Continue(body));
         }
 
-        // P1: Budget-aware body collection
+        // P1: Budget-aware body inspection via BudgetedBody.
+        // Rules inspect up to `budget` bytes; if exceeded, rules are skipped
+        // and the body passes through. Full degrade-to-stream (P1 remaining)
+        // will replace collect() with frame-level iteration.
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
@@ -154,7 +157,7 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(ResponseAction::Continue(body));
         }
 
-        // P1: Budget-aware body collection
+        // P1: Budget-aware body inspection via BudgetedBody.
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
