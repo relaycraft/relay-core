@@ -7,6 +7,7 @@ use crate::capture::loop_detection::LoopDetector;
 use crate::interceptor::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
 };
+use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
     HttpsClient, build_forward_request, create_error_response, create_initial_flow,
     mock_to_response, parse_request_meta, update_flow_with_response_headers,
@@ -33,6 +34,7 @@ pub async fn handle_request(
     target_addr: Option<SocketAddr>,
     policy_rx: watch::Receiver<ProxyPolicy>,
     loop_detector: Arc<LoopDetector>,
+    circuit_breaker: Arc<CircuitBreaker>,
 ) -> Result<Response<HttpBody>, Infallible> {
     if req.method() == Method::CONNECT {
         // Handle CONNECT (HTTPS Tunnel)
@@ -72,6 +74,7 @@ pub async fn handle_request(
                         policy_rx,
                         target_addr,
                         loop_detector,
+                        circuit_breaker,
                     )
                     .await
                     {
@@ -97,6 +100,7 @@ pub async fn handle_request(
         policy_rx,
         target_addr,
         loop_detector,
+        circuit_breaker,
     )
     .await
 }
@@ -112,6 +116,7 @@ pub(crate) async fn handle_http_request<B>(
     policy_rx: watch::Receiver<ProxyPolicy>,
     target_addr: Option<SocketAddr>,
     loop_detector: Arc<LoopDetector>,
+    circuit_breaker: Arc<CircuitBreaker>,
 ) -> Result<Response<HttpBody>, Infallible>
 where
     B: Body + Send + Sync + Unpin + 'static,
@@ -249,6 +254,23 @@ where
         Err(res) => return Ok(res),
     };
 
+    // P3: Circuit breaker check before upstream request
+    let upstream_host = forward_req
+        .uri()
+        .authority()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if !circuit_breaker.allow_request(&upstream_host).await {
+        tracing::warn!(
+            "Circuit breaker open for upstream {}, returning 503",
+            upstream_host
+        );
+        return Ok(create_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Circuit breaker open for upstream {}", upstream_host),
+        ));
+    }
+
     // Send Request
     let upstream_start = std::time::Instant::now();
     let res = match tokio::time::timeout(
@@ -257,8 +279,12 @@ where
     )
     .await
     {
-        Ok(Ok(res)) => res,
+        Ok(Ok(res)) => {
+            circuit_breaker.record_success(&upstream_host).await;
+            res
+        }
         Ok(Err(e)) => {
+            circuit_breaker.record_failure(&upstream_host).await;
             tracing::error!("Upstream request failed: {}", e);
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some(format!("Upstream Error: {}", e));
@@ -272,6 +298,7 @@ where
             ));
         }
         Err(_) => {
+            circuit_breaker.record_failure(&upstream_host).await;
             tracing::error!("Upstream request timed out");
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some("Upstream Request Timed Out".to_string());

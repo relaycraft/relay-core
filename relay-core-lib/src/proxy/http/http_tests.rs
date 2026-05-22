@@ -77,6 +77,7 @@ async fn test_request_timeout() {
         .unwrap();
 
     let loop_detector = Arc::new(LoopDetector::new(BTreeSet::new()));
+    let circuit_breaker = Arc::new(crate::proxy::circuit_breaker::CircuitBreaker::default());
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let (_tx_policy, rx_policy) = tokio::sync::watch::channel(policy);
 
@@ -90,6 +91,7 @@ async fn test_request_timeout() {
         rx_policy,
         None, // target_addr
         loop_detector,
+        circuit_breaker,
     )
     .await
     .unwrap();

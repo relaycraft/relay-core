@@ -12,6 +12,7 @@ use tracing::{error, info};
 use crate::capture::CaptureSource;
 use crate::capture::loop_detection::LoopDetector;
 use crate::interceptor::{ENGINE_INDEX, Interceptor};
+use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_request;
 use crate::proxy::http_utils::HttpsClient;
 use crate::tls::CertificateAuthority;
@@ -76,6 +77,9 @@ where
         });
     }
 
+    // Initialize Circuit Breaker (P3)
+    let circuit_breaker = Arc::new(CircuitBreaker::default());
+
     let mut shutdown_rx = shutdown_rx;
 
     loop {
@@ -114,6 +118,8 @@ where
         let policy = policy.clone();
         let loop_detector = loop_detector.clone();
 
+        let circuit_breaker = circuit_breaker.clone();
+
         let engine_index = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         tokio::task::spawn(ENGINE_INDEX.scope(engine_index, async move {
@@ -135,6 +141,7 @@ where
                             target_addr,
                             policy.clone(),
                             loop_detector.clone(),
+                            circuit_breaker.clone(),
                         )
                     }),
                 )

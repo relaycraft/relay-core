@@ -12,6 +12,7 @@
 
 pub mod body_codec;
 pub mod budget;
+pub mod circuit_breaker;
 pub mod http;
 pub mod http_utils;
 pub mod server;

@@ -1,4 +1,5 @@
 use crate::interceptor::Interceptor;
+use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_http_request;
 use crate::proxy::http_utils::HttpsClient;
 use crate::tls::CertificateAuthority;
@@ -30,6 +31,7 @@ pub async fn handle_tunnel(
     policy_rx: watch::Receiver<ProxyPolicy>,
     target_addr: Option<SocketAddr>,
     loop_detector: Arc<LoopDetector>,
+    circuit_breaker: Arc<CircuitBreaker>,
 ) -> crate::error::Result<()> {
     info!("Starting MITM tunnel for {}", host);
 
@@ -105,6 +107,7 @@ pub async fn handle_tunnel(
                     policy_rx.clone(),
                     target_addr,
                     loop_detector.clone(),
+                    circuit_breaker.clone(),
                 )
             }),
         )
