@@ -17,6 +17,10 @@ fn parse_arg_env(arg_prefix: &str, env_key: &str) -> Option<String> {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let state = Arc::new(CoreState::new(None).await);
 
     let port = parse_arg_env("--port=", "RELAY_PORT")
