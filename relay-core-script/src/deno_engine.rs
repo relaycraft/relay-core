@@ -88,8 +88,7 @@ fn op_shared_state_keys(state: &mut OpState) -> Vec<String> {
 // ── S5: relay.env — whitelisted environment variable access ────
 
 fn env_allow(state: &OpState) -> &HashSet<String> {
-    state
-        .borrow::<HashSet<String>>()
+    state.borrow::<HashSet<String>>()
 }
 
 #[op2]
@@ -100,6 +99,76 @@ fn op_env_get(state: &OpState, #[string] key: String) -> Option<String> {
         return None;
     }
     std::env::var(&key).ok()
+}
+
+// ── S6: relay utility ops — uuid, hash, base64, json ──────────
+
+#[op2]
+#[string]
+fn op_uuid_v4() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[op2]
+#[string]
+fn op_hash(#[string] algorithm: String, #[string] data: String) -> Result<String, AnyError> {
+    use sha1::Sha1;
+    use sha2::{Sha256, Sha512};
+    let bytes = data.as_bytes();
+    let hex = match algorithm.as_str() {
+        "sha1" => {
+            use sha1::Digest;
+            data_encoding::HEXLOWER.encode(&Sha1::digest(bytes))
+        }
+        "sha256" => {
+            use sha2::Digest;
+            data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
+        }
+        "sha512" => {
+            use sha2::Digest;
+            data_encoding::HEXLOWER.encode(&Sha512::digest(bytes))
+        }
+        "md5" => {
+            use md5::Digest;
+            data_encoding::HEXLOWER.encode(&md5::Md5::digest(bytes))
+        }
+        other => {
+            return Err(AnyError::msg(format!(
+                "unsupported hash algorithm: {}. Supported: sha1, sha256, sha512, md5",
+                other
+            )));
+        }
+    };
+    Ok(hex)
+}
+
+#[op2]
+#[string]
+fn op_base64_encode(#[string] data: String) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data.as_bytes())
+}
+
+#[op2]
+#[string]
+fn op_base64_decode(#[string] data: String) -> Result<String, AnyError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| AnyError::msg(format!("base64 decode error: {}", e)))?;
+    String::from_utf8(bytes).map_err(|e| AnyError::msg(format!("utf-8 error: {}", e)))
+}
+
+#[op2]
+#[serde]
+fn op_json_parse_safe(#[string] data: String) -> serde_json::Value {
+    serde_json::from_str(&data).unwrap_or(serde_json::Value::Null)
+}
+
+#[op2]
+#[string]
+fn op_json_stringify_pretty(#[serde] value: serde_json::Value) -> String {
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| String::new())
 }
 
 enum DenoCommand {
@@ -158,6 +227,12 @@ impl DenoScriptEngine {
                         op_shared_state_clear::DECL,
                         op_shared_state_keys::DECL,
                         op_env_get::DECL,
+                        op_uuid_v4::DECL,
+                        op_hash::DECL,
+                        op_base64_encode::DECL,
+                        op_base64_decode::DECL,
+                        op_json_parse_safe::DECL,
+                        op_json_stringify_pretty::DECL,
                     ]),
                     op_state_fn: Some(Box::new({
                         let env_allow = env_allow.clone();
@@ -227,6 +302,28 @@ impl DenoScriptEngine {
                         log: globalThis.console.log,
                         env: function(name) {
                             return Deno.core.ops.op_env_get(name);
+                        },
+                        uuid: function() {
+                            return Deno.core.ops.op_uuid_v4();
+                        },
+                        hash: function(alg, data) {
+                            return Deno.core.ops.op_hash(alg, data);
+                        },
+                        base64: {
+                            encode: function(data) {
+                                return Deno.core.ops.op_base64_encode(data);
+                            },
+                            decode: function(data) {
+                                return Deno.core.ops.op_base64_decode(data);
+                            },
+                        },
+                        json: {
+                            parseSafe: function(str) {
+                                return Deno.core.ops.op_json_parse_safe(str);
+                            },
+                            stringifyPretty: function(obj) {
+                                return Deno.core.ops.op_json_stringify_pretty(obj);
+                            },
                         },
                     };
 
