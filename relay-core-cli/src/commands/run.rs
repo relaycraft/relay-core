@@ -219,7 +219,7 @@ async fn run_tui_broadcast(
 
 async fn run_tui_with_polling(
     mut app: TuiApp,
-    mut flow_rx: mpsc::Receiver<FlowUpdate>,
+    mut flow_rx: tokio::sync::broadcast::Receiver<FlowUpdate>,
     mut rules_rx: mpsc::Receiver<Vec<relay_core_api::rule::Rule>>,
     mut intercept_rx: mpsc::Receiver<serde_json::Value>,
 ) -> Result<()> {
@@ -276,6 +276,9 @@ async fn run_tui_with_polling(
             if let FlowUpdate::Full(flow) = update {
                 app.on_flow(*flow);
             }
+        }
+        if let Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) = flow_rx.try_recv() {
+            tracing::warn!("TUI lagged behind by {n} flow updates, resyncing");
         }
 
         while let Ok(rules) = rules_rx.try_recv() {
@@ -555,17 +558,6 @@ pub async fn execute(
             let api_url = format!("http://{}:{}", api_bind, api_port);
             let api_token = api_token.clone();
 
-            // Spawn SSE client feeding into mpsc
-            let (sse_tx, sse_rx) = mpsc::channel(1024);
-            {
-                let client = ApiClient::new(api_url.clone(), api_token.clone());
-                tokio::spawn(async move {
-                    if let Err(e) = client.stream_events(sse_tx).await {
-                        error!("SSE event stream ended: {e:#}");
-                    }
-                });
-            }
-
             // Spawn rules fetch loop with a different channel
             let (rules_tx, rules_rx) = mpsc::channel::<Vec<relay_core_api::rule::Rule>>(8);
             {
@@ -610,16 +602,16 @@ pub async fn execute(
                 });
             }
 
-            // Run TUI with SSE feed and polling
-            run_tui_with_polling(app, sse_rx, rules_rx, intercept_rx).await?;
-        } else {
-            // Legacy broadcast mode
-            if let Some(rx) = tui_rx
-                && let Err(e) = run_tui_broadcast(app, rx).await
-            {
-                let _ = disable_raw_mode();
-                eprintln!("TUI error: {}", e);
+            // Same process as the proxy: use the local broadcast feed for flows.
+            // HTTP polling covers rules/intercepts; SSE is for external clients only.
+            if let Some(rx) = tui_rx {
+                run_tui_with_polling(app, rx, rules_rx, intercept_rx).await?;
             }
+        } else if let Some(rx) = tui_rx
+            && let Err(e) = run_tui_broadcast(app, rx).await
+        {
+            let _ = disable_raw_mode();
+            eprintln!("TUI error: {}", e);
         }
     } else {
         info!("──────────────────────────────────────────────");

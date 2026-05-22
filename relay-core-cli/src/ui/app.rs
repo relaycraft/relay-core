@@ -503,109 +503,88 @@ impl TuiApp {
     }
 
     fn render_help_overlay(&self, f: &mut Frame) {
-        let lines = vec![
-            Line::from(vec![Span::styled(
-                "Keyboard Shortcuts",
-                Theme::accent_bold(),
-            )]),
+        let mut lines: Vec<Line> = vec![
+            Line::from(vec![Span::styled("RelayCore TUI", Theme::accent_bold())]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(" j / ↓      ", Theme::label()),
-                Span::styled("Move selection down", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" k / ↑      ", Theme::label()),
-                Span::styled("Move selection up", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" g / End    ", Theme::label()),
-                Span::styled("Jump to newest flow (detail: scroll to top)", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" G / Home   ", Theme::label()),
-                Span::styled(
-                    "Jump to oldest flow (detail: scroll to bottom)",
-                    Theme::text(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Ctrl+d     ", Theme::label()),
-                Span::styled("Scroll detail panel down 10 lines", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" Ctrl+u     ", Theme::label()),
-                Span::styled("Scroll detail panel up 10 lines", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" /          ", Theme::label()),
-                Span::styled(
-                    "Filter (host: path: method: status: err ws, or plain text)",
-                    Theme::text(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Enter / →  ", Theme::label()),
-                Span::styled("Focus detail panel", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" Esc / ←    ", Theme::label()),
-                Span::styled("Focus flow list", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" Tab        ", Theme::label()),
-                Span::styled(
-                    "Switch detail tab (Overview→Request→Response→Messages)",
-                    Theme::text(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" 1-4        ", Theme::label()),
-                Span::styled(
-                    "Jump to tab 1=Overview 2=Request 3=Response 4=Messages",
-                    Theme::text(),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" PgUp / PgDown ", Theme::label()),
-                Span::styled("Scroll detail panel", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" ?          ", Theme::label()),
-                Span::styled("Toggle this help", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" q          ", Theme::label()),
-                Span::styled("Quit", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" d          ", Theme::label()),
-                Span::styled("Delete selected flow", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" y          ", Theme::label()),
-                Span::styled("Copy selected flow as cURL", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" p          ", Theme::label()),
-                Span::styled("Pause / resume list (proxy keeps running)", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" c          ", Theme::label()),
-                Span::styled("Clear flow list", Theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled(" r          ", Theme::label()),
-                Span::styled("Focus rules panel (API mode only)", Theme::text()),
-            ]),
         ];
 
-        let help_width = 70;
+        match self.api_mode {
+            ApiMode::Connected => {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Mode: ", Theme::label()),
+                    Span::styled("API Connected ", Theme::stat_ok()),
+                    Span::styled(
+                        "(4-panel: flows, detail, rules, intercepts)",
+                        Theme::muted(),
+                    ),
+                ]));
+            }
+            ApiMode::Offline => {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Mode: ", Theme::label()),
+                    Span::styled("Offline ", Theme::muted()),
+                    Span::styled("(2-panel: flows + detail)", Theme::muted()),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Enable API mode: ", Theme::label()),
+                    Span::styled(
+                        "relay run --ui --api-port 8082",
+                        Theme::accent_dim(),
+                    ),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(help_section("Flow List"));
+        lines.extend([
+            help_binding("j  ↓", "Move selection down"),
+            help_binding("k  ↑", "Move selection up"),
+            help_binding("g  End", "Jump to newest flow"),
+            help_binding("G  Home", "Jump to oldest flow"),
+            help_binding("/", "Filter (host: path: method: status: err ws)"),
+            help_binding("Enter  →", "Focus detail panel"),
+        ]);
+
+        lines.push(Line::from(""));
+        lines.push(help_section("Detail Panel"));
+        lines.extend([
+            help_binding("Esc  ←", "Back to flow list"),
+            help_binding("Tab", "Cycle tabs: Overview → Request → Response → Messages"),
+            help_binding("1 – 4", "Jump to tab by number"),
+            help_binding("PgUp  PgDown", "Scroll content"),
+            help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
+        ]);
+
+        lines.push(Line::from(""));
+        lines.push(help_section("Actions"));
+        lines.extend([
+            help_binding("y", "Copy selected flow as cURL"),
+            help_binding("d", "Delete selected flow"),
+            help_binding("p", "Pause / resume list (proxy keeps running)"),
+            help_binding("c", "Clear flow list"),
+        ]);
+        if self.api_mode == ApiMode::Connected {
+            lines.push(help_binding("r", "Focus rules panel"));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(help_section("General"));
+        lines.extend([
+            help_binding("?", "Toggle this help"),
+            help_binding("q", "Quit"),
+        ]);
+
+        let help_width = 72;
         let help_height = lines.len() as u16 + 2;
         let area = centered_rect(help_width, help_height, f.area());
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Help (? to close) ")
+            .title(" Help (? or Esc to close) ")
             .style(Style::default().bg(Theme::BG_ELEVATED));
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(Clear, area);
@@ -1610,6 +1589,21 @@ fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
     }
 
     parts
+}
+
+fn help_section(title: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("── {title} ──"), Theme::section()),
+    ])
+}
+
+fn help_binding(keys: &'static str, description: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{keys:<16}"), Theme::hotkey()),
+        Span::styled(description, Theme::text()),
+    ])
 }
 
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {

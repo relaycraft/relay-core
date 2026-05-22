@@ -1,5 +1,5 @@
 use anyhow::Result;
-use relay_core_api::flow::FlowUpdate;
+use relay_core_api::flow::{Flow, FlowUpdate};
 use relay_core_api::rule::Rule;
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -120,7 +120,10 @@ impl ApiClient {
     }
 }
 
-fn parse_sse_frame(frame: &str) -> Option<FlowUpdate> {
+/// Parse one SSE frame from `/api/v1/events`.
+///
+/// The HTTP adapter emits raw [`Flow`] JSON for `event: flow`, not tagged [`FlowUpdate`].
+pub fn parse_sse_frame(frame: &str) -> Option<FlowUpdate> {
     let mut event_type = String::new();
     let mut data = String::new();
 
@@ -128,16 +131,67 @@ fn parse_sse_frame(frame: &str) -> Option<FlowUpdate> {
         if let Some(field) = line.strip_prefix("event:") {
             event_type = field.trim().to_string();
         } else if let Some(field) = line.strip_prefix("data:") {
-            data = field.trim().to_string();
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(field.trim());
         }
     }
 
-    if event_type == "flow"
-        && !data.is_empty()
-        && let Ok(update) = serde_json::from_str::<FlowUpdate>(&data)
-    {
-        return Some(update);
+    if data.is_empty() {
+        return None;
     }
 
-    None
+    match event_type.as_str() {
+        "flow" => {
+            if let Ok(update) = serde_json::from_str::<FlowUpdate>(&data) {
+                return Some(update);
+            }
+            serde_json::from_str::<Flow>(&data)
+                .ok()
+                .map(|flow| FlowUpdate::Full(Box::new(flow)))
+        }
+        "ws-message" => serde_json::from_str(&data).ok(),
+        "http-body" => None, // TUI only needs full flow snapshots for the list view.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sse_frame;
+    use relay_core_api::flow::{FlowUpdate, Layer};
+
+    #[test]
+    fn parse_flow_event_accepts_raw_flow_json() {
+        let frame = r#"event: flow
+data: {"id":"00000000-0000-0000-0000-000000000001","start_time":"2026-05-20T10:00:00Z","end_time":null,"network":{"client_ip":"127.0.0.1","client_port":12345,"server_ip":"0.0.0.0","server_port":0,"protocol":"TCP","tls":true,"tls_version":null,"sni":null},"layer":{"type":"Http","data":{"request":{"method":"GET","url":"https://example.com/","version":"HTTP/1.1","headers":[],"cookies":[],"query":[],"body":null},"response":null,"error":null}},"tags":["proxy"],"meta":{}}"#;
+
+        let update = parse_sse_frame(frame).expect("flow frame should parse");
+        match update {
+            FlowUpdate::Full(flow) => match &flow.layer {
+                Layer::Http(http) => {
+                    assert_eq!(http.request.method, "GET");
+                    assert_eq!(http.request.url.as_str(), "https://example.com/");
+                }
+                other => panic!("expected http layer, got {other:?}"),
+            },
+            other => panic!("expected full flow update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_flow_event_accepts_tagged_flow_update_json() {
+        let frame = r#"event: flow
+data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_time":"2026-05-20T10:00:00Z","end_time":null,"network":{"client_ip":"127.0.0.1","client_port":12345,"server_ip":"0.0.0.0","server_port":0,"protocol":"TCP","tls":false,"tls_version":null,"sni":null},"layer":{"type":"Http","data":{"request":{"method":"POST","url":"https://example.com/submit","version":"HTTP/1.1","headers":[],"cookies":[],"query":[],"body":null},"response":null,"error":null}},"tags":[],"meta":{}}}"#;
+
+        let update = parse_sse_frame(frame).expect("tagged flow update should parse");
+        match update {
+            FlowUpdate::Full(flow) => match &flow.layer {
+                Layer::Http(http) => assert_eq!(http.request.method, "POST"),
+                other => panic!("expected http layer, got {other:?}"),
+            },
+            other => panic!("expected full flow update, got {other:?}"),
+        }
+    }
 }
