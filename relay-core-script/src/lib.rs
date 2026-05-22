@@ -15,8 +15,8 @@ use relay_core_lib::interceptor::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
     WebSocketMessageAction,
 };
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
