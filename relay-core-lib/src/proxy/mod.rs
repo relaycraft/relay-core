@@ -15,6 +15,7 @@ pub mod http;
 pub mod http_utils;
 pub mod server;
 pub mod tap;
+pub mod throttle;
 pub mod tunnel;
 pub mod websocket;
 

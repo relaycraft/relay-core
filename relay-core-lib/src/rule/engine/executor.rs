@@ -18,6 +18,8 @@ pub struct ExecutionContext {
     pub policy: Option<Arc<ProxyPolicy>>,
     pub summary: RuleTraceSummary,
     pub state_store: Arc<dyn RuleStateStore>,
+    /// RE2: Throttle rate in bytes/sec set by Throttle action for body pipeline use (P1).
+    pub throttle_bytes_per_sec: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -76,6 +78,7 @@ impl RuleEngine {
             policy: self.policy.clone(),
             summary: RuleTraceSummary::NoMatch,
             state_store: self.state_store.clone(),
+            throttle_bytes_per_sec: None,
         };
 
         let mut terminated = false;

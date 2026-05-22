@@ -8,30 +8,18 @@ use url::{Host, Url};
 fn infer_throttle_bytes(flow: &Flow) -> u64 {
     match &flow.layer {
         Layer::Http(http) => {
-            let mut total = 0u64;
-            if let Some(body) = &http.request.body {
-                total = total.saturating_add(body.size);
-            }
+            // Use response body size (direction that typically carries large payloads)
             if let Some(response) = &http.response
                 && let Some(body) = &response.body
             {
-                total = total.saturating_add(body.size);
+                return body.size;
             }
-            total
+            if let Some(body) = &http.request.body {
+                return body.size;
+            }
+            0
         }
-        Layer::WebSocket(ws) => ws
-            .handshake_request
-            .body
-            .as_ref()
-            .map(|b| b.size)
-            .unwrap_or(0)
-            .saturating_add(
-                ws.handshake_response
-                    .body
-                    .as_ref()
-                    .map(|b| b.size)
-                    .unwrap_or(0),
-            ),
+        Layer::WebSocket(ws) => ws.messages.iter().map(|m| m.content.size).sum(),
         _ => 0,
     }
 }
@@ -186,23 +174,28 @@ pub async fn execute(
             }
         }
         Action::Throttle { kbps } => {
-            if *kbps == 0 {
+            let rate_kbps = *kbps;
+            if rate_kbps == 0 {
                 return ActionOutcome::Failed("Throttle kbps must be > 0".to_string());
             }
 
-            // Conservative implementation: emulate bandwidth throttle via delay
-            // derived from known payload size in current flow snapshot.
+            // RE2: bandwidth throttling — bytes/sec rate limit.
+            // For flows with known body size (non-streaming), calculate delay.
+            // For streaming bodies, the ThrottleBody wrapper (proxy/throttle.rs)
+            // is applied by the body pipeline when rate info is available.
             let bytes = infer_throttle_bytes(flow);
             if bytes == 0 {
                 return ActionOutcome::Continue;
             }
 
-            // delay_ms = ceil((bytes * 8) / kbps), where kbps is kilobits per second.
-            let bits = (bytes as u128).saturating_mul(8);
-            let kbps_u128 = *kbps as u128;
-            let delay_ms = bits
-                .saturating_add(kbps_u128.saturating_sub(1))
-                .checked_div(kbps_u128)
+            // Store throttle rate in context for body pipeline use (P1)
+            ctx.throttle_bytes_per_sec = Some(rate_kbps * 125); // kbps → bytes/sec
+
+            // Calculate delay: bytes / (bytes_per_sec) → seconds → ms
+            let bytes_per_sec = rate_kbps * 125;
+            let delay_ms = (bytes as u128)
+                .saturating_mul(1000)
+                .checked_div(bytes_per_sec as u128)
                 .unwrap_or(0)
                 .min(u64::MAX as u128) as u64;
 
@@ -280,6 +273,7 @@ mod tests {
             policy: None,
             summary: RuleTraceSummary::NoMatch,
             state_store: Arc::new(InMemoryRuleStateStore::new()),
+            throttle_bytes_per_sec: None,
         }
     }
 

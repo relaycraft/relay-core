@@ -418,6 +418,7 @@ mod tests {
             policy: None,
             summary: RuleTraceSummary::NoMatch,
             state_store: Arc::new(InMemoryRuleStateStore::new()),
+            throttle_bytes_per_sec: None,
         }
     }
 
