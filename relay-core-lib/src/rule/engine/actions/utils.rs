@@ -22,13 +22,16 @@ pub async fn resolve_body_source(
             size: b.len() as u64, // Approximate
         }),
         BodySource::File(path) => {
-            let root = if let Some(p) = policy {
-                if let Some(r) = &p.sandbox_root {
-                    r.clone()
-                } else {
-                    std::env::current_dir().unwrap_or_default()
-                }
+            let root = if let Some(p) = policy
+                && let Some(r) = &p.sandbox_root
+            {
+                r.clone()
             } else {
+                tracing::warn!(
+                    "MapLocal: sandbox_root is not configured — falling back to CWD. \
+                     This will be rejected in a future version. \
+                     Set sandbox_root in your ProxyPolicy."
+                );
                 std::env::current_dir().unwrap_or_default()
             };
 
