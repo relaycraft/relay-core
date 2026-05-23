@@ -7,6 +7,8 @@ pub mod deno_engine;
 pub mod engine_trait;
 pub mod streams;
 
+pub use deno_engine::ScriptFetchConfig;
+
 use crate::deno_engine::DenoScriptEngine;
 use crate::engine_trait::ScriptEngineTrait;
 use async_trait::async_trait;
@@ -119,6 +121,18 @@ impl ScriptMetrics {
             &self.on_websocket_message_invocations,
             &self.on_websocket_message_errors
         );
+        out.push_str(&format!(
+            "relay_core_script_env_access_total {}\n",
+            deno_engine::get_script_env_access_total()
+        ));
+        out.push_str(&format!(
+            "relay_core_script_fetch_total {}\n",
+            deno_engine::get_script_fetch_total()
+        ));
+        out.push_str(&format!(
+            "relay_core_script_fetch_rejected_total {}\n",
+            deno_engine::get_script_fetch_rejected_total()
+        ));
         out
     }
 }
@@ -127,6 +141,7 @@ pub struct ScriptInterceptor {
     engines: Vec<RwLock<Box<dyn ScriptEngineTrait>>>,
     pub metrics: ScriptMetrics,
     env_allow: RwLock<HashSet<String>>,
+    fetch_config: RwLock<deno_engine::ScriptFetchConfig>,
 }
 
 impl ScriptInterceptor {
@@ -135,6 +150,13 @@ impl ScriptInterceptor {
     }
 
     pub async fn new_with_env(env_allow: HashSet<String>) -> Result<Self, BoxError> {
+        Self::new_with_env_and_fetch(env_allow, deno_engine::ScriptFetchConfig::default()).await
+    }
+
+    pub async fn new_with_env_and_fetch(
+        env_allow: HashSet<String>,
+        fetch_config: deno_engine::ScriptFetchConfig,
+    ) -> Result<Self, BoxError> {
         let pool_size = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
@@ -142,7 +164,7 @@ impl ScriptInterceptor {
 
         for _ in 0..pool_size {
             let engine: Box<dyn ScriptEngineTrait> =
-                Box::new(DenoScriptEngine::new(env_allow.clone()));
+                Box::new(DenoScriptEngine::new_with_fetch(env_allow.clone(), fetch_config.clone()));
             engines.push(RwLock::new(engine));
         }
 
@@ -150,6 +172,7 @@ impl ScriptInterceptor {
             engines,
             metrics: ScriptMetrics::default(),
             env_allow: RwLock::new(env_allow),
+            fetch_config: RwLock::new(fetch_config),
         })
     }
 
@@ -158,14 +181,20 @@ impl ScriptInterceptor {
         *guard = env_allow;
     }
 
+    pub async fn set_fetch_config(&self, config: deno_engine::ScriptFetchConfig) {
+        let mut guard = self.fetch_config.write().await;
+        *guard = config;
+    }
+
     pub async fn load_script(&self, script: &str) -> Result<(), BoxError> {
         // Load script into ALL engines to keep them consistent.
         let pool_size = self.engines.len();
         let mut new_engines = Vec::with_capacity(pool_size);
 
         let env = self.env_allow.read().await.clone();
+        let fc = self.fetch_config.read().await.clone();
         for _ in 0..pool_size {
-            let mut engine = DenoScriptEngine::new(env.clone());
+            let mut engine = DenoScriptEngine::new_with_fetch(env.clone(), fc.clone());
             engine.load_script(script).await?;
             new_engines.push(Box::new(engine) as Box<dyn ScriptEngineTrait>);
         }

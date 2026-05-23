@@ -8,8 +8,8 @@ use relay_core_api::flow::{
 use relay_core_lib::interceptor::{
     BoxError, Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
 };
-use relay_core_script::ScriptInterceptor;
-use std::collections::HashMap;
+use relay_core_script::{ScriptFetchConfig, ScriptInterceptor};
+use std::collections::{HashMap, HashSet};
 use url::Url;
 use uuid::Uuid;
 
@@ -234,4 +234,439 @@ async fn test_deno_script_invalid_source_rejected() {
     let bad_script = "globalThis.onRequest = () => { invalid javascript !!!";
     let result = interceptor.load_script(bad_script).await;
     assert!(result.is_err(), "invalid script source should fail to load");
+}
+
+// ── S5: relay.env whitelist tests ────────────────────────────────
+
+#[tokio::test]
+async fn test_env_whitelist_allows_listed_key() {
+    let mut allow = HashSet::new();
+    allow.insert("PATH".to_string());
+    let interceptor = ScriptInterceptor::new_with_env(allow).await.unwrap();
+
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const p = relay.env("PATH");
+            if (p === undefined) flow.tags.push("env-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"env-fail".to_string()), "PATH should be accessible");
+}
+
+#[tokio::test]
+async fn test_env_whitelist_blocks_unlisted_key() {
+    let mut allow = HashSet::new();
+    allow.insert("PATH".to_string());
+    let interceptor = ScriptInterceptor::new_with_env(allow).await.unwrap();
+
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const home = relay.env("HOME");
+            if (home !== undefined) flow.tags.push("env-leak");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"env-leak".to_string()), "HOME should not be accessible");
+}
+
+#[tokio::test]
+async fn test_env_empty_whitelist_blocks_all() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const p = relay.env("PATH");
+            if (p !== undefined) flow.tags.push("env-leak");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"env-leak".to_string()), "nothing should be accessible with empty allowlist");
+}
+
+#[tokio::test]
+async fn test_env_case_sensitive_no_bypass() {
+    let mut allow = HashSet::new();
+    allow.insert("PATH".to_string());
+    let interceptor = ScriptInterceptor::new_with_env(allow).await.unwrap();
+
+    // Try lowercase bypass
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const p = relay.env("path");
+            if (p !== undefined) flow.tags.push("env-case-bypass");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"env-case-bypass".to_string()), "case-variant should not bypass");
+}
+
+#[tokio::test]
+async fn test_env_access_counter_increments() {
+    let mut allow = HashSet::new();
+    allow.insert("PATH".to_string());
+    let interceptor = ScriptInterceptor::new_with_env(allow).await.unwrap();
+
+    let before = interceptor.metrics.prometheus_lines();
+    let before_val: usize = before
+        .lines()
+        .find(|l| l.contains("script_env_access_total"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            relay.env("PATH");
+            relay.env("HOME");  // blocked, but still counts
+            relay.env("PATH");  // second access
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+
+    let after = interceptor.metrics.prometheus_lines();
+    let after_val: usize = after
+        .lines()
+        .find(|l| l.contains("script_env_access_total"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    assert!(after_val >= before_val + 3, "env access counter should increment by 3, got {} -> {}", before_val, after_val);
+}
+
+// ── S6: relay utility library tests ─────────────────────────────
+
+#[tokio::test]
+async fn test_relay_uuid_v4() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const id = relay.uuid();
+            if (typeof id !== "string" || id.length !== 36) flow.tags.push("uuid-fail");
+            if (!id.includes("-")) flow.tags.push("uuid-format-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"uuid-fail".to_string()), "relay.uuid should return valid UUID string");
+}
+
+#[tokio::test]
+async fn test_relay_hash_sha256() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const h = relay.hash("sha256", "hello");
+            // SHA-256 of "hello" is 2cf24dba5fb0a30e26e83b2ac5b9e29e...
+            if (h.length !== 64) flow.tags.push("hash-len-fail");
+            if (!/^[0-9a-f]+$/.test(h)) flow.tags.push("hash-hex-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"hash-len-fail".to_string()), "sha256 should return 64 hex chars");
+    assert!(!flow.tags.contains(&"hash-hex-fail".to_string()), "sha256 should return lowercase hex");
+}
+
+#[tokio::test]
+async fn test_relay_hash_all_algorithms() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const algos = ["sha1", "sha256", "sha512", "md5"];
+            for (const alg of algos) {
+                const h = relay.hash(alg, "test");
+                if (typeof h !== "string" || h.length === 0) {
+                    flow.tags.push("hash-" + alg + "-fail");
+                }
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    for algo in &["sha1", "sha256", "sha512", "md5"] {
+        let tag = format!("hash-{}-fail", algo);
+        assert!(!flow.tags.contains(&tag), "{} should produce output", algo);
+    }
+}
+
+#[tokio::test]
+async fn test_relay_hash_unsupported_algorithm() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            try {
+                relay.hash("blake2", "test");
+                flow.tags.push("hash-no-throw");
+            } catch (e) {
+                // Expected: unsupported algorithm error
+                flow.tags.push("hash-threw");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    // The op error should propagate as a JS exception that the script catches
+    assert!(
+        flow.tags.contains(&"hash-threw".to_string()) || flow.tags.contains(&"script-error".to_string()),
+        "unsupported hash should cause error (got tags: {:?})",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_base64_encode_decode() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const encoded = relay.base64.encode("hello");
+            if (encoded !== "aGVsbG8=") flow.tags.push("b64-encode-fail");
+            const decoded = relay.base64.decode("aGVsbG8=");
+            if (decoded !== "hello") flow.tags.push("b64-decode-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"b64-encode-fail".to_string()), "base64 encode should match");
+    assert!(!flow.tags.contains(&"b64-decode-fail".to_string()), "base64 decode should match");
+}
+
+#[tokio::test]
+async fn test_relay_base64_invalid_input() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            try {
+                relay.base64.decode("!!!invalid!!!");
+                flow.tags.push("b64-no-throw");
+            } catch (e) {
+                flow.tags.push("b64-threw");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    // Invalid base64 should cause an error (either caught in-script or as script-error)
+    assert!(
+        flow.tags.contains(&"b64-threw".to_string()) || flow.tags.contains(&"script-error".to_string()),
+        "invalid base64 should cause error (got tags: {:?})",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_json_parse_safe_valid_and_invalid() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const obj = relay.json.parseSafe('{"a":1}');
+            if (obj === undefined || obj.a !== 1) flow.tags.push("json-valid-fail");
+            const bad = relay.json.parseSafe('not json');
+            if (bad !== null) flow.tags.push("json-invalid-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"json-valid-fail".to_string()), "valid JSON should parse");
+    assert!(!flow.tags.contains(&"json-invalid-fail".to_string()), "invalid JSON should return null");
+}
+
+#[tokio::test]
+async fn test_relay_json_stringify_pretty() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const s = relay.json.stringifyPretty({a:1});
+            if (!s.includes("\n")) flow.tags.push("json-pretty-fail");
+            if (!s.includes("  "  )) flow.tags.push("json-indent-fail");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(!flow.tags.contains(&"json-pretty-fail".to_string()), "pretty JSON should have newlines");
+    assert!(!flow.tags.contains(&"json-indent-fail".to_string()), "pretty JSON should have 2-space indent");
+}
+
+// ── S7a: relay.fetch tests (M5: validation layer) ──────────────
+// Actual HTTP execution deferred to M6 (S7b).
+
+#[tokio::test]
+async fn test_relay_fetch_default_disabled() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const r = relay.fetch("http://example.com");
+            if (!r.ok && r.error === "script fetch disabled") {
+                flow.tags.push("fetch-disabled-ok");
+            } else {
+                flow.tags.push("fetch-disabled-fail");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        flow.tags.contains(&"fetch-disabled-ok".to_string()),
+        "relay.fetch should return disabled error by default, got tags: {:?}",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_fetch_rejects_non_allowlisted_host() {
+    let fetch_config = ScriptFetchConfig {
+        enabled: true,
+        allow_hosts: HashSet::from(["trusted.example.com".to_string()]),
+        ..Default::default()
+    };
+    let interceptor = ScriptInterceptor::new_with_env_and_fetch(HashSet::new(), fetch_config)
+        .await
+        .unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const r = relay.fetch("http://untrusted.example.com/api");
+            if (!r.ok && r.error === "host not in allowlist") {
+                flow.tags.push("fetch-allowlist-reject");
+            } else {
+                flow.tags.push("fetch-allowlist-fail");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        flow.tags.contains(&"fetch-allowlist-reject".to_string()),
+        "relay.fetch should reject non-allowlisted host, got tags: {:?}",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_fetch_allows_allowlisted_host() {
+    let fetch_config = ScriptFetchConfig {
+        enabled: true,
+        allow_hosts: HashSet::from(["trusted.example.com".to_string()]),
+        ..Default::default()
+    };
+    let interceptor = ScriptInterceptor::new_with_env_and_fetch(HashSet::new(), fetch_config)
+        .await
+        .unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const r = relay.fetch("http://trusted.example.com/api");
+            // Still returns error because actual fetch not implemented (M6),
+            // but should NOT be "host not in allowlist" or "script fetch disabled"
+            if (!r.ok && r.error !== "host not in allowlist" && r.error !== "script fetch disabled") {
+                flow.tags.push("fetch-allowlist-pass");
+            } else {
+                flow.tags.push("fetch-allowlist-blocked");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        flow.tags.contains(&"fetch-allowlist-pass".to_string()),
+        "relay.fetch should pass allowlist check for allowed host, got tags: {:?}",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_fetch_rejects_recursive_self() {
+    let fetch_config = ScriptFetchConfig { enabled: true, proxy_listen_port: 8080, ..Default::default() };
+    let interceptor = ScriptInterceptor::new_with_env_and_fetch(HashSet::new(), fetch_config)
+        .await
+        .unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const r = relay.fetch("http://localhost:8080/api/test");
+            if (!r.ok && r.error === "recursive fetch to self rejected") {
+                flow.tags.push("fetch-recursion-reject");
+            } else {
+                flow.tags.push("fetch-recursion-fail");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        flow.tags.contains(&"fetch-recursion-reject".to_string()),
+        "relay.fetch should reject recursive fetch to self, got tags: {:?}",
+        flow.tags
+    );
+}
+
+#[tokio::test]
+async fn test_relay_fetch_rejected_counter_increments() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            relay.fetch("http://example.com");
+            relay.fetch("http://other.com");
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+
+    let metrics = interceptor.metrics.prometheus_lines();
+    let fetch_total: usize = metrics
+        .lines()
+        .find(|l| l.contains("script_fetch_total"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let fetch_rejected: usize = metrics
+        .lines()
+        .find(|l| l.contains("script_fetch_rejected_total"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        fetch_total >= 2 && fetch_rejected >= 2,
+        "fetch counters should increment (total={}, rejected={})",
+        fetch_total, fetch_rejected
+    );
 }

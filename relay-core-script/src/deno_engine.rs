@@ -105,6 +105,9 @@ fn op_shared_state_size(state: &OpState) -> u32 {
 
 // ── S5: relay.env — whitelisted environment variable access ────
 
+/// Counter for env access attempts — exposed via Prometheus
+static SCRIPT_ENV_ACCESS_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn env_allow(state: &OpState) -> &HashSet<String> {
     state.borrow::<HashSet<String>>()
 }
@@ -113,10 +116,94 @@ fn env_allow(state: &OpState) -> &HashSet<String> {
 #[string]
 fn op_env_get(state: &OpState, #[string] key: String) -> Option<String> {
     let allowed = env_allow(state);
+    // Increment access counter regardless of allow/deny
+    SCRIPT_ENV_ACCESS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if allowed.is_empty() || !allowed.contains(&key) {
         return None;
     }
     std::env::var(&key).ok()
+}
+
+/// Get the total number of relay.env access attempts
+pub fn get_script_env_access_total() -> usize {
+    SCRIPT_ENV_ACCESS_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// ── S7a: relay.fetch — async sub-requests (default disabled) ─────
+
+/// Configuration for relay.fetch sub-requests.
+#[derive(Clone, Default)]
+pub struct ScriptFetchConfig {
+    /// Whether relay.fetch is enabled at all.
+    pub enabled: bool,
+    /// Allowed target hostnames. Empty means all allowed (if enabled).
+    pub allow_hosts: HashSet<String>,
+    /// Maximum concurrent fetch requests (semaphore permits).
+    pub max_concurrency: usize,
+    /// Timeout per request in milliseconds.
+    pub timeout_ms: u64,
+    /// Proxy listen port — used to prevent recursive fetch to self.
+    pub proxy_listen_port: u16,
+}
+
+/// Metrics for relay.fetch
+static SCRIPT_FETCH_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SCRIPT_FETCH_REJECTED_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn fetch_config(state: &OpState) -> &ScriptFetchConfig {
+    state.borrow::<ScriptFetchConfig>()
+}
+
+/// Fetch validation result — always returns a JSON string (never throws)
+/// so it works in synchronous onRequestHeaders context.
+/// Actual HTTP execution deferred to M6 (S7b).
+#[op2]
+#[string]
+fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
+    SCRIPT_FETCH_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let config = fetch_config(state);
+
+    // Check if fetch is enabled
+    if !config.enabled {
+        SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return serde_json::json!({"ok": false, "error": "script fetch disabled"}).to_string();
+    }
+
+    // Check allowlist
+    if !config.allow_hosts.is_empty()
+        && let Ok(parsed) = url::Url::parse(&url)
+        && let Some(host) = parsed.host_str()
+        && !config.allow_hosts.contains(host)
+    {
+        SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return serde_json::json!({"ok": false, "error": "host not in allowlist"}).to_string();
+    }
+
+    // Check recursion (fetch to self proxy port on localhost)
+    if let Ok(parsed) = url::Url::parse(&url)
+        && let Some(port) = parsed.port_or_known_default()
+        && port == config.proxy_listen_port
+        && matches!(parsed.scheme(), "http" | "https")
+    {
+        let host = parsed.host_str().unwrap_or("");
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+            SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return serde_json::json!({"ok": false, "error": "recursive fetch to self rejected"}).to_string();
+        }
+    }
+
+    // M6: actual HTTP fetch will be implemented here
+    serde_json::json!({"ok": false, "error": "fetch not yet implemented"}).to_string()
+}
+
+/// Get the total number of relay.fetch attempts
+pub fn get_script_fetch_total() -> usize {
+    SCRIPT_FETCH_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Get the total number of rejected relay.fetch attempts
+pub fn get_script_fetch_rejected_total() -> usize {
+    SCRIPT_FETCH_REJECTED_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ── S6: relay utility ops — uuid, hash, base64, json ──────────
@@ -223,6 +310,10 @@ impl Default for DenoScriptEngine {
 
 impl DenoScriptEngine {
     pub fn new(env_allow: HashSet<String>) -> Self {
+        Self::new_with_fetch(env_allow, ScriptFetchConfig::default())
+    }
+
+    pub fn new_with_fetch(env_allow: HashSet<String>, fetch_config: ScriptFetchConfig) -> Self {
         let (tx, mut rx) = mpsc::channel(32);
 
         thread::spawn(move || {
@@ -252,12 +343,15 @@ impl DenoScriptEngine {
                         op_base64_decode::DECL,
                         op_json_parse_safe::DECL,
                         op_json_stringify_pretty::DECL,
+                        op_script_fetch::DECL,
                     ]),
                     op_state_fn: Some(Box::new({
                         let env_allow = env_allow.clone();
+                        let fetch_config = fetch_config.clone();
                         move |state| {
                             state.put(HashMap::<String, serde_json::Value>::new());
                             state.put(env_allow.clone());
+                            state.put(fetch_config.clone());
                         }
                     })),
                     ..Default::default()
@@ -320,7 +414,7 @@ impl DenoScriptEngine {
                     globalThis.relay = {
                         log: globalThis.console.log,
                         env: function(name) {
-                            return Deno.core.ops.op_env_get(name);
+                            return Deno.core.ops.op_env_get(name) ?? undefined;
                         },
                         uuid: function() {
                             return Deno.core.ops.op_uuid_v4();
@@ -343,6 +437,9 @@ impl DenoScriptEngine {
                             stringifyPretty: function(obj) {
                                 return Deno.core.ops.op_json_stringify_pretty(obj);
                             },
+                        },
+                        fetch: function(url) {
+                            return JSON.parse(Deno.core.ops.op_script_fetch(url));
                         },
                     };
 

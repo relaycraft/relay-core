@@ -30,6 +30,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
 data-encoding = "2"
+url = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
