@@ -27,12 +27,12 @@ pub async fn resolve_body_source(
             {
                 r.clone()
             } else {
-                tracing::warn!(
-                    "MapLocal: sandbox_root is not configured — falling back to CWD. \
-                     This will be rejected in a future version. \
-                     Set sandbox_root in your ProxyPolicy."
+                // RE3: sandbox_root is mandatory — reject MapLocal without explicit config
+                tracing::error!(
+                    "MapLocal: sandbox_root is not configured — rejecting file access. \
+                     Set sandbox_root in your ProxyPolicy to enable MapLocal."
                 );
-                std::env::current_dir().unwrap_or_default()
+                return None;
             };
 
             let sanitizer = PathSanitizer::new(root);
@@ -395,34 +395,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// RE3: Verify MapLocal without sandbox_root falls back to CWD with deprecation warning.
-    /// M5 DoD: CWD fallback still works but emits warning; 1.1 will reject.
+    /// RE3: Verify MapLocal without sandbox_root is rejected.
+    /// M5 DoD: sandbox_root must be explicitly configured; no CWD fallback.
     #[tokio::test]
-    async fn test_resolve_body_source_no_sandbox_falls_back_to_cwd() {
-        // Create a file in CWD (which is the fallback sandbox root)
+    async fn test_resolve_body_source_no_sandbox_rejects() {
+        // Create a file in CWD that would have been accessible via CWD fallback
         let cwd = std::env::current_dir().expect("get CWD");
         let file_name = format!("relay-re3-test-{}.txt", Uuid::new_v4());
         let file_path = cwd.join(&file_name);
         std::fs::write(&file_path, "hello").expect("write file");
 
-        // No sandbox_root configured — should use CWD fallback with warning
+        // No sandbox_root configured — should REJECT (not fall back to CWD)
         let policy_no_sandbox = ProxyPolicy {
             sandbox_root: None,
             ..Default::default()
         };
 
-        // Use relative path (resolved against CWD fallback)
         let out = resolve_body_source(
             &BodySource::File(file_name.clone()),
             Some(&policy_no_sandbox),
         )
         .await;
-        // CWD fallback should resolve the file
+        // Without sandbox_root, MapLocal must reject
         assert!(
-            out.is_some(),
-            "MapLocal should still work with CWD fallback for files within CWD"
+            out.is_none(),
+            "MapLocal without sandbox_root should be rejected"
         );
-        assert_eq!(out.unwrap().content, "hello");
 
         // Cleanup
         let _ = std::fs::remove_file(&file_path);

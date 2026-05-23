@@ -106,7 +106,8 @@ fn op_shared_state_size(state: &OpState) -> u32 {
 // ── S5: relay.env — whitelisted environment variable access ────
 
 /// Counter for env access attempts — exposed via Prometheus
-static SCRIPT_ENV_ACCESS_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SCRIPT_ENV_ACCESS_TOTAL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 fn env_allow(state: &OpState) -> &HashSet<String> {
     state.borrow::<HashSet<String>>()
@@ -148,7 +149,8 @@ pub struct ScriptFetchConfig {
 
 /// Metrics for relay.fetch
 static SCRIPT_FETCH_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static SCRIPT_FETCH_REJECTED_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SCRIPT_FETCH_REJECTED_TOTAL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 fn fetch_config(state: &OpState) -> &ScriptFetchConfig {
     state.borrow::<ScriptFetchConfig>()
@@ -188,7 +190,8 @@ fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
         let host = parsed.host_str().unwrap_or("");
         if host == "localhost" || host == "127.0.0.1" || host == "::1" {
             SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return serde_json::json!({"ok": false, "error": "recursive fetch to self rejected"}).to_string();
+            return serde_json::json!({"ok": false, "error": "recursive fetch to self rejected"})
+                .to_string();
         }
     }
 

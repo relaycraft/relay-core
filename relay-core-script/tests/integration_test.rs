@@ -254,7 +254,10 @@ async fn test_env_whitelist_allows_listed_key() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"env-fail".to_string()), "PATH should be accessible");
+    assert!(
+        !flow.tags.contains(&"env-fail".to_string()),
+        "PATH should be accessible"
+    );
 }
 
 #[tokio::test]
@@ -273,7 +276,10 @@ async fn test_env_whitelist_blocks_unlisted_key() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"env-leak".to_string()), "HOME should not be accessible");
+    assert!(
+        !flow.tags.contains(&"env-leak".to_string()),
+        "HOME should not be accessible"
+    );
 }
 
 #[tokio::test]
@@ -290,7 +296,10 @@ async fn test_env_empty_whitelist_blocks_all() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"env-leak".to_string()), "nothing should be accessible with empty allowlist");
+    assert!(
+        !flow.tags.contains(&"env-leak".to_string()),
+        "nothing should be accessible with empty allowlist"
+    );
 }
 
 #[tokio::test]
@@ -310,7 +319,10 @@ async fn test_env_case_sensitive_no_bypass() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"env-case-bypass".to_string()), "case-variant should not bypass");
+    assert!(
+        !flow.tags.contains(&"env-case-bypass".to_string()),
+        "case-variant should not bypass"
+    );
 }
 
 #[tokio::test]
@@ -347,7 +359,12 @@ async fn test_env_access_counter_increments() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    assert!(after_val >= before_val + 3, "env access counter should increment by 3, got {} -> {}", before_val, after_val);
+    assert!(
+        after_val >= before_val + 3,
+        "env access counter should increment by 3, got {} -> {}",
+        before_val,
+        after_val
+    );
 }
 
 // ── S6: relay utility library tests ─────────────────────────────
@@ -366,7 +383,10 @@ async fn test_relay_uuid_v4() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"uuid-fail".to_string()), "relay.uuid should return valid UUID string");
+    assert!(
+        !flow.tags.contains(&"uuid-fail".to_string()),
+        "relay.uuid should return valid UUID string"
+    );
 }
 
 #[tokio::test]
@@ -384,8 +404,14 @@ async fn test_relay_hash_sha256() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"hash-len-fail".to_string()), "sha256 should return 64 hex chars");
-    assert!(!flow.tags.contains(&"hash-hex-fail".to_string()), "sha256 should return lowercase hex");
+    assert!(
+        !flow.tags.contains(&"hash-len-fail".to_string()),
+        "sha256 should return 64 hex chars"
+    );
+    assert!(
+        !flow.tags.contains(&"hash-hex-fail".to_string()),
+        "sha256 should return lowercase hex"
+    );
 }
 
 #[tokio::test]
@@ -432,7 +458,8 @@ async fn test_relay_hash_unsupported_algorithm() {
     let _ = interceptor.on_request_headers(&mut flow).await;
     // The op error should propagate as a JS exception that the script catches
     assert!(
-        flow.tags.contains(&"hash-threw".to_string()) || flow.tags.contains(&"script-error".to_string()),
+        flow.tags.contains(&"hash-threw".to_string())
+            || flow.tags.contains(&"script-error".to_string()),
         "unsupported hash should cause error (got tags: {:?})",
         flow.tags
     );
@@ -453,8 +480,14 @@ async fn test_relay_base64_encode_decode() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"b64-encode-fail".to_string()), "base64 encode should match");
-    assert!(!flow.tags.contains(&"b64-decode-fail".to_string()), "base64 decode should match");
+    assert!(
+        !flow.tags.contains(&"b64-encode-fail".to_string()),
+        "base64 encode should match"
+    );
+    assert!(
+        !flow.tags.contains(&"b64-decode-fail".to_string()),
+        "base64 decode should match"
+    );
 }
 
 #[tokio::test]
@@ -476,7 +509,8 @@ async fn test_relay_base64_invalid_input() {
     let _ = interceptor.on_request_headers(&mut flow).await;
     // Invalid base64 should cause an error (either caught in-script or as script-error)
     assert!(
-        flow.tags.contains(&"b64-threw".to_string()) || flow.tags.contains(&"script-error".to_string()),
+        flow.tags.contains(&"b64-threw".to_string())
+            || flow.tags.contains(&"script-error".to_string()),
         "invalid base64 should cause error (got tags: {:?})",
         flow.tags
     );
@@ -497,8 +531,14 @@ async fn test_relay_json_parse_safe_valid_and_invalid() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"json-valid-fail".to_string()), "valid JSON should parse");
-    assert!(!flow.tags.contains(&"json-invalid-fail".to_string()), "invalid JSON should return null");
+    assert!(
+        !flow.tags.contains(&"json-valid-fail".to_string()),
+        "valid JSON should parse"
+    );
+    assert!(
+        !flow.tags.contains(&"json-invalid-fail".to_string()),
+        "invalid JSON should return null"
+    );
 }
 
 #[tokio::test]
@@ -515,8 +555,14 @@ async fn test_relay_json_stringify_pretty() {
     interceptor.load_script(script).await.unwrap();
     let mut flow = create_dummy_flow();
     interceptor.on_request_headers(&mut flow).await;
-    assert!(!flow.tags.contains(&"json-pretty-fail".to_string()), "pretty JSON should have newlines");
-    assert!(!flow.tags.contains(&"json-indent-fail".to_string()), "pretty JSON should have 2-space indent");
+    assert!(
+        !flow.tags.contains(&"json-pretty-fail".to_string()),
+        "pretty JSON should have newlines"
+    );
+    assert!(
+        !flow.tags.contains(&"json-indent-fail".to_string()),
+        "pretty JSON should have 2-space indent"
+    );
 }
 
 // ── S7a: relay.fetch tests (M5: validation layer) ──────────────
@@ -612,7 +658,11 @@ async fn test_relay_fetch_allows_allowlisted_host() {
 
 #[tokio::test]
 async fn test_relay_fetch_rejects_recursive_self() {
-    let fetch_config = ScriptFetchConfig { enabled: true, proxy_listen_port: 8080, ..Default::default() };
+    let fetch_config = ScriptFetchConfig {
+        enabled: true,
+        proxy_listen_port: 8080,
+        ..Default::default()
+    };
     let interceptor = ScriptInterceptor::new_with_env_and_fetch(HashSet::new(), fetch_config)
         .await
         .unwrap();
@@ -667,6 +717,7 @@ async fn test_relay_fetch_rejected_counter_increments() {
     assert!(
         fetch_total >= 2 && fetch_rejected >= 2,
         "fetch counters should increment (total={}, rejected={})",
-        fetch_total, fetch_rejected
+        fetch_total,
+        fetch_rejected
     );
 }

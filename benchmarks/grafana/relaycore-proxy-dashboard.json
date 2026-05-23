@@ -1,0 +1,99 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Flows Total",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "relay_core_flows_total", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Flows In Memory",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "relay_core_flows_in_memory", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Flows Dropped (Backpressure)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "relay_core_flows_dropped_total", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "title": "Intercepts Pending",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "relay_core_intercepts_pending", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "rate(relay_core_proxy_http_request_total[5m])", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "title": "Body Degraded / Stream Mode",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "rate(relay_core_proxy_body_degraded_total[5m])", "refId": "A", "legendFormat": "degraded" },
+        { "expr": "rate(relay_core_proxy_stream_mode_tap_total[5m])", "refId": "B", "legendFormat": "tap" },
+        { "expr": "rate(relay_core_proxy_stream_mode_degrade_total[5m])", "refId": "C", "legendFormat": "tap→degrade" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "title": "Rule Exec Errors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [{ "expr": "rate(relay_core_rule_exec_errors_total[5m])", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 30 } } }
+    },
+    {
+      "title": "Sandbox / Strict Rejections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 8, "y": 12 },
+      "targets": [
+        { "expr": "rate(relay_core_proxy_sandbox_reject_total[5m])", "refId": "A", "legendFormat": "sandbox" },
+        { "expr": "rate(relay_core_proxy_invalid_status_total[5m])", "refId": "C", "legendFormat": "invalid_status" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "title": "Audit Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "rate(relay_core_audit_events_total[5m])", "refId": "A", "legendFormat": "events" },
+        { "expr": "rate(relay_core_audit_events_failed_total[5m])", "refId": "B", "legendFormat": "failed" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "title": "Event Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "expr": "rate(relay_core_flow_events_lagged_total[5m])", "refId": "A", "legendFormat": "flow_lagged" },
+        { "expr": "rate(relay_core_audit_events_lagged_total[5m])", "refId": "B", "legendFormat": "audit_lagged" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["relaycore", "proxy"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "RelayCore Proxy Metrics",
+  "uid": "relaycore-proxy"
+}

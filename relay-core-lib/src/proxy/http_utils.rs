@@ -413,6 +413,7 @@ pub fn build_client_response_from_flow(
                 Ok(s) => s,
                 Err(_) => {
                     if strict_mode {
+                        crate::metrics::inc_proxy_invalid_status();
                         return Err(format!("Invalid status code: {}", response.status));
                     }
                     StatusCode::OK

@@ -78,6 +78,9 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
+    use hyper::body::Frame;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
 
     #[tokio::test]
     async fn test_throttle_body_preserves_data() {
@@ -99,5 +102,82 @@ mod tests {
         let throttled = ThrottleBody::new(body, 1000);
         let collected = throttled.collect().await.unwrap().to_bytes();
         assert_eq!(collected.len(), 0);
+    }
+
+    /// Verify ThrottleBody passes trailers through unchanged.
+    #[tokio::test]
+    async fn test_throttle_body_passes_trailers() {
+        /// A body that yields data then trailers then EOF.
+        struct TrailerBody {
+            phase: u8,
+        }
+
+        impl Body for TrailerBody {
+            type Data = Bytes;
+            type Error = BoxError;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                match self.phase {
+                    0 => {
+                        self.phase = 1;
+                        Poll::Ready(Some(Ok(Frame::data(Bytes::from("body-data")))))
+                    }
+                    1 => {
+                        self.phase = 2;
+                        let mut trailers = hyper::HeaderMap::new();
+                        trailers.insert("x-trailer", "present".parse().unwrap());
+                        trailers.insert("x-end-stream", "true".parse().unwrap());
+                        Poll::Ready(Some(Ok(Frame::trailers(trailers))))
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+        let body: HttpBody = TrailerBody { phase: 0 }
+            .map_err(|e| -> BoxError { e })
+            .boxed();
+        let mut throttled = ThrottleBody::new(body, 1_000_000);
+
+        let mut poll_count = 0;
+        let mut data_frames = 0;
+        let mut trailer_frames = 0;
+        let mut trailers: Option<hyper::HeaderMap> = None;
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            match Pin::new(&mut throttled).poll_frame(&mut cx) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    poll_count += 1;
+                    if frame.data_ref().is_some() {
+                        data_frames += 1;
+                    }
+                    if let Some(t) = frame.trailers_ref() {
+                        trailer_frames += 1;
+                        trailers = Some(t.clone());
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => panic!("unexpected error: {}", e),
+                Poll::Ready(None) => break,
+                Poll::Pending => panic!("ThrottleBody should not pend at full speed"),
+            }
+        }
+
+        assert_eq!(poll_count, 2, "should yield data + trailers = 2 frames");
+        assert_eq!(data_frames, 1, "should have 1 data frame");
+        assert_eq!(trailer_frames, 1, "should have 1 trailers frame");
+        let trailers = trailers.expect("trailers should be present");
+        assert_eq!(
+            trailers.get("x-trailer").and_then(|v| v.to_str().ok()),
+            Some("present")
+        );
+        assert_eq!(
+            trailers.get("x-end-stream").and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
     }
 }

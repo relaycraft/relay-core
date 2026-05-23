@@ -163,8 +163,10 @@ impl ScriptInterceptor {
         let mut engines = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
-            let engine: Box<dyn ScriptEngineTrait> =
-                Box::new(DenoScriptEngine::new_with_fetch(env_allow.clone(), fetch_config.clone()));
+            let engine: Box<dyn ScriptEngineTrait> = Box::new(DenoScriptEngine::new_with_fetch(
+                env_allow.clone(),
+                fetch_config.clone(),
+            ));
             engines.push(RwLock::new(engine));
         }
 
