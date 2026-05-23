@@ -250,6 +250,7 @@ impl UdpProxy {
                                     }),
                                     tags: vec![],
                                     meta: HashMap::new(),
+                                    resilience_trace: None,
                                 };
                                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
                                     crate::metrics::inc_flows_dropped();

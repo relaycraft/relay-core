@@ -258,6 +258,7 @@ mod tests {
             }),
             tags: vec![],
             meta: std::collections::HashMap::new(),
+            resilience_trace: None,
         }
     }
 

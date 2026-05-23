@@ -59,6 +59,10 @@ fn event_stream(
                     let data = serde_json::json!({ "flow_id": flow_id });
                     Some(Event::default().event("http-body").data(data.to_string()))
                 }
+                FlowUpdate::BodyBudgetExceeded { flow_id, .. } => {
+                    let data = serde_json::json!({ "flow_id": flow_id });
+                    Some(Event::default().event("body-budget-exceeded").data(data.to_string()))
+                }
             };
             event.map(Ok)
         }

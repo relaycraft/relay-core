@@ -1,5 +1,5 @@
 use lru::LruCache;
-use relay_core_api::flow::{BodyData, Direction, Flow, Layer, WebSocketMessage};
+use relay_core_api::flow::{BodyData, Direction, Flow, Layer, ResilienceTrace, WebSocketMessage};
 use relay_core_api::modification::{FlowQuery, FlowSummary, flow_matches_query};
 use relay_core_storage::store::Store;
 use std::num::NonZeroUsize;
@@ -16,6 +16,10 @@ pub enum FlowStoreMessage {
         flow_id: String,
         body: BodyData,
         direction: Direction,
+    },
+    /// P1: Tag flow as budget-exceeded (body too large for full rule inspection)
+    TagBudgetExceeded {
+        flow_id: String,
     },
     GetFlow {
         id: String,
@@ -127,6 +131,23 @@ impl FlowStoreActor {
                     let results: Vec<FlowSummary> =
                         results.into_iter().skip(offset).take(limit).collect();
                     let _ = respond_to.send(results);
+                }
+                FlowStoreMessage::TagBudgetExceeded { flow_id } => {
+                    let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
+                        if !flow.tags.contains(&"budget-exceeded".to_string()) {
+                            flow.tags.push("budget-exceeded".to_string());
+                        }
+                        flow.resilience_trace = Some(ResilienceTrace {
+                            budget_exceeded: true,
+                            ..flow.resilience_trace.clone().unwrap_or_default()
+                        });
+                        Some(flow.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(flow) = updated {
+                        self.persist_flow(&flow).await;
+                    }
                 }
             }
         }

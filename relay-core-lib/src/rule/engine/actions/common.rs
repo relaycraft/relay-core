@@ -180,27 +180,29 @@ pub async fn execute(
             }
 
             // RE2: bandwidth throttling — bytes/sec rate limit.
+            // Store throttle rate in flow.meta so the HTTP body pipeline
+            // can apply ThrottleBody wrapping for true streaming flow control.
+            let bytes_per_sec = rate_kbps * 125; // kbps → bytes/sec
+            flow.meta.insert(
+                "throttle_bytes_per_sec".to_string(),
+                bytes_per_sec.to_string(),
+            );
+
+            // Also store in context for body pipeline use
+            ctx.throttle_bytes_per_sec = Some(bytes_per_sec);
+
             // For flows with known body size (non-streaming), calculate delay.
-            // For streaming bodies, the ThrottleBody wrapper (proxy/throttle.rs)
-            // is applied by the body pipeline when rate info is available.
             let bytes = infer_throttle_bytes(flow);
-            if bytes == 0 {
-                return ActionOutcome::Continue;
-            }
+            if bytes > 0 {
+                let delay_ms = (bytes as u128)
+                    .saturating_mul(1000)
+                    .checked_div(bytes_per_sec as u128)
+                    .unwrap_or(0)
+                    .min(u64::MAX as u128) as u64;
 
-            // Store throttle rate in context for body pipeline use (P1)
-            ctx.throttle_bytes_per_sec = Some(rate_kbps * 125); // kbps → bytes/sec
-
-            // Calculate delay: bytes / (bytes_per_sec) → seconds → ms
-            let bytes_per_sec = rate_kbps * 125;
-            let delay_ms = (bytes as u128)
-                .saturating_mul(1000)
-                .checked_div(bytes_per_sec as u128)
-                .unwrap_or(0)
-                .min(u64::MAX as u128) as u64;
-
-            if delay_ms > 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                if delay_ms > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                }
             }
             ActionOutcome::Continue
         }
@@ -263,6 +265,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 
@@ -321,6 +324,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 
@@ -333,6 +337,17 @@ mod tests {
             ActionOutcome::Failed(msg) => assert!(msg.contains("kbps must be > 0")),
             _ => panic!("expected failed outcome"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_throttle_stores_rate_in_meta() {
+        // RE2: Throttle action stores bytes_per_sec in flow.meta
+        let mut flow = sample_flow_with_request_body(1024);
+        let mut ctx = sample_ctx();
+        let outcome = execute(&Action::Throttle { kbps: 100 }, &mut flow, &mut ctx).await;
+        assert!(matches!(outcome, ActionOutcome::Continue));
+        // 100 kbps = 12500 bytes/sec
+        assert_eq!(flow.meta.get("throttle_bytes_per_sec").unwrap(), "12500");
     }
 
     #[tokio::test]

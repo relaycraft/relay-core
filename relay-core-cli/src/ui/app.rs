@@ -1673,6 +1673,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 

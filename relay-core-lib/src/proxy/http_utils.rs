@@ -157,6 +157,7 @@ pub fn create_initial_flow(
             }),
             tags: vec!["websocket".to_string()],
             meta: std::collections::HashMap::new(),
+            resilience_trace: None,
         }
     } else {
         Flow {
@@ -171,6 +172,7 @@ pub fn create_initial_flow(
             }),
             tags: vec!["proxy".to_string()],
             meta: std::collections::HashMap::new(),
+            resilience_trace: None,
         }
     };
 
@@ -526,6 +528,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 

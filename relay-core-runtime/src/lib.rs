@@ -91,6 +91,18 @@ pub struct CoreMetrics {
     pub audit_events_failed: usize,
     pub flow_events_lagged_total: usize,
     pub audit_events_lagged_total: usize,
+    /// O4: Total bodies degraded (budget exceeded)
+    pub proxy_body_degraded_total: usize,
+    /// O4: Total requests processed in streaming mode
+    pub proxy_stream_mode_total: usize,
+    /// O4: Total invalid HTTP methods rejected
+    pub proxy_invalid_method_total: usize,
+    /// O4: Total invalid HTTP status codes seen
+    pub proxy_invalid_status_total: usize,
+    /// O4: Total proxy retries
+    pub proxy_retry_total: usize,
+    /// O4: Total sandbox rejections
+    pub proxy_sandbox_reject_total: usize,
 }
 
 impl CoreMetrics {
@@ -109,7 +121,13 @@ relay_core_rule_exec_errors_total {}\n\
 relay_core_audit_events_total {}\n\
 relay_core_audit_events_failed_total {}\n\
 relay_core_flow_events_lagged_total {}\n\
-relay_core_audit_events_lagged_total {}\n",
+relay_core_audit_events_lagged_total {}\n\
+relay_core_proxy_body_degraded_total {}\n\
+relay_core_proxy_stream_mode_total {}\n\
+relay_core_proxy_invalid_method_total {}\n\
+relay_core_proxy_invalid_status_total {}\n\
+relay_core_proxy_retry_total {}\n\
+relay_core_proxy_sandbox_reject_total {}\n",
             self.flows_total,
             self.flows_in_memory,
             self.flows_dropped,
@@ -122,6 +140,12 @@ relay_core_audit_events_lagged_total {}\n",
             self.audit_events_failed,
             self.flow_events_lagged_total,
             self.audit_events_lagged_total,
+            self.proxy_body_degraded_total,
+            self.proxy_stream_mode_total,
+            self.proxy_invalid_method_total,
+            self.proxy_invalid_status_total,
+            self.proxy_retry_total,
+            self.proxy_sandbox_reject_total,
         )
     }
 }
@@ -379,6 +403,12 @@ impl CoreState {
             audit_events_failed: self.audit_events_failed.load(Ordering::Relaxed),
             flow_events_lagged_total: self.flow_events_lagged_total.load(Ordering::Relaxed),
             audit_events_lagged_total: self.audit_events_lagged_total.load(Ordering::Relaxed),
+            proxy_body_degraded_total: relay_core_lib::metrics::get_proxy_body_degraded(),
+            proxy_stream_mode_total: relay_core_lib::metrics::get_proxy_stream_mode(),
+            proxy_invalid_method_total: relay_core_lib::metrics::get_proxy_invalid_method(),
+            proxy_invalid_status_total: relay_core_lib::metrics::get_proxy_invalid_status(),
+            proxy_retry_total: relay_core_lib::metrics::get_proxy_retry(),
+            proxy_sandbox_reject_total: relay_core_lib::metrics::get_proxy_sandbox_reject(),
         }
     }
 
@@ -877,6 +907,14 @@ impl CoreState {
         }
     }
 
+    /// P1: Tag a flow as budget-exceeded (body too large for full rule inspection)
+    pub fn tag_flow_budget_exceeded(&self, flow_id: String, _direction: Direction) {
+        if let Err(e) = self.flow_store.try_send(FlowStoreMessage::TagBudgetExceeded { flow_id }) {
+            error!("FlowStore dropped budget-exceeded tag: {}", e);
+            self.flows_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// 订阅 FlowUpdate 广播。调用者获得独立 Receiver，lag 时自动跳过过期消息。
     pub fn subscribe_flow_updates(&self) -> broadcast::Receiver<FlowUpdate> {
         self.flow_broadcast_tx.subscribe()
@@ -1309,6 +1347,10 @@ impl CoreState {
                     } => {
                         state.update_http_body(flow_id, body, direction);
                     }
+                    FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
+                        // P1: Tag the flow as budget-exceeded and update resilience trace
+                        state.tag_flow_budget_exceeded(flow_id, direction);
+                    }
                 }
 
                 let _ = state.flow_broadcast_tx.send(update.clone());
@@ -1467,6 +1509,9 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
             direction,
             body: redact_body(body, redaction),
         },
+        FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
+            FlowUpdate::BodyBudgetExceeded { flow_id, direction }
+        }
     }
 }
 
@@ -1767,6 +1812,7 @@ mod tests {
             }),
             tags: vec![],
             meta: std::collections::HashMap::new(),
+            resilience_trace: None,
         }
     }
 
@@ -1837,6 +1883,7 @@ mod tests {
             }),
             tags: vec![],
             meta: std::collections::HashMap::new(),
+            resilience_trace: None,
         }
     }
 

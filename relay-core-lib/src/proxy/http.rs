@@ -19,7 +19,7 @@ use crate::tls::CertificateAuthority;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
-use relay_core_api::flow::{Direction, FlowUpdate, Layer};
+use relay_core_api::flow::{Direction, FlowUpdate, Layer, ResilienceTrace};
 use relay_core_api::policy::ProxyPolicy;
 
 /// Main entry point for HTTP Proxy handling
@@ -125,22 +125,32 @@ where
 {
     let policy = policy_rx.borrow().clone();
 
-    // Check Content-Length against policy
-    if let Some(cl) = req.headers().get(hyper::header::CONTENT_LENGTH)
+    // P1a: Track oversized requests for streaming-first pipeline.
+    // Instead of hard-failing with PAYLOAD_TOO_LARGE, we allow the request
+    // through and mark budget_exceeded so rules that need full body are skipped.
+    let request_budget_exceeded = if let Some(cl) = req.headers().get(hyper::header::CONTENT_LENGTH)
         && let Ok(len) = cl.to_str().unwrap_or_default().parse::<usize>()
         && len > policy.max_body_size
     {
-        return Ok(create_error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Request body too large",
-        ));
-    }
+        true
+    } else {
+        false
+    };
 
     // Create Flow
     let meta = parse_request_meta(&req, is_mitm);
 
     // Note: We don't read body here for streaming support
     let mut flow = create_initial_flow(meta, None, client_addr, is_mitm, false);
+
+    // P1a: Mark budget exceeded for oversized requests
+    if request_budget_exceeded {
+        flow.tags.push("budget-exceeded".to_string());
+        flow.resilience_trace = Some(ResilienceTrace {
+            budget_exceeded: true,
+            ..Default::default()
+        });
+    }
 
     // Check for WebSocket
     if hyper_tungstenite::is_upgrade_request(&req) {
@@ -212,6 +222,7 @@ where
         policy.max_body_size,
         req_headers,
     );
+    crate::metrics::inc_proxy_stream_mode();
     let mut current_body = tap_body.boxed();
 
     match interceptor.on_request(&mut flow, current_body).await {
@@ -243,6 +254,14 @@ where
         }
     }
 
+    // RE2: Apply ThrottleBody if a Throttle rule set the rate in flow.meta
+    if let Some(bps_str) = flow.meta.get("throttle_bytes_per_sec")
+        && let Ok(bps) = bps_str.parse::<u64>()
+        && bps > 0
+    {
+        current_body = crate::proxy::throttle::ThrottleBody::new(current_body, bps).boxed();
+    }
+
     let forward_req = match build_forward_request(
         &mut flow,
         current_body,
@@ -265,6 +284,14 @@ where
             "Circuit breaker open for upstream {}, returning 503",
             upstream_host
         );
+        // P4: Record circuit breaker open in resilience trace
+        flow.resilience_trace = Some(ResilienceTrace {
+            circuit_open: true,
+            ..Default::default()
+        });
+        if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
+            tracing::error!("Failed to send flow update on circuit breaker: {}", e);
+        }
         return Ok(create_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Circuit breaker open for upstream {}", upstream_host),
@@ -286,6 +313,11 @@ where
         Ok(Err(e)) => {
             circuit_breaker.record_failure(&upstream_host).await;
             tracing::error!("Upstream request failed: {}", e);
+            // P4: Record upstream error in resilience trace
+            flow.resilience_trace = Some(ResilienceTrace {
+                upstream_errors: vec![format!("Upstream Error: {}", e)],
+                ..Default::default()
+            });
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some(format!("Upstream Error: {}", e));
             }
@@ -300,6 +332,19 @@ where
         Err(_) => {
             circuit_breaker.record_failure(&upstream_host).await;
             tracing::error!("Upstream request timed out");
+            // P4: Record timeout in resilience trace
+            // P3: Classify timeout type based on elapsed time vs likely phase
+            let elapsed = upstream_start.elapsed();
+            let timeout_type = if elapsed < std::time::Duration::from_secs(5) {
+                "connect"  // Fast failure likely connect/TLS timeout
+            } else {
+                "read"      // Slower failure likely read/total timeout
+            };
+            flow.resilience_trace = Some(ResilienceTrace {
+                upstream_errors: vec!["Upstream Request Timed Out".to_string()],
+                timeout_type: Some(timeout_type.to_string()),
+                ..flow.resilience_trace.clone().unwrap_or_default()
+            });
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some("Upstream Request Timed Out".to_string());
             }
@@ -415,6 +460,14 @@ where
                 format!("Interceptor Error: {}", e),
             ));
         }
+    }
+
+    // RE2: Apply ThrottleBody to response if a Throttle rule set the rate in flow.meta
+    if let Some(bps_str) = flow.meta.get("throttle_bytes_per_sec")
+        && let Ok(bps) = bps_str.parse::<u64>()
+        && bps > 0
+    {
+        current_res_body = crate::proxy::throttle::ThrottleBody::new(current_res_body, bps).boxed();
     }
 
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {

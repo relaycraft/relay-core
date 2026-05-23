@@ -28,6 +28,7 @@ fn make_flow(url: &str) -> Flow {
         end_time: None,
         tags: vec![],
         meta: HashMap::new(),
+        resilience_trace: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,

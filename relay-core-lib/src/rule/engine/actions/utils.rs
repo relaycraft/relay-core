@@ -43,7 +43,8 @@ pub async fn resolve_body_source(
                         .map(|p| p.max_local_file_bytes)
                         .unwrap_or(10 * 1024 * 1024);
                     if metadata.len() > max_bytes as u64 {
-                        // File too large
+                        // File too large — sandbox reject
+                        crate::metrics::inc_proxy_sandbox_reject();
                         return None;
                     }
                 }
@@ -69,6 +70,8 @@ pub async fn resolve_body_source(
                     None
                 }
             } else {
+                // Path sanitizer rejected — sandbox reject
+                crate::metrics::inc_proxy_sandbox_reject();
                 None
             }
         }
@@ -227,6 +230,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 
@@ -285,6 +289,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 
@@ -386,6 +391,64 @@ mod tests {
             !out.content.is_empty(),
             "base64 payload should not be empty"
         );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// RE3: Verify MapLocal without sandbox_root falls back to CWD with deprecation warning.
+    /// M5 DoD: CWD fallback still works but emits warning; 1.1 will reject.
+    #[tokio::test]
+    async fn test_resolve_body_source_no_sandbox_falls_back_to_cwd() {
+        // Create a file in CWD (which is the fallback sandbox root)
+        let cwd = std::env::current_dir().expect("get CWD");
+        let file_name = format!("relay-re3-test-{}.txt", Uuid::new_v4());
+        let file_path = cwd.join(&file_name);
+        std::fs::write(&file_path, "hello").expect("write file");
+
+        // No sandbox_root configured — should use CWD fallback with warning
+        let policy_no_sandbox = ProxyPolicy {
+            sandbox_root: None,
+            ..Default::default()
+        };
+
+        // Use relative path (resolved against CWD fallback)
+        let out = resolve_body_source(
+            &BodySource::File(file_name.clone()),
+            Some(&policy_no_sandbox),
+        )
+        .await;
+        // CWD fallback should resolve the file
+        assert!(
+            out.is_some(),
+            "MapLocal should still work with CWD fallback for files within CWD"
+        );
+        assert_eq!(out.unwrap().content, "hello");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&file_path);
+    }
+
+    /// RE3: Verify MapLocal with explicit sandbox_root works without CWD fallback.
+    #[tokio::test]
+    async fn test_resolve_body_source_with_sandbox_no_cwd_fallback() {
+        let temp_dir = std::env::temp_dir().join(format!("relay-re3-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create dir");
+        let file = temp_dir.join("test.txt");
+        std::fs::write(&file, "sandboxed").expect("write file");
+
+        let policy_with_sandbox = ProxyPolicy {
+            sandbox_root: Some(temp_dir.clone()),
+            max_local_file_bytes: 1024,
+            ..Default::default()
+        };
+
+        let out = resolve_body_source(
+            &BodySource::File(file.to_string_lossy().to_string()),
+            Some(&policy_with_sandbox),
+        )
+        .await
+        .expect("file should be loadable within sandbox");
+        assert_eq!(out.content, "sandboxed");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

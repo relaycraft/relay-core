@@ -14,6 +14,10 @@ pub struct TapBody {
     buffer: Vec<u8>,
     limit: usize,
     headers: Vec<(String, String)>,
+    /// Set to true when accumulated bytes exceed the limit.
+    pub budget_exceeded: bool,
+    /// Total bytes passed through.
+    pub total_bytes: u64,
 }
 
 impl TapBody {
@@ -33,6 +37,8 @@ impl TapBody {
             buffer: Vec::new(),
             limit,
             headers,
+            budget_exceeded: false,
+            total_bytes: 0,
         }
     }
 }
@@ -47,11 +53,15 @@ impl Body for TapBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match Pin::new(&mut self.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref()
-                    && self.buffer.len() < self.limit
-                {
-                    let len = std::cmp::min(data.len(), self.limit - self.buffer.len());
-                    self.buffer.extend_from_slice(&data[..len]);
+                if let Some(data) = frame.data_ref() {
+                    self.total_bytes += data.len() as u64;
+                    if self.buffer.len() < self.limit {
+                        let len = std::cmp::min(data.len(), self.limit - self.buffer.len());
+                        self.buffer.extend_from_slice(&data[..len]);
+                    }
+                    if self.buffer.len() >= self.limit {
+                        self.budget_exceeded = true;
+                    }
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
@@ -68,6 +78,15 @@ impl Body for TapBody {
                     direction: self.direction.clone(),
                     body: body_data,
                 });
+
+                // P1: Notify budget exceeded for streaming-first pipeline
+                if self.budget_exceeded {
+                    crate::metrics::inc_proxy_body_degraded();
+                    let _ = self.on_flow.try_send(FlowUpdate::BodyBudgetExceeded {
+                        flow_id: self.flow_id.clone(),
+                        direction: self.direction.clone(),
+                    });
+                }
 
                 Poll::Ready(None)
             }

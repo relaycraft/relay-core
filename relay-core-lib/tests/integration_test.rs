@@ -9,7 +9,7 @@ use relay_core_lib::tls::CertificateAuthority;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Once;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 static INIT: Once = Once::new();
@@ -129,13 +129,44 @@ async fn test_proxy_large_request_body() {
 
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = upstream_listener.accept().await {
-            // Just drain the socket
-            let mut buf = [0; 1024];
-            while let Ok(n) = socket.read(&mut buf).await {
-                if n == 0 {
+            // Parse HTTP request headers to determine body length, then read body,
+            // then send a 200 response.
+            let mut header_buf = Vec::new();
+            let mut byte = [0u8; 1];
+            let mut content_length: usize = 0;
+            loop {
+                if tokio::io::AsyncReadExt::read(&mut socket, &mut byte).await.ok() != Some(1) {
+                    break;
+                }
+                header_buf.push(byte[0]);
+                if header_buf.len() >= 4
+                    && &header_buf[header_buf.len() - 4..] == b"\r\n\r\n"
+                {
+                    // Parse Content-Length from headers
+                    let header_str = String::from_utf8_lossy(&header_buf);
+                    for line in header_str.lines() {
+                        if let Some(val) = line.strip_prefix("Content-Length: ") {
+                            content_length = val.trim().parse().unwrap_or(0);
+                        } else if let Some(val) = line.strip_prefix("content-length: ") {
+                            content_length = val.trim().parse().unwrap_or(0);
+                        }
+                    }
                     break;
                 }
             }
+            // Read body bytes
+            let mut body_read = 0;
+            let mut tmp = [0u8; 8192];
+            while body_read < content_length {
+                let to_read = std::cmp::min(tmp.len(), content_length - body_read);
+                match tokio::io::AsyncReadExt::read(&mut socket, &mut tmp[..to_read]).await {
+                    Ok(0) => break,
+                    Ok(n) => body_read += n,
+                    Err(_) => break,
+                }
+            }
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, resp.as_bytes()).await;
         }
     });
 
@@ -190,8 +221,14 @@ async fn test_proxy_large_request_body() {
         .unwrap();
 
     match sender.send_request(req).await {
-        Ok(res) => assert_eq!(res.status(), hyper::StatusCode::PAYLOAD_TOO_LARGE),
+        Ok(res) => {
+            // P1a streaming-first: large body is no longer hard-rejected with 413.
+            // The proxy forwards the request to upstream and returns upstream's response.
+            assert_eq!(res.status(), hyper::StatusCode::OK);
+        }
         Err(e) => {
+            // If the connection was reset (e.g., upstream closed early), that's also acceptable
+            // for the streaming-first pipeline.
             let s = e.to_string();
             let d = format!("{:?}", e);
             if s.contains("Connection reset")
@@ -201,7 +238,7 @@ async fn test_proxy_large_request_body() {
                 || d.contains("BodyWrite")
             {
                 println!(
-                    "Got connection error as expected (Proxy rejected large body): {} / {:?}",
+                    "Got connection error (acceptable for large body streaming): {} / {:?}",
                     s, d
                 );
             } else {

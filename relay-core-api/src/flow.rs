@@ -69,7 +69,6 @@ impl ProtocolLayer for GenericProtocolLayer {
 }
 
 /// P4: Structured trace of resilience-related events during a proxy request.
-/// Not yet attached to flow struct — will be wired in P4b via HttpLayer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResilienceTrace {
     /// Number of retry attempts for this request.
@@ -84,6 +83,9 @@ pub struct ResilienceTrace {
     /// Upstream errors encountered (non-2xx, connection errors).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub upstream_errors: Vec<String>,
+    /// P3: Timeout classification (e.g., "connect", "read", "total", "tls").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_type: Option<String>,
 }
 
 /// The central data structure representing a captured traffic flow.
@@ -106,6 +108,10 @@ pub struct Flow {
     /// Internal processing metadata (not necessarily for UI)
     #[serde(skip)]
     pub meta: HashMap<String, String>,
+
+    /// P4: Resilience trace (circuit breaker, retries, budget exceeded)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resilience_trace: Option<ResilienceTrace>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,5 +280,10 @@ pub enum FlowUpdate {
         flow_id: String,
         direction: Direction,
         body: BodyData,
+    },
+    /// P1: Body budget exceeded notification
+    BodyBudgetExceeded {
+        flow_id: String,
+        direction: Direction,
     },
 }

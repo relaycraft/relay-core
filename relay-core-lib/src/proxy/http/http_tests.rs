@@ -40,6 +40,7 @@ fn create_test_flow() -> Flow {
         layer: relay_core_api::flow::Layer::Unknown,
         tags: vec![],
         meta: HashMap::new(),
+        resilience_trace: None,
     }
 }
 

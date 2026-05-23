@@ -303,7 +303,9 @@ async fn test_h1_te_trailer_headers() {
     assert!(res.status() == StatusCode::OK || res.status() == StatusCode::BAD_REQUEST);
 }
 
-/// P2-06: Verify the proxy rejects oversized Content-Length.
+/// P2-06: Verify the proxy handles oversized Content-Length via streaming-first pipeline.
+/// With streaming-first (P1a), large bodies are no longer hard-rejected with 413.
+/// Instead, the proxy marks the flow as budget-exceeded and forwards it through.
 #[tokio::test]
 async fn test_h1_body_size_limit() {
     let echo = start_chunked_echo(SocketAddr::from(([127, 0, 0, 1], 0))).await;
@@ -332,9 +334,12 @@ async fn test_h1_body_size_limit() {
     .await;
     assert!(result.is_ok(), "Proxy should not hang on oversized body");
     let response = String::from_utf8_lossy(&buf);
+    // P1a streaming-first: proxy no longer returns 413; it forwards through.
+    // Since the client shut down without sending the body, the proxy may return
+    // a 502 (bad gateway / incomplete body) or close the connection.
     assert!(
-        response.contains("413") || response.is_empty(),
-        "Expected 413 or connection close, got: {:.100}",
+        response.contains("502") || response.contains("504") || response.is_empty(),
+        "Expected 502/504 or connection close (streaming-first), got: {:.100}",
         response
     );
 }

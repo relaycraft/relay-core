@@ -268,6 +268,11 @@ async fn execute_stream(control_url: String, output: String) -> Result<()> {
                     info!("[Body] [{}] {:?} {} bytes", flow_id, direction, body.size);
                 }
             }
+            relay_core_api::flow::FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
+                if output == "table" {
+                    info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
+                }
+            }
         }
     }
 

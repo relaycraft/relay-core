@@ -66,6 +66,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
         }),
         tags: vec![],
         meta: std::collections::HashMap::new(),
+            resilience_trace: None,
     }
 }
 

@@ -62,6 +62,18 @@ impl<R: Runtime> TauriFlowSink<R> {
                         eprintln!("Failed to emit flow-body-update event: {}", e);
                     }
                 }
+                FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct BodyBudgetExceededEvent {
+                        flow_id: String,
+                        direction: Direction,
+                    }
+                    let event = BodyBudgetExceededEvent { flow_id, direction };
+                    if let Err(e) = self.app_handle.emit("flow-body-budget-exceeded", event) {
+                        eprintln!("Failed to emit flow-body-budget-exceeded event: {}", e);
+                    }
+                }
             }
         }
     }
@@ -186,6 +198,7 @@ mod tests {
             }),
             tags: vec![],
             meta: HashMap::new(),
+            resilience_trace: None,
         }
     }
 

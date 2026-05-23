@@ -162,7 +162,8 @@ impl ProbeServer {
                             let _ = peer.notify_resource_list_changed().await;
                         }
                         Ok(FlowUpdate::WebSocketMessage { flow_id, .. })
-                        | Ok(FlowUpdate::HttpBody { flow_id, .. }) => {
+                        | Ok(FlowUpdate::HttpBody { flow_id, .. })
+                        | Ok(FlowUpdate::BodyBudgetExceeded { flow_id, .. }) => {
                             let _ = peer.notify_resource_updated(
                                 ResourceUpdatedNotificationParam::new(
                                     format!("flows://{}", flow_id),

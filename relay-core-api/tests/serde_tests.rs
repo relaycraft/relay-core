@@ -41,6 +41,7 @@ fn sample_flow() -> Flow {
         }),
         tags: vec!["test".to_string()],
         meta: std::collections::HashMap::from([("internal".to_string(), "yes".to_string())]),
+        resilience_trace: None,
     }
 }
 

@@ -50,6 +50,9 @@ fn op_close_body(state: &mut OpState, #[smi] rid: ResourceId) {
 
 // ── S1: sharedState ops ────────────────────────────────────────
 
+/// Soft cap for sharedState keys — exceeded triggers a warning but does not block.
+const SHARED_STATE_SOFT_CAP: usize = 10_000;
+
 fn shared_state(state: &mut OpState) -> &mut HashMap<String, serde_json::Value> {
     state.borrow_mut::<HashMap<String, serde_json::Value>>()
 }
@@ -66,7 +69,16 @@ fn op_shared_state_set(
     #[string] key: String,
     #[serde] value: serde_json::Value,
 ) {
-    shared_state(state).insert(key, value);
+    let map = shared_state(state);
+    // Soft cap warning — does not block, but alerts users to clean up
+    if !map.contains_key(&key) && map.len() >= SHARED_STATE_SOFT_CAP {
+        tracing::warn!(
+            "sharedState exceeds soft cap ({} keys): user scripts should delete unused keys. \
+             Use sharedState.size() to check.",
+            map.len()
+        );
+    }
+    map.insert(key, value);
 }
 
 #[op2(fast)]
@@ -83,6 +95,12 @@ fn op_shared_state_clear(state: &mut OpState) {
 #[serde]
 fn op_shared_state_keys(state: &mut OpState) -> Vec<String> {
     shared_state(state).keys().cloned().collect()
+}
+
+#[op2(fast)]
+fn op_shared_state_size(state: &OpState) -> u32 {
+    let map = state.borrow::<HashMap<String, serde_json::Value>>();
+    map.len() as u32
 }
 
 // ── S5: relay.env — whitelisted environment variable access ────
@@ -226,6 +244,7 @@ impl DenoScriptEngine {
                         op_shared_state_delete::DECL,
                         op_shared_state_clear::DECL,
                         op_shared_state_keys::DECL,
+                        op_shared_state_size::DECL,
                         op_env_get::DECL,
                         op_uuid_v4::DECL,
                         op_hash::DECL,
@@ -343,6 +362,9 @@ impl DenoScriptEngine {
                         },
                         keys() {
                             return Deno.core.ops.op_shared_state_keys();
+                        },
+                        size() {
+                            return Deno.core.ops.op_shared_state_size();
                         },
                     };
                 "#;
