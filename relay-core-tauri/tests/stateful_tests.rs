@@ -44,7 +44,7 @@ fn create_test_flow(url: &str) -> Flow {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     }
 }
 

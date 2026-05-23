@@ -70,7 +70,7 @@ impl Body for TapBody {
                 let body_data = BodyData {
                     encoding,
                     content,
-                    size: self.buffer.len() as u64,
+                    size: self.total_bytes, // Report actual transfer size, not truncated buffer
                 };
 
                 let _ = self.on_flow.try_send(FlowUpdate::HttpBody {

@@ -93,14 +93,8 @@ pub struct CoreMetrics {
     pub audit_events_lagged_total: usize,
     /// O4: Total bodies degraded (budget exceeded)
     pub proxy_body_degraded_total: usize,
-    /// O4: Total requests processed in streaming mode
-    pub proxy_stream_mode_total: usize,
-    /// O4: Total invalid HTTP methods rejected
-    pub proxy_invalid_method_total: usize,
-    /// O4: Total invalid HTTP status codes seen
-    pub proxy_invalid_status_total: usize,
-    /// O4: Total proxy retries
-    pub proxy_retry_total: usize,
+    /// O4: Total HTTP requests processed through streaming pipeline
+    pub proxy_http_request_total: usize,
     /// O4: Total sandbox rejections
     pub proxy_sandbox_reject_total: usize,
 }
@@ -123,10 +117,7 @@ relay_core_audit_events_failed_total {}\n\
 relay_core_flow_events_lagged_total {}\n\
 relay_core_audit_events_lagged_total {}\n\
 relay_core_proxy_body_degraded_total {}\n\
-relay_core_proxy_stream_mode_total {}\n\
-relay_core_proxy_invalid_method_total {}\n\
-relay_core_proxy_invalid_status_total {}\n\
-relay_core_proxy_retry_total {}\n\
+relay_core_proxy_http_request_total {}\n\
 relay_core_proxy_sandbox_reject_total {}\n",
             self.flows_total,
             self.flows_in_memory,
@@ -141,10 +132,7 @@ relay_core_proxy_sandbox_reject_total {}\n",
             self.flow_events_lagged_total,
             self.audit_events_lagged_total,
             self.proxy_body_degraded_total,
-            self.proxy_stream_mode_total,
-            self.proxy_invalid_method_total,
-            self.proxy_invalid_status_total,
-            self.proxy_retry_total,
+            self.proxy_http_request_total,
             self.proxy_sandbox_reject_total,
         )
     }
@@ -404,10 +392,7 @@ impl CoreState {
             flow_events_lagged_total: self.flow_events_lagged_total.load(Ordering::Relaxed),
             audit_events_lagged_total: self.audit_events_lagged_total.load(Ordering::Relaxed),
             proxy_body_degraded_total: relay_core_lib::metrics::get_proxy_body_degraded(),
-            proxy_stream_mode_total: relay_core_lib::metrics::get_proxy_stream_mode(),
-            proxy_invalid_method_total: relay_core_lib::metrics::get_proxy_invalid_method(),
-            proxy_invalid_status_total: relay_core_lib::metrics::get_proxy_invalid_status(),
-            proxy_retry_total: relay_core_lib::metrics::get_proxy_retry(),
+            proxy_http_request_total: relay_core_lib::metrics::get_proxy_http_request(),
             proxy_sandbox_reject_total: relay_core_lib::metrics::get_proxy_sandbox_reject(),
         }
     }
@@ -908,8 +893,11 @@ impl CoreState {
     }
 
     /// P1: Tag a flow as budget-exceeded (body too large for full rule inspection)
-    pub fn tag_flow_budget_exceeded(&self, flow_id: String, _direction: Direction) {
-        if let Err(e) = self.flow_store.try_send(FlowStoreMessage::TagBudgetExceeded { flow_id }) {
+    pub fn tag_flow_budget_exceeded(&self, flow_id: String, direction: Direction) {
+        if let Err(e) = self
+            .flow_store
+            .try_send(FlowStoreMessage::TagBudgetExceeded { flow_id, direction })
+        {
             error!("FlowStore dropped budget-exceeded tag: {}", e);
             self.flows_dropped.fetch_add(1, Ordering::Relaxed);
         }

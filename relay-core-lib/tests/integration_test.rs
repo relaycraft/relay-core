@@ -135,13 +135,15 @@ async fn test_proxy_large_request_body() {
             let mut byte = [0u8; 1];
             let mut content_length: usize = 0;
             loop {
-                if tokio::io::AsyncReadExt::read(&mut socket, &mut byte).await.ok() != Some(1) {
+                if tokio::io::AsyncReadExt::read(&mut socket, &mut byte)
+                    .await
+                    .ok()
+                    != Some(1)
+                {
                     break;
                 }
                 header_buf.push(byte[0]);
-                if header_buf.len() >= 4
-                    && &header_buf[header_buf.len() - 4..] == b"\r\n\r\n"
-                {
+                if header_buf.len() >= 4 && &header_buf[header_buf.len() - 4..] == b"\r\n\r\n" {
                     // Parse Content-Length from headers
                     let header_str = String::from_utf8_lossy(&header_buf);
                     for line in header_str.lines() {

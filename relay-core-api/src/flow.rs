@@ -68,11 +68,16 @@ impl ProtocolLayer for GenericProtocolLayer {
     }
 }
 
-/// P4: Structured trace of resilience-related events during a proxy request.
+fn u32_is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// Structured trace of resilience-related events during a proxy request.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResilienceTrace {
     /// Number of retry attempts for this request.
-    #[serde(default)]
+    /// Currently unused; reserved for future retry support.
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
     pub retry_count: u32,
     /// Whether the circuit breaker was open when this request was attempted.
     #[serde(default)]

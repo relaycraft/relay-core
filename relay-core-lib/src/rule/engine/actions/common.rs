@@ -5,25 +5,6 @@ use crate::rule::model::{Action, TerminalReason};
 use relay_core_api::flow::{Flow, Layer};
 use url::{Host, Url};
 
-fn infer_throttle_bytes(flow: &Flow) -> u64 {
-    match &flow.layer {
-        Layer::Http(http) => {
-            // Use response body size (direction that typically carries large payloads)
-            if let Some(response) = &http.response
-                && let Some(body) = &response.body
-            {
-                return body.size;
-            }
-            if let Some(body) = &http.request.body {
-                return body.size;
-            }
-            0
-        }
-        Layer::WebSocket(ws) => ws.messages.iter().map(|m| m.content.size).sum(),
-        _ => 0,
-    }
-}
-
 fn authority_for_host_header(url: &Url) -> Option<String> {
     let host = url.host()?;
     let host_part = match host {
@@ -179,31 +160,17 @@ pub async fn execute(
                 return ActionOutcome::Failed("Throttle kbps must be > 0".to_string());
             }
 
-            // RE2: bandwidth throttling — bytes/sec rate limit.
-            // Store throttle rate in flow.meta so the HTTP body pipeline
-            // can apply ThrottleBody wrapping for true streaming flow control.
+            // Bandwidth throttling — store rate in flow.meta so the HTTP body
+            // pipeline applies ThrottleBody wrapping for true streaming flow control.
+            // Do NOT sleep here: ThrottleBody already throttles byte-by-byte;
+            // sleeping here would cause double rate-limiting.
             let bytes_per_sec = rate_kbps * 125; // kbps → bytes/sec
             flow.meta.insert(
                 "throttle_bytes_per_sec".to_string(),
                 bytes_per_sec.to_string(),
             );
 
-            // Also store in context for body pipeline use
             ctx.throttle_bytes_per_sec = Some(bytes_per_sec);
-
-            // For flows with known body size (non-streaming), calculate delay.
-            let bytes = infer_throttle_bytes(flow);
-            if bytes > 0 {
-                let delay_ms = (bytes as u128)
-                    .saturating_mul(1000)
-                    .checked_div(bytes_per_sec as u128)
-                    .unwrap_or(0)
-                    .min(u64::MAX as u128) as u64;
-
-                if delay_ms > 0 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                }
-            }
             ActionOutcome::Continue
         }
         _ => ActionOutcome::Failed(format!(
@@ -341,7 +308,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_throttle_stores_rate_in_meta() {
-        // RE2: Throttle action stores bytes_per_sec in flow.meta
         let mut flow = sample_flow_with_request_body(1024);
         let mut ctx = sample_ctx();
         let outcome = execute(&Action::Throttle { kbps: 100 }, &mut flow, &mut ctx).await;
@@ -351,15 +317,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_throttle_delays_by_payload_size() {
+    async fn test_throttle_no_double_delay() {
+        // Throttle no longer sleeps; ThrottleBody in the body pipeline handles it.
+        // A known body size should not cause a delay in the action itself.
         let mut flow = sample_flow_with_request_body(1000);
         let mut ctx = sample_ctx();
         let start = Instant::now();
         let outcome = execute(&Action::Throttle { kbps: 1000 }, &mut flow, &mut ctx).await;
         assert!(matches!(outcome, ActionOutcome::Continue));
+        assert_eq!(flow.meta.get("throttle_bytes_per_sec").unwrap(), "125000");
         assert!(
-            start.elapsed().as_millis() >= 6,
-            "expected at least ~8ms delay for 1000B@1000kbps"
+            start.elapsed().as_millis() < 50,
+            "throttle action should not sleep; body pipeline handles rate limiting"
         );
     }
 

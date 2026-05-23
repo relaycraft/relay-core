@@ -452,4 +452,74 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    /// Negative test: path traversal outside sandbox_root is rejected,
+    /// and proxy_sandbox_reject_total metric is incremented.
+    #[tokio::test]
+    async fn test_resolve_body_source_path_traversal_rejected() {
+        let temp_dir = std::env::temp_dir().join(format!("relay-re3-neg-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create dir");
+        let secret_file =
+            std::env::temp_dir().join(format!("relay-re3-secret-{}.txt", Uuid::new_v4()));
+        std::fs::write(&secret_file, "secret").expect("write secret file");
+
+        let policy = ProxyPolicy {
+            sandbox_root: Some(temp_dir.clone()),
+            max_local_file_bytes: 1024,
+            ..Default::default()
+        };
+
+        // Try to read file outside sandbox via traversal
+        let traversal_path = format!(
+            "../relay-re3-secret-{}.txt",
+            secret_file
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .trim_end_matches(".txt")
+                .split('-')
+                .last()
+                .unwrap_or("")
+        );
+        let before = crate::metrics::get_proxy_sandbox_reject();
+        let out = resolve_body_source(&BodySource::File(traversal_path), Some(&policy)).await;
+        assert!(out.is_none(), "path traversal should be rejected");
+        assert!(
+            crate::metrics::get_proxy_sandbox_reject() > before,
+            "sandbox_reject_total should increment on path traversal rejection"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_file(&secret_file);
+    }
+
+    /// Negative test: file exceeding max_local_file_bytes is rejected,
+    /// and proxy_sandbox_reject_total metric is incremented.
+    #[tokio::test]
+    async fn test_resolve_body_source_oversized_file_rejected() {
+        let temp_dir = std::env::temp_dir().join(format!("relay-re3-size-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create dir");
+        let file = temp_dir.join("large.txt");
+        std::fs::write(&file, vec![b'x'; 100]).expect("write 100-byte file");
+
+        let policy = ProxyPolicy {
+            sandbox_root: Some(temp_dir.clone()),
+            max_local_file_bytes: 50, // Limit: 50 bytes, file is 100 bytes
+            ..Default::default()
+        };
+
+        let before = crate::metrics::get_proxy_sandbox_reject();
+        let out = resolve_body_source(
+            &BodySource::File(file.to_string_lossy().to_string()),
+            Some(&policy),
+        )
+        .await;
+        assert!(out.is_none(), "oversized file should be rejected");
+        assert!(
+            crate::metrics::get_proxy_sandbox_reject() > before,
+            "sandbox_reject_total should increment on oversized file"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

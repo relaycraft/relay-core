@@ -148,7 +148,7 @@ where
         flow.tags.push("budget-exceeded".to_string());
         flow.resilience_trace = Some(ResilienceTrace {
             budget_exceeded: true,
-            ..Default::default()
+            ..flow.resilience_trace.clone().unwrap_or_default()
         });
     }
 
@@ -222,7 +222,7 @@ where
         policy.max_body_size,
         req_headers,
     );
-    crate::metrics::inc_proxy_stream_mode();
+    crate::metrics::inc_proxy_http_request();
     let mut current_body = tap_body.boxed();
 
     match interceptor.on_request(&mut flow, current_body).await {
@@ -287,7 +287,7 @@ where
         // P4: Record circuit breaker open in resilience trace
         flow.resilience_trace = Some(ResilienceTrace {
             circuit_open: true,
-            ..Default::default()
+            ..flow.resilience_trace.clone().unwrap_or_default()
         });
         if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
             tracing::error!("Failed to send flow update on circuit breaker: {}", e);
@@ -316,7 +316,7 @@ where
             // P4: Record upstream error in resilience trace
             flow.resilience_trace = Some(ResilienceTrace {
                 upstream_errors: vec![format!("Upstream Error: {}", e)],
-                ..Default::default()
+                ..flow.resilience_trace.clone().unwrap_or_default()
             });
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some(format!("Upstream Error: {}", e));
@@ -332,17 +332,13 @@ where
         Err(_) => {
             circuit_breaker.record_failure(&upstream_host).await;
             tracing::error!("Upstream request timed out");
-            // P4: Record timeout in resilience trace
-            // P3: Classify timeout type based on elapsed time vs likely phase
-            let elapsed = upstream_start.elapsed();
-            let timeout_type = if elapsed < std::time::Duration::from_secs(5) {
-                "connect"  // Fast failure likely connect/TLS timeout
-            } else {
-                "read"      // Slower failure likely read/total timeout
-            };
+            // Record timeout in resilience trace
+            // We use a single tokio::time::timeout wrapping the entire upstream
+            // request, so we cannot reliably distinguish connect vs read.
+            // Mark as "total" rather than guessing.
             flow.resilience_trace = Some(ResilienceTrace {
                 upstream_errors: vec!["Upstream Request Timed Out".to_string()],
-                timeout_type: Some(timeout_type.to_string()),
+                timeout_type: Some("total".to_string()),
                 ..flow.resilience_trace.clone().unwrap_or_default()
             });
             if let Layer::Http(http) = &mut flow.layer {

@@ -17,9 +17,10 @@ pub enum FlowStoreMessage {
         body: BodyData,
         direction: Direction,
     },
-    /// P1: Tag flow as budget-exceeded (body too large for full rule inspection)
+    /// Tag flow as budget-exceeded (body too large for full rule inspection)
     TagBudgetExceeded {
         flow_id: String,
+        direction: Direction,
     },
     GetFlow {
         id: String,
@@ -132,10 +133,17 @@ impl FlowStoreActor {
                         results.into_iter().skip(offset).take(limit).collect();
                     let _ = respond_to.send(results);
                 }
-                FlowStoreMessage::TagBudgetExceeded { flow_id } => {
+                FlowStoreMessage::TagBudgetExceeded { flow_id, direction } => {
+                    let direction_tag = match direction {
+                        Direction::ClientToServer => "budget-exceeded:client-to-server",
+                        Direction::ServerToClient => "budget-exceeded:server-to-client",
+                    };
                     let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
                         if !flow.tags.contains(&"budget-exceeded".to_string()) {
                             flow.tags.push("budget-exceeded".to_string());
+                        }
+                        if !flow.tags.contains(&direction_tag.to_string()) {
+                            flow.tags.push(direction_tag.to_string());
                         }
                         flow.resilience_trace = Some(ResilienceTrace {
                             budget_exceeded: true,

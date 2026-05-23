@@ -67,7 +67,7 @@ fn test_flow_to_flow_index_conversion() {
         }),
         tags: vec!["proxy".to_string()],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     // 2. Convert to FlowIndex
@@ -238,7 +238,7 @@ fn test_websocket_flow_to_detail_conversion() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let detail = FlowDetail::from(flow);
@@ -312,7 +312,7 @@ fn test_flow_to_flow_index_without_response_defaults() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let index: FlowIndex = FlowIndex::from(flow);
@@ -388,7 +388,7 @@ fn test_flow_detail_http_har_compat_fields() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let detail = FlowDetail::from(flow);
@@ -458,7 +458,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let detail = FlowDetail::from(flow);
@@ -503,7 +503,7 @@ fn test_flow_detail_request_query_string_uses_struct_field() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let detail = FlowDetail::from(flow);
@@ -558,7 +558,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let detail = FlowDetail::from(flow);
@@ -644,7 +644,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
         }),
         tags: vec![],
         meta: HashMap::new(),
-            resilience_trace: None,
+        resilience_trace: None,
     };
 
     let index = FlowIndex::from(flow);

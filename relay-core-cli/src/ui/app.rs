@@ -530,10 +530,7 @@ impl TuiApp {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled("Enable API mode: ", Theme::label()),
-                    Span::styled(
-                        "relay run --ui --api-port 8082",
-                        Theme::accent_dim(),
-                    ),
+                    Span::styled("relay run --ui --api-port 8082", Theme::accent_dim()),
                 ]));
             }
         }
@@ -553,7 +550,10 @@ impl TuiApp {
         lines.push(help_section("Detail Panel"));
         lines.extend([
             help_binding("Esc  ←", "Back to flow list"),
-            help_binding("Tab", "Cycle tabs: Overview → Request → Response → Messages"),
+            help_binding(
+                "Tab",
+                "Cycle tabs: Overview → Request → Response → Messages",
+            ),
             help_binding("1 – 4", "Jump to tab by number"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
