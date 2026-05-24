@@ -19,6 +19,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ca = Arc::new(CertificateAuthority::new()?);
     let (_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
-    start_proxy(source, tx, interceptor, ca, policy_rx, None, None).await?;
+    start_proxy(source, tx, interceptor, ca, policy_rx, None, None, None).await?;
     Ok(())
 }

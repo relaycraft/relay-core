@@ -194,6 +194,8 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                     .unwrap_or_default(),
                 meta: std::collections::HashMap::new(),
                 resilience_trace: None,
+                rule_variables: std::collections::HashMap::new(),
+                matched_rules: vec![],
             };
             Some(flow)
         })

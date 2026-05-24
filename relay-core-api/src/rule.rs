@@ -349,3 +349,20 @@ pub enum RuleOutcome {
     MatchedAndTerminated,
     Failed(String),
 }
+
+// ── S10a: Rule↔Script bridge registry ──────────────────────
+
+/// Registry of script helper functions that can be called from rule templates
+/// via {{script:fnName}}. Populated at script load time from globalThis.scriptHelpers.
+/// This is a data-only struct in 1.0; runtime invocation deferred to 1.x.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuleScriptRegistry {
+    pub helpers: std::collections::HashMap<String, ScriptHelperEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptHelperEntry {
+    pub name: String,
+    pub description: Option<String>,
+    pub arity: usize,
+}

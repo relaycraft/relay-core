@@ -142,27 +142,51 @@ pub async fn start_windivert_capture(filter: String, proxy_port: u16) {
                                 let dst = SocketAddr::new(d_ip, d_port);
 
                                 // Store mapping in NAT table
-                                // Key: Client (Source) -> Value: Original Destination
                                 get_nat_table().insert(src, dst);
 
-                                // TODO: Implement robust packet modification.
-                                // For now, we return an error to prevent silent failure if executed.
-                                // This path is currently reachable but the modification logic is stubbed.
-                                tracing::error!(
-                                    "Windows transparent proxy packet modification not implemented"
-                                );
+                                // Modify packet: redirect to local proxy
+                                let modified = match s_ip {
+                                    IpAddr::V4(_) => {
+                                        let ip_hdr_len = {
+                                            let ihl = (packet_data[0] & 0x0F) as usize;
+                                            if ihl < 5 {
+                                                continue;
+                                            }
+                                            ihl * 4
+                                        };
+                                        if packet_data.len() < ip_hdr_len + 4 {
+                                            continue;
+                                        }
+                                        // Rewrite IP dst to 127.0.0.1
+                                        packet_data[16..20].copy_from_slice(&[127, 0, 0, 1]);
+                                        // Rewrite TCP dst port to proxy_port (big-endian)
+                                        let port_bytes = proxy_port.to_be_bytes();
+                                        packet_data[ip_hdr_len + 2..ip_hdr_len + 4]
+                                            .copy_from_slice(&port_bytes);
+                                        // Zero IP header checksum for recalculation
+                                        packet_data[10..12].copy_from_slice(&[0u8; 2]);
+                                        true
+                                    }
+                                    IpAddr::V6(_) => {
+                                        if packet_data.len() < 44 {
+                                            continue;
+                                        }
+                                        // Rewrite IP dst to ::1
+                                        packet_data[24..40].copy_from_slice(&[
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+                                        ]);
+                                        // Rewrite TCP dst port (after IPv6 fixed header)
+                                        let port_bytes = proxy_port.to_be_bytes();
+                                        packet_data[42..44].copy_from_slice(&port_bytes);
+                                        true
+                                    }
+                                };
 
-                                // In a real implementation, we would:
-                                // 1. Locate TCP Destination Port offset.
-                                // 2. Write `proxy_port` (Big Endian).
-                                // 3. Locate IP Destination Address offset.
-                                // 4. Write `127.0.0.1` (if IPv4).
-                                // 5. Recalculate checksums using `divert.calc_checksums()`.
-
-                                // Explicitly fail to modify -> packet dropped or re-injected as-is (loop)
-                                // To avoid loop, we should probably DROP it if we can't modify it correctly,
-                                // or log error and let it pass (which fails transparent proxying).
-                                // Here we choose to log error.
+                                if modified {
+                                    if let Err(e) = divert.calc_checksums(&mut packet_data, 0) {
+                                        tracing::warn!("Failed to recalculate checksums: {}", e);
+                                    }
+                                }
                             }
                         }
                         Err(e) => {

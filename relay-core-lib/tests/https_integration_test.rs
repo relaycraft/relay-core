@@ -159,9 +159,18 @@ async fn test_https_mitm_h1() {
 
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
-        start_proxy(source, on_flow, interceptor, ca, policy_rx, client, None)
-            .await
-            .unwrap();
+        start_proxy(
+            source,
+            on_flow,
+            interceptor,
+            ca,
+            policy_rx,
+            client,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -321,9 +330,18 @@ async fn test_https_mitm_h2() {
 
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
-        start_proxy(source, on_flow, interceptor, ca, policy_rx, client, None)
-            .await
-            .unwrap();
+        start_proxy(
+            source,
+            on_flow,
+            interceptor,
+            ca,
+            policy_rx,
+            client,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -432,7 +450,7 @@ async fn test_concurrent_requests() {
     let (tx, _rx) = tokio::sync::mpsc::channel::<FlowUpdate>(1000);
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
-        start_proxy(source, tx, interceptor, ca, policy_rx, None, None)
+        start_proxy(source, tx, interceptor, ca, policy_rx, None, None, None)
             .await
             .unwrap();
     });

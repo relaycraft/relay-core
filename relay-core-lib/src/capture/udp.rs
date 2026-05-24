@@ -189,8 +189,8 @@ impl UdpSessionManager {
 /// UDP Proxy capable of handling multiple sessions
 pub struct UdpProxy {
     socket: Arc<UdpSocket>,
-    #[allow(dead_code)]
     session_manager: Arc<UdpSessionManager>,
+    remote_addr: Option<SocketAddr>,
 }
 
 impl UdpProxy {
@@ -198,7 +198,13 @@ impl UdpProxy {
         Self {
             socket: Arc::new(socket),
             session_manager: Arc::new(UdpSessionManager::new(idle_timeout)),
+            remote_addr: None,
         }
+    }
+
+    pub fn with_remote(mut self, addr: SocketAddr) -> Self {
+        self.remote_addr = Some(addr);
+        self
     }
 
     /// Run the proxy loop
@@ -251,6 +257,8 @@ impl UdpProxy {
                                     tags: vec![],
                                     meta: HashMap::new(),
                                     resilience_trace: None,
+                                    rule_variables: HashMap::new(),
+                                    matched_rules: vec![],
                                 };
                                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
                                     crate::metrics::inc_flows_dropped();
@@ -277,11 +285,110 @@ impl UdpProxy {
 
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = on_flow;
+            let remote_addr = match self.remote_addr {
+                Some(addr) => addr,
+                None => {
+                    tracing::warn!(
+                        "UDP proxy started without remote_addr on non-Linux; no forwarding"
+                    );
+                    loop {
+                        match self.socket.recv_from(&mut buf).await {
+                            Ok((_len, _src_addr)) => {}
+                            Err(e) => {
+                                tracing::error!("UDP drain recv error: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            };
+
+            let sm = self.session_manager.clone();
+            let sock = self.socket.clone();
+            let flow_tx = on_flow;
+
             loop {
-                let (_len, _src_addr) = self.socket.recv_from(&mut buf).await?;
-                // Without TPROXY, we don't know the original destination easily
-                // Just consume packets to avoid buffer bloat
+                let (len, src_addr) = match sock.recv_from(&mut buf).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        tracing::error!("UDP recv error: {}", e);
+                        continue;
+                    }
+                };
+
+                let (session, is_new) = match sm.get_or_create_session(src_addr, remote_addr).await
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        tracing::warn!("Failed to create UDP session: {}", e);
+                        continue;
+                    }
+                };
+
+                if is_new {
+                    let flow = Flow {
+                        id: session.flow_id,
+                        start_time: Utc::now(),
+                        end_time: None,
+                        network: NetworkInfo {
+                            client_ip: src_addr.ip().to_string(),
+                            client_port: src_addr.port(),
+                            server_ip: remote_addr.ip().to_string(),
+                            server_port: remote_addr.port(),
+                            protocol: TransportProtocol::UDP,
+                            tls: false,
+                            tls_version: None,
+                            sni: None,
+                        },
+                        layer: Layer::Udp(UdpLayer {
+                            payload_size: len,
+                            packet_count: 1,
+                        }),
+                        tags: vec![],
+                        meta: HashMap::new(),
+                        resilience_trace: None,
+                        rule_variables: HashMap::new(),
+                        matched_rules: vec![],
+                    };
+                    let _ = flow_tx.try_send(FlowUpdate::Full(Box::new(flow)));
+
+                    let sock_clone = sock.clone();
+                    let bytes = session.bytes_transferred.clone();
+                    let last = session.last_activity.clone();
+                    tokio::spawn(async move {
+                        let mut rbuf = [0u8; 65535];
+                        loop {
+                            match sock_clone.recv_from(&mut rbuf).await {
+                                Ok((n, addr)) => {
+                                    if addr == remote_addr {
+                                        let _ = sock_clone.send_to(&rbuf[..n], src_addr).await;
+                                        bytes.fetch_add(n, Ordering::Relaxed);
+                                        if let Ok(mut la) = last.try_write() {
+                                            *la = Instant::now();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "UDP reverse recv error for {}: {}",
+                                        session.flow_id,
+                                        e
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+
+                match sock.send_to(&buf[..len], remote_addr).await {
+                    Ok(_) => {
+                        session.bytes_transferred.fetch_add(len, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        tracing::debug!("UDP send_to {} error: {}", remote_addr, e);
+                    }
+                }
             }
         }
     }

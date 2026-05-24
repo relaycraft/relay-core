@@ -62,12 +62,25 @@ impl MacOsOriginalDstProvider {
     }
 
     fn nat_lookup(&self, src: SocketAddr, dst: SocketAddr) -> io::Result<SocketAddr> {
+        self.nat_lookup_with_proto(src, dst, libc::IPPROTO_TCP as u8)
+    }
+
+    pub fn nat_lookup_udp(&self, src: SocketAddr, dst: SocketAddr) -> io::Result<SocketAddr> {
+        self.nat_lookup_with_proto(src, dst, libc::IPPROTO_UDP as u8)
+    }
+
+    fn nat_lookup_with_proto(
+        &self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        proto: u8,
+    ) -> io::Result<SocketAddr> {
         let mut pnl = pfioc_natlook {
             af: match src {
                 SocketAddr::V4(_) => libc::AF_INET as u8,
                 SocketAddr::V6(_) => libc::AF_INET6 as u8,
             },
-            proto: libc::IPPROTO_TCP as u8,
+            proto,
             direction: 1, // PF_IN
             ..Default::default()
         };

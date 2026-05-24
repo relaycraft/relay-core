@@ -3,6 +3,7 @@ use crate::rule::engine::actions::utils::substitute_variables;
 use crate::rule::engine::executor::ExecutionContext;
 use crate::rule::model::{Action, TerminalReason};
 use relay_core_api::flow::{Flow, Layer};
+use std::net::IpAddr;
 use url::{Host, Url};
 
 fn authority_for_host_header(url: &Url) -> Option<String> {
@@ -112,7 +113,35 @@ pub async fn execute(
             }
         }
         Action::RedirectIp { .. } | Action::SetTtl { .. } | Action::ForwardPort { .. } => {
-            ActionOutcome::Failed("L3/L4 actions not implemented yet".to_string())
+            use crate::rule::engine::executor::ConnectOverride;
+            match action {
+                Action::ForwardPort {
+                    target_host,
+                    target_port,
+                } => {
+                    let host = substitute_variables(target_host, flow, ctx, None);
+                    let port = *target_port;
+                    ctx.connect_override = Some(ConnectOverride::ForwardPort { host, port });
+                    ActionOutcome::Continue
+                }
+                Action::RedirectIp { target } => {
+                    let ip_str = substitute_variables(target, flow, ctx, None);
+                    match ip_str.parse::<IpAddr>() {
+                        Ok(ip) => {
+                            ctx.connect_override = Some(ConnectOverride::RedirectIp { ip });
+                            ActionOutcome::Continue
+                        }
+                        Err(e) => {
+                            ActionOutcome::Failed(format!("Invalid IP for RedirectIp: {}", e))
+                        }
+                    }
+                }
+                Action::SetTtl { ttl } => {
+                    ctx.connect_override = Some(ConnectOverride::SetTtl { ttl: *ttl });
+                    ActionOutcome::Continue
+                }
+                _ => unreachable!(),
+            }
         }
         Action::MapRemote { url, preserve_host } => {
             let substituted = substitute_variables(url, flow, ctx, None);
@@ -233,6 +262,8 @@ mod tests {
             tags: vec![],
             meta: HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 
@@ -244,6 +275,7 @@ mod tests {
             summary: RuleTraceSummary::NoMatch,
             state_store: Arc::new(InMemoryRuleStateStore::new()),
             throttle_bytes_per_sec: None,
+            connect_override: None,
         }
     }
 
@@ -292,6 +324,8 @@ mod tests {
             tags: vec![],
             meta: HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 

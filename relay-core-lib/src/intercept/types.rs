@@ -3,6 +3,8 @@ use bytes::Bytes;
 use http::Response;
 use http_body_util::combinators::BoxBody;
 use relay_core_api::flow::{Flow, HttpRequest, HttpResponse, Layer, WebSocketMessage};
+use std::net::SocketAddr;
+use uuid::Uuid;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type HttpBody = BoxBody<Bytes, BoxError>;
@@ -12,6 +14,28 @@ tokio::task_local! {
     /// This ensures that all script executions within the same request/flow
     /// are routed to the same script engine instance, avoiding thread migration issues.
     pub static ENGINE_INDEX: usize;
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    pub id: Uuid,
+    pub client_addr: SocketAddr,
+    pub server_addr: Option<SocketAddr>,
+    pub tls_sni: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConnectionStats {
+    pub duration_ms: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub flows_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ConnectAction {
+    Allow,
+    Drop { reason: String },
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +70,15 @@ pub enum WebSocketMessageAction {
 
 #[async_trait]
 pub trait Interceptor: Send + Sync {
+    /// Called when a new connection is accepted, before any HTTP handling.
+    /// Return ConnectAction::Drop to reject the connection.
+    async fn on_connect(&self, _conn: &ConnectionInfo) -> ConnectAction {
+        ConnectAction::Allow
+    }
+
+    /// Called when a connection is closed (after all flows complete or on drop).
+    async fn on_disconnect(&self, _conn: &ConnectionInfo, _stats: &ConnectionStats) {}
+
     /// Called after request headers are parsed but before body is read.
     /// Allows early termination or modification of headers/URL.
     async fn on_request_headers(&self, _flow: &mut Flow) -> InterceptionResult {
@@ -72,6 +105,15 @@ pub trait Interceptor: Send + Sync {
         flow: &mut Flow,
         message: WebSocketMessage,
     ) -> Result<WebSocketMessageAction, BoxError>;
+
+    /// Called when a WebSocket handshake completes (connection established).
+    async fn on_websocket_start(&self, _flow: &mut Flow) {}
+
+    /// Called when a WebSocket connection closes normally.
+    async fn on_websocket_end(&self, _flow: &mut Flow, _close_code: u16, _close_reason: &str) {}
+
+    /// Called when a WebSocket connection encounters an error.
+    async fn on_websocket_error(&self, _flow: &mut Flow, _error: &str) {}
 }
 
 // Default implementation that does nothing
@@ -118,6 +160,22 @@ impl CompositeInterceptor {
 
 #[async_trait]
 impl Interceptor for CompositeInterceptor {
+    async fn on_connect(&self, conn: &ConnectionInfo) -> ConnectAction {
+        for interceptor in &self.interceptors {
+            match interceptor.on_connect(conn).await {
+                ConnectAction::Drop { reason } => return ConnectAction::Drop { reason },
+                ConnectAction::Allow => {}
+            }
+        }
+        ConnectAction::Allow
+    }
+
+    async fn on_disconnect(&self, conn: &ConnectionInfo, stats: &ConnectionStats) {
+        for interceptor in &self.interceptors {
+            interceptor.on_disconnect(conn, stats).await;
+        }
+    }
+
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
         let mut final_result = InterceptionResult::Continue;
         for interceptor in &self.interceptors {
@@ -225,5 +283,25 @@ impl Interceptor for CompositeInterceptor {
             }
         }
         Ok(WebSocketMessageAction::Continue(current_message))
+    }
+
+    async fn on_websocket_start(&self, flow: &mut Flow) {
+        for interceptor in &self.interceptors {
+            interceptor.on_websocket_start(flow).await;
+        }
+    }
+
+    async fn on_websocket_end(&self, flow: &mut Flow, close_code: u16, close_reason: &str) {
+        for interceptor in &self.interceptors {
+            interceptor
+                .on_websocket_end(flow, close_code, close_reason)
+                .await;
+        }
+    }
+
+    async fn on_websocket_error(&self, flow: &mut Flow, error: &str) {
+        for interceptor in &self.interceptors {
+            interceptor.on_websocket_error(flow, error).await;
+        }
     }
 }

@@ -231,6 +231,8 @@ mod tests {
             tags: vec![],
             meta: HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 
@@ -242,6 +244,7 @@ mod tests {
             summary: RuleTraceSummary::NoMatch,
             state_store: Arc::new(InMemoryRuleStateStore::new()),
             throttle_bytes_per_sec: None,
+            connect_override: None,
         }
     }
 
@@ -290,6 +293,8 @@ mod tests {
             tags: vec![],
             meta: HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 

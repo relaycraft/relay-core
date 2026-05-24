@@ -10,7 +10,25 @@ use crate::rule::model::{
 use relay_core_api::flow::Flow;
 use relay_core_api::policy::ProxyPolicy;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
+
+/// Override applied at the Connect stage to redirect connection targets.
+#[derive(Debug, Clone)]
+pub enum ConnectOverride {
+    ForwardPort { host: String, port: u16 },
+    RedirectIp { ip: IpAddr },
+    SetTtl { ttl: u8 },
+}
+
+impl ConnectOverride {
+    pub fn port(&self) -> Option<u16> {
+        match self {
+            ConnectOverride::ForwardPort { port, .. } => Some(*port),
+            _ => None,
+        }
+    }
+}
 
 pub struct ExecutionContext {
     pub trace: Vec<RuleExecutionEvent>,
@@ -22,6 +40,14 @@ pub struct ExecutionContext {
     // Wiring into the body pipeline requires P1 streaming-first changes
     // (ThrottleBody wrapping in http.rs body forwarding path).
     pub throttle_bytes_per_sec: Option<u64>,
+    /// RE1: Connect-stage override for L3/L4 transparent proxy actions.
+    pub connect_override: Option<ConnectOverride>,
+}
+
+impl ExecutionContext {
+    pub fn is_terminated(&self) -> bool {
+        matches!(self.summary, RuleTraceSummary::Terminated { .. })
+    }
 }
 
 #[derive(Debug)]
@@ -81,6 +107,7 @@ impl RuleEngine {
             summary: RuleTraceSummary::NoMatch,
             state_store: self.state_store.clone(),
             throttle_bytes_per_sec: None,
+            connect_override: None,
         };
 
         let mut terminated = false;
@@ -208,9 +235,12 @@ impl RuleEngine {
 
         if !terminated && !modified_rules.is_empty() {
             ctx.summary = RuleTraceSummary::Modified {
-                rule_ids: modified_rules,
+                rule_ids: modified_rules.clone(),
             };
         }
+
+        flow.rule_variables = ctx.variables.clone();
+        flow.matched_rules = modified_rules.clone();
 
         ctx
     }
@@ -259,6 +289,8 @@ mod tests {
             tags: vec![],
             meta: std::collections::HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 

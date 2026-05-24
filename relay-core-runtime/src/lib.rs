@@ -1468,6 +1468,7 @@ impl CoreState {
                 policy_rx,
                 None,
                 shutdown_rx,
+                None,
             )
             .await
             .map_err(|e| e.to_string());
@@ -1491,6 +1492,7 @@ impl CoreState {
                 policy_rx,
                 None,
                 shutdown_rx,
+                None,
             )
             .await
             .map_err(|e| e.to_string());
@@ -1827,6 +1829,8 @@ mod tests {
             tags: vec![],
             meta: std::collections::HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 
@@ -1898,6 +1902,8 @@ mod tests {
             tags: vec![],
             meta: std::collections::HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 

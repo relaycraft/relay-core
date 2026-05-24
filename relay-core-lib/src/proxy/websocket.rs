@@ -398,6 +398,8 @@ async fn handle_websocket_tunnel(
     // Idle timeout for WebSocket
     let idle_timeout_duration = std::time::Duration::from_secs(300); // 5 minutes
 
+    interceptor.on_websocket_start(&mut flow).await;
+
     loop {
         let event = tokio::time::timeout(idle_timeout_duration, async {
             tokio::select! {
@@ -427,7 +429,12 @@ async fn handle_websocket_tunnel(
                                 Ok(WebSocketMessageAction::Drop) => continue,
                                 Ok(WebSocketMessageAction::Continue(mod_msg)) => {
                                     let t_msg = flow_msg_to_tungstenite(&mod_msg);
-                                    sender.send(t_msg).await?;
+                                    if let Err(e) = sender.send(t_msg).await {
+                                        interceptor
+                                            .on_websocket_error(&mut flow, &e.to_string())
+                                            .await;
+                                        return Err(e.into());
+                                    }
 
                                     if on_flow
                                         .try_send(FlowUpdate::WebSocketMessage {
@@ -456,16 +463,33 @@ async fn handle_websocket_tunnel(
                             }
                         } else {
                             // Non-data message
-                            sender.send(msg).await?;
+                            if let Err(e) = sender.send(msg).await {
+                                interceptor
+                                    .on_websocket_error(&mut flow, &e.to_string())
+                                    .await;
+                                return Err(e.into());
+                            }
                         }
                     }
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break, // Connection closed
+                    Some(Err(e)) => {
+                        interceptor
+                            .on_websocket_error(&mut flow, &e.to_string())
+                            .await;
+                        return Err(e.into());
+                    }
+                    None => {
+                        interceptor
+                            .on_websocket_end(&mut flow, 1000, "normal")
+                            .await;
+                        break;
+                    }
                 }
             }
             Err(_) => {
                 tracing::warn!("WebSocket Tunnel Idle Timeout");
-                // Optional: Send close frame?
+                interceptor
+                    .on_websocket_error(&mut flow, "WebSocket Idle Timeout")
+                    .await;
                 return Err("WebSocket Idle Timeout".into());
             }
         }

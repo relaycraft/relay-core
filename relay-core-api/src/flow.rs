@@ -117,6 +117,15 @@ pub struct Flow {
     /// P4: Resilience trace (circuit breaker, retries, budget exceeded)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resilience_trace: Option<ResilienceTrace>,
+
+    /// S11: Rule engine variables (SetVariable action results) exposed to scripts.
+    /// Cleared at end of flow lifecycle.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub rule_variables: HashMap<String, String>,
+
+    /// S10a: Rule IDs that matched and executed on this flow (exposed to scripts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

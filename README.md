@@ -13,7 +13,8 @@ Built as a standalone proxy platform with multiple host adapters (CLI, TUI, HTTP
 - **Rule Engine** — match + action pipeline (headers, body, status, redirect, mock, rate-limit)
 - **Scripting** — Deno/V8 runtime for dynamic request/response/WebSocket modification
 - **Interception Breakpoints** — pause live traffic, inspect, modify, then resume or drop
-- **Transparent Proxy** — Linux TPROXY (TCP+UDP), macOS PF (TCP)
+- **Transparent Proxy** — Linux TPROXY (TCP+UDP), macOS PF (TCP+UDP), Windows WinDivert (TCP)
+- **QUIC/HTTP3** — Tier 1 downgrade (strip Alt-Svc headers) + Tier 2 UDP forward; application-layer MITM (decryption) deferred to post-1.0
 - **Traffic Redaction** — configurable sensitive field masking (headers, query params, bodies)
 - **Audit Trail** — control-plane mutations tracked with actor attribution and persistence
 - **Metrics** — Prometheus text format endpoint, structured metrics snapshot

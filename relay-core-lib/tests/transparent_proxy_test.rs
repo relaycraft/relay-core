@@ -105,9 +105,18 @@ async fn test_transparent_proxy_routing() {
         // policy.transparent_require_original_dst = true; // Default is true
 
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
-        start_proxy(source, on_flow, interceptor, ca, policy_rx, None, None)
-            .await
-            .unwrap();
+        start_proxy(
+            source,
+            on_flow,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -176,9 +185,18 @@ async fn test_transparent_proxy_loop_detection() {
         policy.transparent_enabled = true;
 
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
-        start_proxy(source, on_flow, interceptor, ca, policy_rx, None, None)
-            .await
-            .unwrap();
+        start_proxy(
+            source,
+            on_flow,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

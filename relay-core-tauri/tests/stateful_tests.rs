@@ -45,6 +45,8 @@ fn create_test_flow(url: &str) -> Flow {
         tags: vec![],
         meta: HashMap::new(),
         resilience_trace: None,
+        rule_variables: std::collections::HashMap::new(),
+        matched_rules: vec![],
     }
 }
 
@@ -537,6 +539,18 @@ async fn test_set_variable_then_map_remote_across_rules_for_websocket() {
 
     let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
     assert!(matches!(ctx.summary, RuleTraceSummary::Modified { .. }));
+    assert_eq!(
+        flow.rule_variables.get("upstream"),
+        Some(&"origin.example.com:9778".to_string())
+    );
+    assert!(
+        flow.matched_rules
+            .contains(&"ws-setvar-high-priority".to_string())
+    );
+    assert!(
+        flow.matched_rules
+            .contains(&"ws-mapremote-low-priority".to_string())
+    );
 
     let Layer::WebSocket(ws) = &flow.layer else {
         panic!("expected websocket flow");
@@ -586,6 +600,11 @@ async fn test_set_variable_then_map_remote_in_same_rule() {
 
     let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
     assert!(matches!(ctx.summary, RuleTraceSummary::Modified { .. }));
+    assert_eq!(
+        flow.rule_variables.get("upstream"),
+        Some(&"mirror.example.com:9777".to_string())
+    );
+    assert!(flow.matched_rules.contains(&"setvar-mapremote".to_string()));
 
     let Layer::Http(http) = &flow.layer else {
         panic!("expected http flow");

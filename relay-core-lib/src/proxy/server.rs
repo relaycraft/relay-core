@@ -5,23 +5,30 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc::Sender, watch};
 use tracing::{error, info};
+use uuid::Uuid;
 
 use crate::capture::CaptureSource;
 use crate::capture::loop_detection::LoopDetector;
-use crate::interceptor::{ENGINE_INDEX, Interceptor};
+use crate::interceptor::{ConnectAction, ConnectionInfo, ENGINE_INDEX, Interceptor};
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_request;
 use crate::proxy::http_utils::HttpsClient;
+use crate::rule::engine::executor::{ConnectOverride, RuleEngine};
 use crate::tls::CertificateAuthority;
-use relay_core_api::flow::FlowUpdate;
+use chrono::Utc;
+use relay_core_api::flow::{Flow, FlowUpdate, Layer, NetworkInfo, TcpLayer, TransportProtocol};
 use relay_core_api::policy::ProxyPolicy;
+use relay_core_api::rule::RuleStage;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Start the HTTP Proxy Server
+#[allow(clippy::too_many_arguments)]
 pub async fn start_proxy<S>(
     mut source: S,
     on_flow: Sender<FlowUpdate>,
@@ -30,6 +37,7 @@ pub async fn start_proxy<S>(
     policy: watch::Receiver<ProxyPolicy>,
     client: Option<Arc<HttpsClient>>,
     shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    rule_engine: Option<Arc<RuleEngine>>,
 ) -> crate::error::Result<()>
 where
     S: CaptureSource + Send + 'static,
@@ -110,6 +118,87 @@ where
         let client_addr = connection.client_addr;
         let target_addr = connection.target_addr;
 
+        let conn_id = Uuid::new_v4();
+        let conn_info = ConnectionInfo {
+            id: conn_id,
+            client_addr,
+            server_addr: target_addr,
+            // TODO: extract SNI from TLS ClientHello (requires pre-rustls intercept)
+            tls_sni: None,
+        };
+
+        match interceptor.on_connect(&conn_info).await {
+            ConnectAction::Drop { reason } => {
+                info!("Connection {} dropped by onConnect: {}", conn_id, reason);
+                interceptor
+                    .on_disconnect(&conn_info, &Default::default())
+                    .await;
+                continue;
+            }
+            ConnectAction::Allow => {}
+        }
+
+        let mut connect_target = target_addr;
+        if let Some(ref engine) = rule_engine
+            && engine.has_rules_for_stage(RuleStage::Connect)
+        {
+            let mut flow = Flow {
+                id: conn_id,
+                start_time: Utc::now(),
+                end_time: None,
+                network: NetworkInfo {
+                    client_ip: client_addr.ip().to_string(),
+                    client_port: client_addr.port(),
+                    server_ip: target_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
+                    server_port: target_addr.map(|a| a.port()).unwrap_or(0),
+                    protocol: TransportProtocol::TCP,
+                    tls: false,
+                    tls_version: None,
+                    sni: None,
+                },
+                layer: Layer::Tcp(TcpLayer {
+                    bytes_up: 0,
+                    bytes_down: 0,
+                }),
+                tags: vec![],
+                meta: HashMap::new(),
+                resilience_trace: None,
+                rule_variables: HashMap::new(),
+                matched_rules: vec![],
+            };
+            let ctx = engine.execute(RuleStage::Connect, &mut flow).await;
+            if ctx.is_terminated() {
+                info!("Connection {} terminated by Connect stage rule", conn_id);
+                interceptor
+                    .on_disconnect(&conn_info, &Default::default())
+                    .await;
+                continue;
+            }
+            if let Some(conn_override) = &ctx.connect_override {
+                match conn_override {
+                    ConnectOverride::ForwardPort { host, port } => {
+                        connect_target = Some(SocketAddr::new(
+                            target_addr
+                                .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
+                                .ip(),
+                            *port,
+                        ));
+                        tracing::debug!("Connect stage ForwardPort -> {}:{}", host, port);
+                    }
+                    ConnectOverride::RedirectIp { ip } => {
+                        let port = connect_target.map(|a| a.port()).unwrap_or(0);
+                        connect_target = Some(SocketAddr::new(*ip, port));
+                        tracing::debug!("Connect stage RedirectIp -> {}", ip);
+                    }
+                    ConnectOverride::SetTtl { ttl: _ } => {
+                        // SetTtl applied on the upstream socket at connection time
+                    }
+                }
+            }
+        }
+
+        let target_addr = connect_target;
+
         let io = TokioIo::new(stream);
         let on_flow = on_flow.clone();
         let ca = ca.clone();
@@ -122,8 +211,11 @@ where
 
         let engine_index = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
 
+        let conn_info_2 = conn_info.clone();
+        let interceptor_2 = interceptor.clone();
         tokio::task::spawn(ENGINE_INDEX.scope(engine_index, async move {
-            if let Err(err) = http1::Builder::new()
+            let conn_start = Instant::now();
+            let result = http1::Builder::new()
                 .timer(hyper_util::rt::TokioTimer::new())
                 .header_read_timeout(Duration::from_secs(10))
                 .preserve_header_case(true)
@@ -146,8 +238,16 @@ where
                     }),
                 )
                 .with_upgrades()
-                .await
-            {
+                .await;
+
+            let stats = crate::interceptor::ConnectionStats {
+                duration_ms: conn_start.elapsed().as_millis() as u64,
+                // TODO: populate bytes_sent, bytes_received, flows_count when real-time stats tracking is added
+                ..Default::default()
+            };
+            interceptor_2.on_disconnect(&conn_info_2, &stats).await;
+
+            if let Err(err) = result {
                 error!("Error serving connection: {:?}", err);
             }
         }));

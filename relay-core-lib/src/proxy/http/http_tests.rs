@@ -41,6 +41,8 @@ fn create_test_flow() -> Flow {
         tags: vec![],
         meta: HashMap::new(),
         resilience_trace: None,
+        rule_variables: std::collections::HashMap::new(),
+        matched_rules: vec![],
     }
 }
 

@@ -148,6 +148,7 @@ async fn start_proxy_instance() -> (
             policy_rx,
             None,
             Some(shutdown_rx),
+            None,
         )
         .await
         .unwrap();

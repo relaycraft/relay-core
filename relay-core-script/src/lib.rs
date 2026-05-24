@@ -402,6 +402,70 @@ impl Interceptor for ScriptInterceptor {
             }
         }
     }
+
+    async fn on_connect(
+        &self,
+        conn: &relay_core_lib::interceptor::ConnectionInfo,
+    ) -> relay_core_lib::interceptor::ConnectAction {
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        match engine.on_connect(conn).await {
+            Ok(action) => action,
+            Err(e) => {
+                tracing::warn!("onConnect script error: {}", e);
+                relay_core_lib::interceptor::ConnectAction::Allow
+            }
+        }
+    }
+
+    async fn on_disconnect(
+        &self,
+        conn: &relay_core_lib::interceptor::ConnectionInfo,
+        stats: &relay_core_lib::interceptor::ConnectionStats,
+    ) {
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        if let Err(e) = engine.on_disconnect(conn, stats).await {
+            tracing::warn!("onDisconnect script error: {}", e);
+        }
+    }
+
+    async fn on_websocket_start(&self, flow: &mut Flow) {
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        if let Err(e) = engine.on_websocket_start(flow).await {
+            tracing::warn!("onWebSocketStart script error: {}", e);
+        }
+    }
+
+    async fn on_websocket_end(&self, flow: &mut Flow, close_code: u16, close_reason: &str) {
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        if let Err(e) = engine
+            .on_websocket_end(flow, close_code, close_reason)
+            .await
+        {
+            tracing::warn!("onWebSocketEnd script error: {}", e);
+        }
+    }
+
+    async fn on_websocket_error(&self, flow: &mut Flow, error: &str) {
+        let index = self.get_engine_index();
+        let engine_lock = &self.engines[index];
+        let engine = engine_lock.read().await;
+
+        if let Err(e) = engine.on_websocket_error(flow, error).await {
+            tracing::warn!("onWebSocketError script error: {}", e);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +513,8 @@ mod tests {
             tags: vec![],
             meta: HashMap::new(),
             resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
         }
     }
 

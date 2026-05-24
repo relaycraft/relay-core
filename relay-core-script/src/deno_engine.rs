@@ -9,7 +9,8 @@ use deno_core::{
 use http_body_util::{BodyExt, Full};
 use relay_core_api::flow::{Flow, WebSocketMessage};
 use relay_core_lib::interceptor::{
-    BoxError, HttpBody, RequestAction, ResponseAction, WebSocketMessageAction,
+    BoxError, ConnectAction, ConnectionInfo, ConnectionStats, HttpBody, RequestAction,
+    ResponseAction, WebSocketMessageAction,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -133,7 +134,7 @@ pub fn get_script_env_access_total() -> usize {
 // ── S7a: relay.fetch — async sub-requests (default disabled) ─────
 
 /// Configuration for relay.fetch sub-requests.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ScriptFetchConfig {
     /// Whether relay.fetch is enabled at all.
     pub enabled: bool,
@@ -147,31 +148,40 @@ pub struct ScriptFetchConfig {
     pub proxy_listen_port: u16,
 }
 
-/// Metrics for relay.fetch
-static SCRIPT_FETCH_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static SCRIPT_FETCH_REJECTED_TOTAL: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+impl Default for ScriptFetchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_hosts: HashSet::new(),
+            max_concurrency: 8,
+            timeout_ms: 5000,
+            proxy_listen_port: 0,
+        }
+    }
+}
 
 fn fetch_config(state: &OpState) -> &ScriptFetchConfig {
     state.borrow::<ScriptFetchConfig>()
 }
 
+/// Metrics for relay.fetch
+static SCRIPT_FETCH_TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SCRIPT_FETCH_REJECTED_TOTAL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Fetch validation result — always returns a JSON string (never throws)
 /// so it works in synchronous onRequestHeaders context.
-/// Actual HTTP execution deferred to M6 (S7b).
 #[op2]
 #[string]
 fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
     SCRIPT_FETCH_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let config = fetch_config(state);
 
-    // Check if fetch is enabled
     if !config.enabled {
         SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return serde_json::json!({"ok": false, "error": "script fetch disabled"}).to_string();
     }
 
-    // Check allowlist
     if !config.allow_hosts.is_empty()
         && let Ok(parsed) = url::Url::parse(&url)
         && let Some(host) = parsed.host_str()
@@ -181,7 +191,6 @@ fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
         return serde_json::json!({"ok": false, "error": "host not in allowlist"}).to_string();
     }
 
-    // Check recursion (fetch to self proxy port on localhost)
     if let Ok(parsed) = url::Url::parse(&url)
         && let Some(port) = parsed.port_or_known_default()
         && port == config.proxy_listen_port
@@ -195,7 +204,8 @@ fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
         }
     }
 
-    // M6: actual HTTP fetch will be implemented here
+    // S7b: relay.fetch HTTP client deferred to 1.x — current V8 isolate uses
+    // new_current_thread runtime which is incompatible with reqwest blocking client.
     serde_json::json!({"ok": false, "error": "fetch not yet implemented"}).to_string()
 }
 
@@ -281,6 +291,15 @@ fn op_json_stringify_pretty(#[serde] value: serde_json::Value) -> String {
 
 enum DenoCommand {
     LoadScript(String, oneshot::Sender<Result<(), String>>),
+    OnConnect(
+        ConnectionInfo,
+        oneshot::Sender<Result<ConnectAction, String>>,
+    ),
+    OnDisconnect(
+        ConnectionInfo,
+        ConnectionStats,
+        oneshot::Sender<Result<(), String>>,
+    ),
     OnRequestHeaders(Flow, oneshot::Sender<Result<Option<Flow>, String>>),
     OnRequest(
         Flow,
@@ -298,6 +317,9 @@ enum DenoCommand {
         WebSocketMessage,
         oneshot::Sender<Result<WebSocketMessageAction, String>>,
     ),
+    OnWebSocketStart(Flow, oneshot::Sender<Result<(), String>>),
+    OnWebSocketEnd(Flow, u16, String, oneshot::Sender<Result<(), String>>),
+    OnWebSocketError(Flow, String, oneshot::Sender<Result<(), String>>),
 }
 
 #[derive(Clone)]
@@ -504,6 +526,27 @@ impl DenoScriptEngine {
                         DenoCommand::OnWebSocketMessage(flow, message, resp) => {
                             let res =
                                 Self::handle_on_websocket_message(&mut js_runtime, flow, message);
+                            let _ = resp.send(res);
+                        }
+                        DenoCommand::OnConnect(conn, resp) => {
+                            let res = Self::handle_on_connect(&mut js_runtime, conn);
+                            let _ = resp.send(res);
+                        }
+                        DenoCommand::OnDisconnect(conn, stats, resp) => {
+                            let res = Self::handle_on_disconnect(&mut js_runtime, conn, stats);
+                            let _ = resp.send(res);
+                        }
+                        DenoCommand::OnWebSocketStart(flow, resp) => {
+                            let res = Self::handle_on_websocket_start(&mut js_runtime, flow);
+                            let _ = resp.send(res);
+                        }
+                        DenoCommand::OnWebSocketEnd(flow, code, reason, resp) => {
+                            let res =
+                                Self::handle_on_websocket_end(&mut js_runtime, flow, code, reason);
+                            let _ = resp.send(res);
+                        }
+                        DenoCommand::OnWebSocketError(flow, error, resp) => {
+                            let res = Self::handle_on_websocket_error(&mut js_runtime, flow, error);
                             let _ = resp.send(res);
                         }
                     }
@@ -1066,6 +1109,186 @@ impl DenoScriptEngine {
 
         Ok(WebSocketMessageAction::Continue(modified_message))
     }
+
+    fn handle_on_connect(
+        runtime: &mut JsRuntime,
+        conn: ConnectionInfo,
+    ) -> Result<ConnectAction, String> {
+        let check_code = "typeof globalThis.onConnect === 'function'";
+        let exists = runtime
+            .execute_script("check_onConnect", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                deno_core::v8::Local::new(&mut scope, v).is_true()
+            })
+            .unwrap_or(false);
+        if !exists {
+            return Ok(ConnectAction::Allow);
+        }
+
+        let conn_json = serde_json::json!({
+            "id": conn.id.to_string(),
+            "client_addr": conn.client_addr.to_string(),
+            "server_addr": conn.server_addr.map(|a| a.to_string()),
+            "tls_sni": conn.tls_sni,
+        });
+        let code = format!(
+            "globalThis.onConnect({{}}, {})",
+            serde_json::to_string(&conn_json).unwrap_or_default()
+        );
+        let result = runtime
+            .execute_script("call_onConnect", code)
+            .map_err(|e| {
+                tracing::warn!("onConnect script error: {}", e);
+                e.to_string()
+            })?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
+        if result_val.is_undefined() || result_val.is_null() {
+            return Ok(ConnectAction::Allow);
+        }
+        if result_val.is_object() {
+            let Some(obj) = result_val.to_object(&mut scope) else {
+                return Ok(ConnectAction::Allow);
+            };
+            let drop_key: deno_core::v8::Local<deno_core::v8::Value> =
+                deno_core::v8::String::new(&mut scope, "drop")
+                    .expect("v8 string")
+                    .into();
+            if let Some(drop_val) = obj.get(&mut scope, drop_key)
+                && drop_val.is_true()
+            {
+                let reason_key: deno_core::v8::Local<deno_core::v8::Value> =
+                    deno_core::v8::String::new(&mut scope, "reason")
+                        .expect("v8 string")
+                        .into();
+                let reason = obj
+                    .get(&mut scope, reason_key)
+                    .map(|v| v.to_rust_string_lossy(&mut scope))
+                    .unwrap_or_else(|| "script onConnect drop".to_string());
+                return Ok(ConnectAction::Drop { reason });
+            }
+        }
+        Ok(ConnectAction::Allow)
+    }
+
+    fn handle_on_disconnect(
+        runtime: &mut JsRuntime,
+        conn: ConnectionInfo,
+        stats: ConnectionStats,
+    ) -> Result<(), String> {
+        let check_code = "typeof globalThis.onDisconnect === 'function'";
+        let exists = runtime
+            .execute_script("check_onDisconnect", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                deno_core::v8::Local::new(&mut scope, v).is_true()
+            })
+            .unwrap_or(false);
+        if !exists {
+            return Ok(());
+        }
+
+        let conn_json = serde_json::json!({
+            "id": conn.id.to_string(),
+            "client_addr": conn.client_addr.to_string(),
+            "server_addr": conn.server_addr.map(|a| a.to_string()),
+            "tls_sni": conn.tls_sni,
+        });
+        let stats_json = serde_json::json!({
+            "duration_ms": stats.duration_ms,
+            "bytes_sent": stats.bytes_sent,
+            "bytes_received": stats.bytes_received,
+            "flows_count": stats.flows_count,
+        });
+        let code = format!(
+            "globalThis.onDisconnect({{}}, {}, {})",
+            serde_json::to_string(&conn_json).unwrap_or_default(),
+            serde_json::to_string(&stats_json).unwrap_or_default()
+        );
+        let _ = runtime.execute_script("call_onDisconnect", code);
+        Ok(())
+    }
+
+    fn handle_on_websocket_start(runtime: &mut JsRuntime, flow: Flow) -> Result<(), String> {
+        let check_code = "typeof globalThis.onWebSocketStart === 'function'";
+        let exists = runtime
+            .execute_script("check_onWebSocketStart", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                deno_core::v8::Local::new(&mut scope, v).is_true()
+            })
+            .unwrap_or(false);
+        if !exists {
+            return Ok(());
+        }
+
+        let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
+        let code = format!("globalThis.onWebSocketStart({{}}, {})", flow_json);
+        let _ = runtime.execute_script("call_onWebSocketStart", code);
+        Ok(())
+    }
+
+    fn handle_on_websocket_end(
+        runtime: &mut JsRuntime,
+        flow: Flow,
+        close_code: u16,
+        close_reason: String,
+    ) -> Result<(), String> {
+        let check_code = "typeof globalThis.onWebSocketEnd === 'function'";
+        let exists = runtime
+            .execute_script("check_onWebSocketEnd", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                deno_core::v8::Local::new(&mut scope, v).is_true()
+            })
+            .unwrap_or(false);
+        if !exists {
+            return Ok(());
+        }
+
+        let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
+        let reason_json =
+            serde_json::to_string(&close_reason).unwrap_or_else(|_| "null".to_string());
+        let code = format!(
+            "globalThis.onWebSocketEnd({{}}, {}, {}, {})",
+            flow_json, close_code, reason_json
+        );
+        let _ = runtime.execute_script("call_onWebSocketEnd", code);
+        Ok(())
+    }
+
+    fn handle_on_websocket_error(
+        runtime: &mut JsRuntime,
+        flow: Flow,
+        error: String,
+    ) -> Result<(), String> {
+        let check_code = "typeof globalThis.onWebSocketError === 'function'";
+        let exists = runtime
+            .execute_script("check_onWebSocketError", check_code)
+            .ok()
+            .map(|v| {
+                let mut scope = runtime.handle_scope();
+                deno_core::v8::Local::new(&mut scope, v).is_true()
+            })
+            .unwrap_or(false);
+        if !exists {
+            return Ok(());
+        }
+
+        let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
+        let error_json = serde_json::to_string(&error).unwrap_or_else(|_| "null".to_string());
+        let code = format!(
+            "globalThis.onWebSocketError({{}}, {}, {})",
+            flow_json, error_json
+        );
+        let _ = runtime.execute_script("call_onWebSocketError", code);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1179,5 +1402,82 @@ impl ScriptEngineTrait for DenoScriptEngine {
             .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
 
         Ok(res)
+    }
+
+    async fn on_connect(&self, conn: &ConnectionInfo) -> Result<ConnectAction, BoxError> {
+        let (tx, rx) = oneshot::channel();
+        let conn_clone = conn.clone();
+        self.tx
+            .send(DenoCommand::OnConnect(conn_clone, tx))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await
+            .map_err(|e| Box::new(e) as BoxError)?
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+    }
+
+    async fn on_disconnect(
+        &self,
+        conn: &ConnectionInfo,
+        stats: &ConnectionStats,
+    ) -> Result<(), BoxError> {
+        let (tx, rx) = oneshot::channel();
+        let conn_clone = conn.clone();
+        let stats_clone = stats.clone();
+        self.tx
+            .send(DenoCommand::OnDisconnect(conn_clone, stats_clone, tx))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await
+            .map_err(|e| Box::new(e) as BoxError)?
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+    }
+
+    async fn on_websocket_start(&self, flow: &mut Flow) -> Result<(), BoxError> {
+        let (tx, rx) = oneshot::channel();
+        let flow_clone = flow.clone();
+        self.tx
+            .send(DenoCommand::OnWebSocketStart(flow_clone, tx))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await
+            .map_err(|e| Box::new(e) as BoxError)?
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+    }
+
+    async fn on_websocket_end(
+        &self,
+        flow: &mut Flow,
+        close_code: u16,
+        close_reason: &str,
+    ) -> Result<(), BoxError> {
+        let (tx, rx) = oneshot::channel();
+        let flow_clone = flow.clone();
+        let reason_owned = close_reason.to_string();
+        self.tx
+            .send(DenoCommand::OnWebSocketEnd(
+                flow_clone,
+                close_code,
+                reason_owned,
+                tx,
+            ))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await
+            .map_err(|e| Box::new(e) as BoxError)?
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+    }
+
+    async fn on_websocket_error(&self, flow: &mut Flow, error: &str) -> Result<(), BoxError> {
+        let (tx, rx) = oneshot::channel();
+        let flow_clone = flow.clone();
+        let error_owned = error.to_string();
+        self.tx
+            .send(DenoCommand::OnWebSocketError(flow_clone, error_owned, tx))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await
+            .map_err(|e| Box::new(e) as BoxError)?
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
     }
 }

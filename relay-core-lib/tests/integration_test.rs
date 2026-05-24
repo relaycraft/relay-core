@@ -65,7 +65,7 @@ async fn test_proxy_basic_http_request() {
     // Spawn Proxy
     tokio::spawn(async move {
         let (_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
-        start_proxy(source, tx, interceptor, ca, policy_rx, None, None)
+        start_proxy(source, tx, interceptor, ca, policy_rx, None, None, None)
             .await
             .unwrap();
     });
@@ -189,7 +189,7 @@ async fn test_proxy_large_request_body() {
     // Spawn Proxy
     tokio::spawn(async move {
         let (_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
-        start_proxy(source, tx, interceptor, ca, policy_rx, None, None)
+        start_proxy(source, tx, interceptor, ca, policy_rx, None, None, None)
             .await
             .unwrap();
     });
