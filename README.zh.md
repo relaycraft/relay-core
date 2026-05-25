@@ -123,6 +123,19 @@ server.serve().await.unwrap();
 | GET | `/api/v1/audit` | 查询审计事件 |
 | GET | `/api/v1/events` | SSE 实时事件流 |
 
+## 平台支持
+
+### 透明代理
+
+| 平台 | TCP | UDP | 状态 |
+|------|-----|-----|------|
+| Linux | 已验证 | 已验证 | 通过 TPROXY + SO_ORIGINAL_DST 完整支持 |
+| macOS | 已验证 | 实验性 | TCP 通过 PF DIOCNATLOOK；UDP 查询已就绪，待接线 |
+| Windows | 实验性 | 1.x | TCP 通过 WinDivert（需驱动签名）；UDP 延期 |
+
+> 集成测试见 `relay-core-lib/tests/transparent_proxy_test.rs`。
+> 不支持的平台请使用显式代理模式（`curl --proxy http://127.0.0.1:8080`）或系统代理配置。
+
 ## 开发
 
 ```bash

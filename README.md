@@ -123,6 +123,20 @@ server.serve().await.unwrap();
 | GET | `/api/v1/audit` | Query audit events |
 | GET | `/api/v1/events` | SSE stream of live updates |
 
+## Platform Support
+
+### Transparent Proxy
+
+| Platform | TCP | UDP | Status |
+|----------|-----|-----|--------|
+| Linux | Verified | Verified | Full support via TPROXY + SO_ORIGINAL_DST |
+| macOS | Verified | Experimental | TCP via PF DIOCNATLOOK; UDP lookup available, await wiring |
+| Windows | Experimental | 1.x | TCP via WinDivert (driver signing required); UDP deferred |
+
+> See `relay-core-lib/tests/transparent_proxy_test.rs` for integration tests.
+> For platforms without transparent proxy support, use explicit proxy mode
+> (`curl --proxy http://127.0.0.1:8080`) or system proxy configuration.
+
 ## Development
 
 ```bash
