@@ -13,7 +13,8 @@ RelayCore 是一个独立的代理平台，在共享运行时之上提供了多�
 - **规则引擎** — 匹配 + 动作管线（请求头、请求体、状态码、重定向、Mock、限速）
 - **脚本引擎** — 基于 Deno/V8 运行时，动态修改请求、响应与 WebSocket 消息
 - **断点拦截** — 暂停实时流量，检查、修改后放行或丢弃
-- **透明代理** — Linux TPROXY（TCP+UDP）、macOS PF（TCP）
+- **透明代理** — Linux TPROXY（TCP+UDP）、macOS PF（TCP+UDP）、Windows WinDivert（TCP）
+- **QUIC/HTTP3** — Tier 1 downgrade（剥离 Alt-Svc 头）+ Tier 2 UDP forward；应用层 MITM（解密）延期至 1.0 后
 - **流量脱敏** — 可配置的敏感字段掩码（请求头、查询参数、请求/响应体）
 - **审计追踪** — 控制面操作全量记录，支持执行者归因与持久化
 - **指标监控** — Prometheus 文本格式端点、结构化指标快照
