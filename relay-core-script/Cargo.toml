@@ -31,6 +31,7 @@ sha2 = "0.10"
 md-5 = "0.10"
 data-encoding = "2"
 url = { workspace = true }
+ureq = { version = "2", features = ["tls"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

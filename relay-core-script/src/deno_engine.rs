@@ -204,9 +204,29 @@ fn op_script_fetch(state: &OpState, #[string] url: String) -> String {
         }
     }
 
-    // S7b: relay.fetch HTTP client deferred to 1.x — current V8 isolate uses
-    // new_current_thread runtime which is incompatible with reqwest blocking client.
-    serde_json::json!({"ok": false, "error": "fetch not yet implemented"}).to_string()
+    // Minimal HTTP GET client for relay.fetch. Uses ureq (blocking) for simplicity.
+    // The V8 isolate runs on its own dedicated thread, so blocking is acceptable.
+    // Async sub-requests with response streaming are deferred to 1.x.
+    let timeout = std::time::Duration::from_millis(config.timeout_ms);
+    let agent = ureq::AgentBuilder::new()
+        .timeout_read(timeout)
+        .timeout_connect(timeout)
+        .build();
+    match agent.get(&url).call() {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.into_string().unwrap_or_default();
+            serde_json::json!({"ok": true, "status": status, "body": body}).to_string()
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            serde_json::json!({"ok": false, "status": code, "body": body, "error": format!("HTTP {}", code)}).to_string()
+        }
+        Err(e) => {
+            SCRIPT_FETCH_REJECTED_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
+        }
+    }
 }
 
 /// Get the total number of relay.fetch attempts

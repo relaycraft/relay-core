@@ -638,8 +638,8 @@ async fn test_relay_fetch_allows_allowlisted_host() {
     let script = r#"
         globalThis.onRequestHeaders = (ctx, flow) => {
             const r = relay.fetch("http://trusted.example.com/api");
-            // Still returns error because actual fetch not implemented (M6),
-            // but should NOT be "host not in allowlist" or "script fetch disabled"
+            // Host passes allowlist validation; actual HTTP fetch may fail (DNS/network)
+            // but must NOT be rejected by allowlist or disabled checks.
             if (!r.ok && r.error !== "host not in allowlist" && r.error !== "script fetch disabled") {
                 flow.tags.push("fetch-allowlist-pass");
             } else {
@@ -853,4 +853,57 @@ async fn test_script_empty_matched_rules_no_effect() {
         }
         res => panic!("Expected Continue, got {:?}", res),
     }
+}
+
+#[tokio::test]
+async fn test_relay_fetch_success_against_local_server() {
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    // Start a minimal HTTP server on a random local port
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let port = server_addr.port();
+    let server_thread = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\n\r\nsuccess";
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        // Give client time to read before closing
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    });
+
+    let fetch_config = ScriptFetchConfig {
+        enabled: true,
+        timeout_ms: 2000,
+        proxy_listen_port: port + 1, // different from the target server
+        ..Default::default()
+    };
+    let interceptor = ScriptInterceptor::new_with_env_and_fetch(HashSet::new(), fetch_config)
+        .await
+        .unwrap();
+    let script = format!(
+        r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {{
+            const r = relay.fetch("http://127.0.0.1:{}/");
+            if (r.ok && r.status === 200 && r.body === "success") {{
+                flow.tags.push("fetch-ok");
+            }} else {{
+                flow.tags.push("fetch-fail:" + JSON.stringify(r));
+            }}
+            return flow;
+        }};
+    "#,
+        port
+    );
+    interceptor.load_script(&script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut flow).await;
+    server_thread.join().unwrap();
+    assert!(
+        flow.tags.contains(&"fetch-ok".to_string()),
+        "relay.fetch should succeed against local server, got tags: {:?}",
+        flow.tags
+    );
 }
