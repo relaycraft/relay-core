@@ -478,7 +478,9 @@ mod tests {
         BodyData, Direction, Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
         WebSocketMessage,
     };
+    use relay_core_lib::interceptor::{ConnectAction, ConnectionInfo, ConnectionStats};
     use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use url::Url;
     use uuid::Uuid;
 
@@ -652,5 +654,271 @@ mod tests {
             flow.tags.iter().any(|t| t == "script-error"),
             "script error should be tagged for observability"
         );
+    }
+
+    fn sample_connection_info() -> ConnectionInfo {
+        ConnectionInfo {
+            id: Uuid::new_v4(),
+            client_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 54321),
+            server_addr: Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                443,
+            )),
+            tls_sni: Some("example.com".to_string()),
+        }
+    }
+
+    fn sample_connection_stats() -> ConnectionStats {
+        ConnectionStats {
+            duration_ms: 1234,
+            bytes_sent: 5000,
+            bytes_received: 12000,
+            flows_count: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_connect_drop_rejects_connection() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onConnect = function(context, conn) {
+                if (conn.tls_sni === "example.com") {
+                    return { drop: true, reason: "sni blocked" };
+                }
+                return {};
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let conn = sample_connection_info();
+        let action = interceptor.on_connect(&conn).await;
+        assert!(
+            matches!(action, ConnectAction::Drop { ref reason } if reason == "sni blocked"),
+            "onConnect should drop connection for blocked SNI, got {:?}",
+            action
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_connect_allow_no_drop() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onConnect = function(context, conn) {
+                return {};
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let conn = sample_connection_info();
+        let action = interceptor.on_connect(&conn).await;
+        assert!(
+            matches!(action, ConnectAction::Allow),
+            "onConnect should allow connection by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_connect_no_handler_defaults_allow() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        // No onConnect defined in script
+        let script = r#"
+            globalThis.onRequestHeaders = function(context, flow) { return flow; }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let conn = sample_connection_info();
+        let action = interceptor.on_connect(&conn).await;
+        assert!(
+            matches!(action, ConnectAction::Allow),
+            "missing onConnect should default to Allow"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_disconnect_fires() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onDisconnect = function(context, conn, stats) {
+                // Verify stats fields are accessible in script
+                if (typeof stats.duration_ms !== "number") throw new Error("missing duration_ms");
+                if (typeof conn.client_addr !== "string") throw new Error("missing client_addr");
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let conn = sample_connection_info();
+        let stats = sample_connection_stats();
+        // on_disconnect is fire-and-forget; verify it does not panic
+        interceptor.on_disconnect(&conn, &stats).await;
+    }
+
+    #[tokio::test]
+    async fn test_on_websocket_start_fires() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onWebSocketStart = function(context, flow) {
+                if (flow.layer.type === "Http") {
+                    flow.layer.data.request.headers.push(["X-WS-Start", "1"]);
+                }
+                return flow;
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let mut flow = create_test_flow();
+        interceptor.on_websocket_start(&mut flow).await;
+
+        if let Layer::Http(http) = &flow.layer {
+            assert!(
+                http.request
+                    .headers
+                    .iter()
+                    .any(|(k, v)| k == "X-WS-Start" && v == "1"),
+                "onWebSocketStart should inject header"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_websocket_end_fires() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onWebSocketEnd = function(context, flow, closeCode, closeReason) {
+                flow.tags.push("ws-ended:" + closeCode);
+                return flow;
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let mut flow = create_test_flow();
+        interceptor
+            .on_websocket_end(&mut flow, 1000, "Normal Closure")
+            .await;
+
+        assert!(
+            flow.tags.iter().any(|t| t == "ws-ended:1000"),
+            "onWebSocketEnd should tag flow with close code"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_websocket_error_fires() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onWebSocketError = function(context, flow, error) {
+                flow.tags.push("ws-error");
+                return flow;
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let mut flow = create_test_flow();
+        interceptor
+            .on_websocket_error(&mut flow, "connection reset")
+            .await;
+
+        assert!(
+            flow.tags.iter().any(|t| t == "ws-error"),
+            "onWebSocketError should tag flow"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_connect_error_falls_back_allow() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onConnect = function(context, conn) {
+                throw new Error("connect handler crash");
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let conn = sample_connection_info();
+        let action = interceptor.on_connect(&conn).await;
+        assert!(
+            matches!(action, ConnectAction::Allow),
+            "onConnect handler crash should fall back to Allow"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ws_lifecycle_normal_sequence() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onWebSocketStart = function(context, flow) {
+                flow.tags.push("ws-life:start");
+                return flow;
+            }
+            globalThis.onWebSocketMessage = function(context, flow, message) {
+                message.content.content += " [mod]";
+                return message;
+            }
+            globalThis.onWebSocketEnd = function(context, flow, closeCode, closeReason) {
+                flow.tags.push("ws-life:end:" + closeCode);
+                return flow;
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let mut flow = create_test_flow();
+
+        // Normal sequence: start → message → end
+        interceptor.on_websocket_start(&mut flow).await;
+        assert!(flow.tags.iter().any(|t| t == "ws-life:start"));
+
+        let msg = WebSocketMessage {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            direction: Direction::ClientToServer,
+            content: BodyData {
+                encoding: "utf-8".to_string(),
+                content: "hello".to_string(),
+                size: 5,
+            },
+            opcode: "Text".to_string(),
+        };
+        let result = interceptor
+            .on_websocket_message(&mut flow, msg)
+            .await
+            .expect("ws message interception ok");
+        match result {
+            WebSocketMessageAction::Continue(forwarded) => {
+                assert!(forwarded.content.content.contains("[mod]"));
+            }
+            other => panic!("expected Continue, got {:?}", other),
+        }
+
+        interceptor.on_websocket_end(&mut flow, 1000, "done").await;
+        assert!(flow.tags.iter().any(|t| t == "ws-life:end:1000"));
+    }
+
+    #[tokio::test]
+    async fn test_ws_lifecycle_error_sequence() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+
+        let script = r#"
+            globalThis.onWebSocketError = function(context, flow, error) {
+                flow.tags.push("ws-life:error");
+                return flow;
+            }
+        "#;
+        interceptor.load_script(script).await.unwrap();
+
+        let mut flow = create_test_flow();
+
+        // Error sequence: onWebSocketError fires
+        interceptor
+            .on_websocket_error(&mut flow, "peer reset")
+            .await;
+        assert!(flow.tags.iter().any(|t| t == "ws-life:error"));
     }
 }

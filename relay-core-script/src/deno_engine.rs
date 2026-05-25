@@ -317,9 +317,14 @@ enum DenoCommand {
         WebSocketMessage,
         oneshot::Sender<Result<WebSocketMessageAction, String>>,
     ),
-    OnWebSocketStart(Flow, oneshot::Sender<Result<(), String>>),
-    OnWebSocketEnd(Flow, u16, String, oneshot::Sender<Result<(), String>>),
-    OnWebSocketError(Flow, String, oneshot::Sender<Result<(), String>>),
+    OnWebSocketStart(Flow, oneshot::Sender<Result<Option<Flow>, String>>),
+    OnWebSocketEnd(
+        Flow,
+        u16,
+        String,
+        oneshot::Sender<Result<Option<Flow>, String>>,
+    ),
+    OnWebSocketError(Flow, String, oneshot::Sender<Result<Option<Flow>, String>>),
 }
 
 #[derive(Clone)]
@@ -1218,7 +1223,10 @@ impl DenoScriptEngine {
         Ok(())
     }
 
-    fn handle_on_websocket_start(runtime: &mut JsRuntime, flow: Flow) -> Result<(), String> {
+    fn handle_on_websocket_start(
+        runtime: &mut JsRuntime,
+        flow: Flow,
+    ) -> Result<Option<Flow>, String> {
         let check_code = "typeof globalThis.onWebSocketStart === 'function'";
         let exists = runtime
             .execute_script("check_onWebSocketStart", check_code)
@@ -1229,13 +1237,22 @@ impl DenoScriptEngine {
             })
             .unwrap_or(false);
         if !exists {
-            return Ok(());
+            return Ok(None);
         }
 
         let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
         let code = format!("globalThis.onWebSocketStart({{}}, {})", flow_json);
-        let _ = runtime.execute_script("call_onWebSocketStart", code);
-        Ok(())
+        let result = runtime
+            .execute_script("call_onWebSocketStart", code)
+            .map_err(|e| e.to_string())?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
+        if result_val.is_undefined() || result_val.is_null() {
+            return Ok(None);
+        }
+        let deser: Flow =
+            deno_core::serde_v8::from_v8(&mut scope, result_val).map_err(|e| e.to_string())?;
+        Ok(Some(deser))
     }
 
     fn handle_on_websocket_end(
@@ -1243,7 +1260,7 @@ impl DenoScriptEngine {
         flow: Flow,
         close_code: u16,
         close_reason: String,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Flow>, String> {
         let check_code = "typeof globalThis.onWebSocketEnd === 'function'";
         let exists = runtime
             .execute_script("check_onWebSocketEnd", check_code)
@@ -1254,7 +1271,7 @@ impl DenoScriptEngine {
             })
             .unwrap_or(false);
         if !exists {
-            return Ok(());
+            return Ok(None);
         }
 
         let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
@@ -1264,15 +1281,24 @@ impl DenoScriptEngine {
             "globalThis.onWebSocketEnd({{}}, {}, {}, {})",
             flow_json, close_code, reason_json
         );
-        let _ = runtime.execute_script("call_onWebSocketEnd", code);
-        Ok(())
+        let result = runtime
+            .execute_script("call_onWebSocketEnd", code)
+            .map_err(|e| e.to_string())?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
+        if result_val.is_undefined() || result_val.is_null() {
+            return Ok(None);
+        }
+        let deser: Flow =
+            deno_core::serde_v8::from_v8(&mut scope, result_val).map_err(|e| e.to_string())?;
+        Ok(Some(deser))
     }
 
     fn handle_on_websocket_error(
         runtime: &mut JsRuntime,
         flow: Flow,
         error: String,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Flow>, String> {
         let check_code = "typeof globalThis.onWebSocketError === 'function'";
         let exists = runtime
             .execute_script("check_onWebSocketError", check_code)
@@ -1283,7 +1309,7 @@ impl DenoScriptEngine {
             })
             .unwrap_or(false);
         if !exists {
-            return Ok(());
+            return Ok(None);
         }
 
         let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
@@ -1292,8 +1318,17 @@ impl DenoScriptEngine {
             "globalThis.onWebSocketError({{}}, {}, {})",
             flow_json, error_json
         );
-        let _ = runtime.execute_script("call_onWebSocketError", code);
-        Ok(())
+        let result = runtime
+            .execute_script("call_onWebSocketError", code)
+            .map_err(|e| e.to_string())?;
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
+        if result_val.is_undefined() || result_val.is_null() {
+            return Ok(None);
+        }
+        let deser: Flow =
+            deno_core::serde_v8::from_v8(&mut scope, result_val).map_err(|e| e.to_string())?;
+        Ok(Some(deser))
     }
 }
 
@@ -1446,9 +1481,15 @@ impl ScriptEngineTrait for DenoScriptEngine {
             .send(DenoCommand::OnWebSocketStart(flow_clone, tx))
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
-        rx.await
+        let res = rx
+            .await
             .map_err(|e| Box::new(e) as BoxError)?
-            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
+
+        if let Some(new_flow) = res {
+            *flow = new_flow;
+        }
+        Ok(())
     }
 
     async fn on_websocket_end(
@@ -1469,9 +1510,15 @@ impl ScriptEngineTrait for DenoScriptEngine {
             ))
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
-        rx.await
+        let res = rx
+            .await
             .map_err(|e| Box::new(e) as BoxError)?
-            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
+
+        if let Some(new_flow) = res {
+            *flow = new_flow;
+        }
+        Ok(())
     }
 
     async fn on_websocket_error(&self, flow: &mut Flow, error: &str) -> Result<(), BoxError> {
@@ -1482,8 +1529,14 @@ impl ScriptEngineTrait for DenoScriptEngine {
             .send(DenoCommand::OnWebSocketError(flow_clone, error_owned, tx))
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
-        rx.await
+        let res = rx
+            .await
             .map_err(|e| Box::new(e) as BoxError)?
-            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
+
+        if let Some(new_flow) = res {
+            *flow = new_flow;
+        }
+        Ok(())
     }
 }
