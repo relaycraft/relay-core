@@ -176,22 +176,32 @@ where
             }
             if let Some(conn_override) = &ctx.connect_override {
                 match conn_override {
-                    ConnectOverride::ForwardPort { host, port } => {
+                    ConnectOverride::ForwardPort { host: _, port } => {
+                        // ForwardPort preserves the original destination IP and only
+                        // changes the port. The host field is retained for future
+                        // host-redirect support (1.x).
                         connect_target = Some(SocketAddr::new(
                             target_addr
                                 .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
                                 .ip(),
                             *port,
                         ));
-                        tracing::debug!("Connect stage ForwardPort -> {}:{}", host, port);
+                        tracing::debug!("Connect stage ForwardPort -> port {}", port);
                     }
                     ConnectOverride::RedirectIp { ip } => {
                         let port = connect_target.map(|a| a.port()).unwrap_or(0);
                         connect_target = Some(SocketAddr::new(*ip, port));
                         tracing::debug!("Connect stage RedirectIp -> {}", ip);
                     }
-                    ConnectOverride::SetTtl { ttl: _ } => {
-                        // SetTtl applied on the upstream socket at connection time
+                    ConnectOverride::SetTtl { ttl } => {
+                        // Socket-level TTL application requires access to the raw
+                        // TcpStream before it enters the hyper HTTP stack, which is
+                        // not feasible with the current connection model.
+                        // Deferred to 1.x.
+                        tracing::warn!(
+                            "Connect stage SetTtl({}) is not yet implemented; TTL unchanged",
+                            ttl
+                        );
                     }
                 }
             }

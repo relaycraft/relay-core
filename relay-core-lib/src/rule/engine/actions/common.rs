@@ -773,4 +773,91 @@ mod tests {
             _ => panic!("expected failed outcome"),
         }
     }
+
+    #[tokio::test]
+    async fn test_forward_port_sets_override() {
+        use crate::rule::engine::executor::ConnectOverride;
+        let mut flow = sample_flow_with_request_body(0);
+        let mut ctx = sample_ctx();
+        let action = Action::ForwardPort {
+            target_host: "example.com".to_string(),
+            target_port: 8443,
+        };
+        let outcome = execute(&action, &mut flow, &mut ctx).await;
+        assert!(matches!(outcome, ActionOutcome::Continue));
+        let ov = ctx
+            .connect_override
+            .expect("connect_override should be set");
+        assert!(
+            matches!(ov, ConnectOverride::ForwardPort { host, port } if host == "example.com" && port == 8443)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_forward_port_substitutes_variables() {
+        use crate::rule::engine::executor::ConnectOverride;
+        let mut flow = sample_flow_with_request_body(0);
+        let mut ctx = sample_ctx();
+        ctx.variables
+            .insert("custom_host".to_string(), "alt.example.com".to_string());
+        let action = Action::ForwardPort {
+            target_host: "{{custom_host}}".to_string(),
+            target_port: 9090,
+        };
+        let outcome = execute(&action, &mut flow, &mut ctx).await;
+        assert!(matches!(outcome, ActionOutcome::Continue));
+        let ov = ctx
+            .connect_override
+            .expect("connect_override should be set");
+        assert!(
+            matches!(ov, ConnectOverride::ForwardPort { host, port } if host == "alt.example.com" && port == 9090)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redirect_ip_sets_override() {
+        use crate::rule::engine::executor::ConnectOverride;
+        use std::net::IpAddr;
+        let mut flow = sample_flow_with_request_body(0);
+        let mut ctx = sample_ctx();
+        let action = Action::RedirectIp {
+            target: "10.0.0.1".to_string(),
+        };
+        let outcome = execute(&action, &mut flow, &mut ctx).await;
+        assert!(matches!(outcome, ActionOutcome::Continue));
+        let ov = ctx
+            .connect_override
+            .expect("connect_override should be set");
+        assert!(
+            matches!(ov, ConnectOverride::RedirectIp { ip } if ip == "10.0.0.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redirect_ip_rejects_invalid_ip() {
+        let mut flow = sample_flow_with_request_body(0);
+        let mut ctx = sample_ctx();
+        let action = Action::RedirectIp {
+            target: "not-an-ip".to_string(),
+        };
+        let outcome = execute(&action, &mut flow, &mut ctx).await;
+        match outcome {
+            ActionOutcome::Failed(msg) => assert!(msg.contains("Invalid IP")),
+            _ => panic!("expected failed outcome for invalid IP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_ttl_sets_override() {
+        use crate::rule::engine::executor::ConnectOverride;
+        let mut flow = sample_flow_with_request_body(0);
+        let mut ctx = sample_ctx();
+        let action = Action::SetTtl { ttl: 64 };
+        let outcome = execute(&action, &mut flow, &mut ctx).await;
+        assert!(matches!(outcome, ActionOutcome::Continue));
+        let ov = ctx
+            .connect_override
+            .expect("connect_override should be set");
+        assert!(matches!(ov, ConnectOverride::SetTtl { ttl } if ttl == 64));
+    }
 }
