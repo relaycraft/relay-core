@@ -468,6 +468,12 @@ impl DenoScriptEngine {
                         },
                     };
 
+                    // S12a: ctx.setTag / ctx.setVariable (script→rule injection) deferred to 1.x.
+                    // Cross-thread synchronous V8 callback into the rule execution engine would
+                    // require architectural changes that risk rule engine atomicity.
+                    // Script-side rule context reading (flow.matched_rules, flow.rule_variables)
+                    // is fully supported (S10a/S11).
+
                     // S1: sharedState — cross-hook shared map per isolate
                     globalThis.sharedState = {
                         get(key) {

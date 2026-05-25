@@ -723,3 +723,134 @@ async fn test_relay_fetch_rejected_counter_increments() {
         fetch_rejected
     );
 }
+
+#[tokio::test]
+async fn test_script_reads_matched_rules_in_on_request() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+
+    let script = r#"
+        globalThis.onRequest = function(context, flow) {
+            if (flow.matched_rules && flow.matched_rules.length > 0) {
+                flow.layer.data.request.headers.push(["X-Matched-Rules", flow.matched_rules.join(",")]);
+            }
+            return flow;
+        }
+    "#;
+
+    interceptor.load_script(script).await.unwrap();
+
+    let mut flow = create_dummy_flow();
+    flow.matched_rules = vec!["rule-001".to_string(), "rule-002".to_string()];
+
+    let body = Full::new(Bytes::new())
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+
+    match interceptor.on_request(&mut flow, body).await.unwrap() {
+        RequestAction::Continue(_) => {
+            if let Layer::Http(http) = &flow.layer {
+                let header = http
+                    .request
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k == "X-Matched-Rules")
+                    .map(|(_, v)| v.clone());
+                assert_eq!(
+                    header.as_deref(),
+                    Some("rule-001,rule-002"),
+                    "script should read matched_rules and inject header"
+                );
+            } else {
+                panic!("Flow layer is not Http");
+            }
+        }
+        res => panic!("Expected Continue, got {:?}", res),
+    }
+}
+
+#[tokio::test]
+async fn test_script_reads_rule_variables_in_on_request() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+
+    let script = r#"
+        globalThis.onRequest = function(context, flow) {
+            if (flow.rule_variables && flow.rule_variables["user_id"]) {
+                flow.layer.data.request.headers.push(["X-User-Id", flow.rule_variables["user_id"]]);
+            }
+            return flow;
+        }
+    "#;
+
+    interceptor.load_script(script).await.unwrap();
+
+    let mut flow = create_dummy_flow();
+    let mut vars = HashMap::new();
+    vars.insert("user_id".to_string(), "abc-123".to_string());
+    flow.rule_variables = vars;
+
+    let body = Full::new(Bytes::new())
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+
+    match interceptor.on_request(&mut flow, body).await.unwrap() {
+        RequestAction::Continue(_) => {
+            if let Layer::Http(http) = &flow.layer {
+                let header = http
+                    .request
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k == "X-User-Id")
+                    .map(|(_, v)| v.clone());
+                assert_eq!(
+                    header.as_deref(),
+                    Some("abc-123"),
+                    "script should read rule_variables and inject header"
+                );
+            } else {
+                panic!("Flow layer is not Http");
+            }
+        }
+        res => panic!("Expected Continue, got {:?}", res),
+    }
+}
+
+#[tokio::test]
+async fn test_script_empty_matched_rules_no_effect() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+
+    let script = r#"
+        globalThis.onRequest = function(context, flow) {
+            let count = flow.matched_rules ? flow.matched_rules.length : 0;
+            flow.layer.data.request.headers.push(["X-Matched-Count", String(count)]);
+            return flow;
+        }
+    "#;
+
+    interceptor.load_script(script).await.unwrap();
+
+    let mut flow = create_dummy_flow();
+    // matched_rules starts empty
+
+    let body = Full::new(Bytes::new())
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+
+    match interceptor.on_request(&mut flow, body).await.unwrap() {
+        RequestAction::Continue(_) => {
+            if let Layer::Http(http) = &flow.layer {
+                let header = http
+                    .request
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k == "X-Matched-Count")
+                    .map(|(_, v)| v.clone());
+                assert_eq!(
+                    header.as_deref(),
+                    Some("0"),
+                    "script should see empty matched_rules as zero-length"
+                );
+            }
+        }
+        res => panic!("Expected Continue, got {:?}", res),
+    }
+}
