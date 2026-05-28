@@ -552,3 +552,36 @@ async fn test_core_state_rule_engine_reflects_latest_rules() {
         "executing rule should mark flow as modified"
     );
 }
+
+#[tokio::test]
+async fn test_intercept_orphan_cleanup_after_channel_drop() {
+    let state = CoreState::new(None).await;
+    let key = "flow-orphan:request_headers".to_string();
+    let (tx, rx) = oneshot::channel();
+    state.register_intercept(key.clone(), tx).await;
+
+    assert!(
+        state.is_intercept_pending(key.clone()).await,
+        "key should be pending after register"
+    );
+
+    drop(rx);
+
+    let result = state
+        .resolve_intercept(key.clone(), InterceptionResult::Continue)
+        .await;
+    assert!(result.is_ok(), "orphan cleanup should succeed");
+
+    assert!(
+        !state.is_intercept_pending(key.clone()).await,
+        "key should not be pending after cleanup"
+    );
+
+    let second = state
+        .resolve_intercept(key.clone(), InterceptionResult::Continue)
+        .await;
+    assert!(
+        second.is_err(),
+        "second resolve should fail (key already cleaned)"
+    );
+}

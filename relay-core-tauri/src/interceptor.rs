@@ -391,10 +391,24 @@ impl<R: Runtime> TauriInterceptor<R> {
                     }
                     Ok(Err(_)) => {
                         eprintln!("Interception channel dropped for {}", key);
+                        let _ = self
+                            .state
+                            .resolve_intercept(key.clone(), InterceptionResult::Continue)
+                            .await
+                            .inspect_err(|e| {
+                                eprintln!("Failed to resolve orphan intercept {}: {}", key, e)
+                            });
                         InterceptionResult::Continue
                     }
                     Err(_) => {
                         eprintln!("Interception timeout for {}", key);
+                        let _ = self
+                            .state
+                            .resolve_intercept(key.clone(), InterceptionResult::Continue)
+                            .await
+                            .inspect_err(|e| {
+                                eprintln!("Failed to resolve orphan intercept {}: {}", key, e)
+                            });
                         InterceptionResult::Continue
                     }
                 }
