@@ -81,13 +81,23 @@ async fn get_flow(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ReplayParams {
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
+}
+
 /// POST /api/v1/flows/{id}/replay
 ///
 /// Re-sends the original HTTP request from a captured flow and returns the new response.
 /// Only works for HTTP flows (not WebSocket, TCP, UDP).
+///
+/// Query parameters:
+/// - `accept_invalid_certs` (bool, default false): skip TLS verification (insecure, dev only)
 async fn replay_flow(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
+    Query(params): Query<ReplayParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let flow = ctx
         .flows
@@ -119,8 +129,11 @@ async fn replay_flow(
         }
     };
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+    let mut client_builder = reqwest::Client::builder();
+    if params.accept_invalid_certs {
+        client_builder = client_builder.danger_accept_invalid_certs(true);
+    }
+    let client = client_builder
         .build()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 

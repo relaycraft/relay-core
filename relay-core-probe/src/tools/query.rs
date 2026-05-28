@@ -108,7 +108,11 @@ pub fn replay_flow_schema() -> Tool {
             "type": "object",
             "required": ["id"],
             "properties": {
-                "id": { "type": "string", "description": "Flow UUID to replay" }
+                "id": { "type": "string", "description": "Flow UUID to replay" },
+                "accept_invalid_certs": {
+                    "type": "boolean",
+                    "description": "Skip TLS certificate verification (insecure, dev only). Default: false."
+                }
             }
         }),
     )
@@ -116,6 +120,10 @@ pub fn replay_flow_schema() -> Tool {
 
 pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
     let id = require_str(&args, "id")?.to_string();
+    let accept_invalid_certs = args
+        .get("accept_invalid_certs")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let flow = ctx
         .flows
         .get_flow(&id)
@@ -143,10 +151,11 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
         _ => return Err("Replay only supports HTTP flows".to_string().into()),
     };
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut client_builder = reqwest::Client::builder();
+    if accept_invalid_certs {
+        client_builder = client_builder.danger_accept_invalid_certs(true);
+    }
+    let client = client_builder.build().map_err(|e| e.to_string())?;
 
     let mut req = client.request(
         method
