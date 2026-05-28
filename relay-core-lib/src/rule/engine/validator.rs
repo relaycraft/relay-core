@@ -25,9 +25,8 @@ pub fn validate_filter_stage(filter: &CompiledFilter, stage: &RuleStage) -> bool
         CompiledFilter::WebSocketMessage(_) => {
             matches!(stage, RuleStage::WebSocketMessage)
         }
-        CompiledFilter::And(filters) | CompiledFilter::Or(filters) => {
-            filters.iter().all(|f| validate_filter_stage(f, stage))
-        }
+        CompiledFilter::And(filters) => filters.iter().all(|f| validate_filter_stage(f, stage)),
+        CompiledFilter::Or(filters) => filters.iter().any(|f| validate_filter_stage(f, stage)),
         CompiledFilter::Not(f) => validate_filter_stage(f, stage),
         CompiledFilter::Invalid => false,
     }
@@ -165,21 +164,34 @@ mod tests {
         let invalid_in_ws =
             CompiledFilter::ResponseBody(CompiledStringMatcher::Contains("y".to_string()));
         let and_filter = CompiledFilter::And(vec![valid_ws.clone(), invalid_in_ws.clone()]);
-        let or_filter = CompiledFilter::Or(vec![valid_ws.clone(), invalid_in_ws]);
-        let not_filter = CompiledFilter::Not(Box::new(valid_ws));
+        let or_filter = CompiledFilter::Or(vec![valid_ws.clone(), invalid_in_ws.clone()]);
+        let not_filter = CompiledFilter::Not(Box::new(valid_ws.clone()));
 
         assert!(
             !validate_filter_stage(&and_filter, &RuleStage::WebSocketMessage),
             "AND should fail when one child invalid for stage"
         );
         assert!(
-            !validate_filter_stage(&or_filter, &RuleStage::WebSocketMessage),
-            "OR currently enforces all children stage-valid"
+            validate_filter_stage(&or_filter, &RuleStage::WebSocketMessage),
+            "OR should pass when at least one child is valid for stage"
         );
         assert!(validate_filter_stage(
             &not_filter,
             &RuleStage::WebSocketMessage
         ));
+
+        let url_filter = CompiledFilter::Url(CompiledStringMatcher::Contains("/api".to_string()));
+        let resp_body =
+            CompiledFilter::ResponseBody(CompiledStringMatcher::Contains("data".to_string()));
+        let or_url_resp = CompiledFilter::Or(vec![url_filter, resp_body]);
+        assert!(
+            validate_filter_stage(&or_url_resp, &RuleStage::RequestHeaders),
+            "Or(Url, ResponseBody) should be valid at RequestHeaders (Url is valid)"
+        );
+        assert!(
+            validate_filter_stage(&or_url_resp, &RuleStage::ResponseBody),
+            "Or(Url, ResponseBody) should be valid at ResponseBody (ResponseBody is valid)"
+        );
     }
 
     #[test]
