@@ -23,7 +23,7 @@ use relay_core_api::flow::{Flow, FlowUpdate, Layer, NetworkInfo, TcpLayer, Trans
 use relay_core_api::policy::ProxyPolicy;
 use relay_core_api::rule::RuleStage;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -177,13 +177,10 @@ where
             if let Some(conn_override) = &ctx.connect_override {
                 match conn_override {
                     ConnectOverride::ForwardPort { host: _, port } => {
-                        // ForwardPort preserves the original destination IP and only
-                        // changes the port. The host field is retained for future
-                        // host-redirect support (1.x).
                         connect_target = Some(SocketAddr::new(
                             target_addr
-                                .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
-                                .ip(),
+                                .map(|a| a.ip())
+                                .unwrap_or(IpAddr::from([0, 0, 0, 0])),
                             *port,
                         ));
                         tracing::debug!("Connect stage ForwardPort -> port {}", port);

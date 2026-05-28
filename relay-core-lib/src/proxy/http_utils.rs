@@ -52,7 +52,12 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
     let headers: Vec<(String, String)> = req
         .headers()
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                String::from_utf8_lossy(v.as_bytes()).to_string(),
+            )
+        })
         .collect();
 
     let query: Vec<(String, String)> = if let Ok(parsed_url) = Url::parse(&url_str) {
@@ -334,7 +339,12 @@ pub fn update_flow_with_response_headers(
 
     let resp_headers_vec: Vec<(String, String)> = headers
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                String::from_utf8_lossy(v.as_bytes()).to_string(),
+            )
+        })
         .collect();
 
     let http_response = HttpResponse {

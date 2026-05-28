@@ -18,6 +18,8 @@ pub struct FlowIndex {
     pub time: u64,
     pub size: u64,
     pub client_ip: Option<String>,
+    pub server_ip: Option<String>,
+    pub tags: Vec<String>,
     pub app_name: Option<String>,
     pub app_display_name: Option<String>,
     pub has_error: bool,
@@ -140,6 +142,8 @@ pub struct FlowDetailTimings {
 #[serde(rename_all = "camelCase")]
 pub struct FlowDetailRc {
     pub client_ip: String,
+    pub server_ip: String,
+    pub tags: Vec<String>,
     pub is_websocket: bool,
     pub websocket_frame_count: u32,
     pub hits: Vec<String>, // Simplify for now
@@ -295,6 +299,8 @@ impl From<Flow> for FlowIndex {
             time: duration,
             size,
             client_ip: Some(flow.network.client_ip),
+            server_ip: Some(flow.network.server_ip),
+            tags: flow.tags,
             app_name: None,
             app_display_name: None,
             has_error: false,
@@ -574,6 +580,8 @@ impl From<Flow> for FlowDetail {
             cache: HashMap::new(),
             _rc: FlowDetailRc {
                 client_ip: flow.network.client_ip.clone(),
+                server_ip: flow.network.server_ip.clone(),
+                tags: flow.tags.clone(),
                 is_websocket,
                 websocket_frame_count,
                 hits: vec![],

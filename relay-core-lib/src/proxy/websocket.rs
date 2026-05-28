@@ -329,7 +329,10 @@ where
                         .headers
                         .iter()
                         .map(|(k, v)| {
-                            (k.as_str().to_string(), v.to_str().unwrap_or("").to_string())
+                            (
+                                k.as_str().to_string(),
+                                String::from_utf8_lossy(v.as_bytes()).to_string(),
+                            )
                         })
                         .collect(),
                     cookies: vec![], // Todo: parse cookies
