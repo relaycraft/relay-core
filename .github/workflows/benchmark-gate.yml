@@ -1,0 +1,117 @@
+name: Benchmark Gate (M7 B3)
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apache2-utils python3
+
+      - name: Benchmark Gate (strict DoD check)
+        id: gate
+        run: |
+          chmod +x ./benchmarks/bench_minimal.sh
+          ./benchmarks/bench_minimal.sh matrix --duration 10 --strict
+        continue-on-error: true
+
+      - name: Micro Benchmarks (Criterion)
+        run: |
+          cargo bench --package relay-core-lib --bench rule_engine
+          cargo bench --package relay-core-lib --bench tls_ca
+          cargo bench --package relay-core-lib --bench scenarios
+
+      - name: Evaluate Gate Result
+        if: always()
+        run: |
+          if [[ "${{ steps.gate.outcome }}" == "failure" ]]; then
+            echo "## Benchmark Gate FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "DoD thresholds not met." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "## Benchmark Gate PASSED" >> "$GITHUB_STEP_SUMMARY"
+            echo "All DoD thresholds met." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Print Benchmark Summary
+        if: always()
+        shell: bash
+        run: |
+          latest_json="$(ls -1t benchmarks/results/bench_*.json 2>/dev/null | head -n1)"
+          if [[ -n "$latest_json" ]]; then
+            python3 benchmarks/print_summary.py "${latest_json}" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          fi
+
+      - name: Upload Benchmark Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-gate-results
+          path: benchmarks/results/
+          if-no-files-found: warn
+
+  sanitizer-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (nightly for sanitizers)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Address Sanitizer Smoke (relay-core-lib)
+        run: |
+          RUSTFLAGS="-Z sanitizer=address" \
+          cargo test --package relay-core-lib --lib -- \
+            --test-threads=1 2>&1 | tee /tmp/asan_lib.log
+          if grep -q "SUMMARY: AddressSanitizer" /tmp/asan_lib.log; then
+            echo "## ASAN detected issues" >> "$GITHUB_STEP_SUMMARY"
+            grep "SUMMARY:" /tmp/asan_lib.log >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ASAN smoke: clean" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Address Sanitizer Smoke (relay-core-runtime)
+        run: |
+          RUSTFLAGS="-Z sanitizer=address" \
+          cargo test --package relay-core-runtime --lib -- \
+            --test-threads=1 2>&1 | tee /tmp/asan_runtime.log
+          if grep -q "SUMMARY: AddressSanitizer" /tmp/asan_runtime.log; then
+            echo "## ASAN detected issues" >> "$GITHUB_STEP_SUMMARY"
+            grep "SUMMARY:" /tmp/asan_runtime.log >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ASAN runtime: clean" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Sanitizer Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-smoke-logs
+          path: /tmp/asan_*.log
+          if-no-files-found: warn
