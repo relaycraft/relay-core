@@ -9,7 +9,6 @@ use relay_core_lib::tls::CertificateAuthority;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Once;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 static INIT: Once = Once::new();

@@ -62,3 +62,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "rule_engine"
 harness = false
+
+[[bench]]
+name = "tls_ca"
+harness = false
