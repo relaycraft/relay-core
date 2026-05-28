@@ -66,3 +66,7 @@ harness = false
 [[bench]]
 name = "tls_ca"
 harness = false
+
+[[bench]]
+name = "scenarios"
+harness = false

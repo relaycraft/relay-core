@@ -29,6 +29,8 @@ fn make_flow(url: &str) -> Flow {
         tags: vec![],
         meta: HashMap::new(),
         resilience_trace: None,
+        matched_rules: vec![],
+        rule_variables: HashMap::new(),
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
