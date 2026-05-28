@@ -563,7 +563,11 @@ cat >"$OUT_JSON" <<JSON
     "regression": "${REGRESSION_STATUS}"
   },
   "regression_note": "${REGRESSION_NOTE:-}",
-  "scenarios": ${SCENARIO_ROWS_JSON}
+  "scenarios": ${SCENARIO_ROWS_JSON},
+  "vs_mitmproxy": {
+    "note": "comparison data available via benchmarks/compare_mitmproxy.sh",
+    "status": "pending"
+  }
 }
 JSON
 

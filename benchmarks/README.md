@@ -4,24 +4,23 @@
 
 ## Scope
 
-当前入口脚本：`bench_minimal.sh`
+当前入口脚本：
+- `bench_minimal.sh` — 快速体检 + 回归趋势
+- `harness.sh` — 综合基准套件（micro + e2e）
+- `compare_mitmproxy.sh` — relay-core vs mitmproxy 对照
 
 已覆盖：
 - 冷启动时间（cold start）
 - 空闲 RSS
 - S1 吞吐量（req/s）与 P99 延迟
 - Payload 趋势（S1/S2/S3 = 1KB/64KB/1024KB）
+- S4–S12 场景微基准（rule engine, TLS cert, scenarios via Criterion）
 - HTTP API 路径延迟：
   - `GET /api/v1/flows`
   - `GET /api/v1/flows/{id}`
   - `GET /api/v1/events` 首事件到达时间
 - 与历史 JSON 报告的回归对比（默认告警）
-
-未覆盖（后续）：
-- S4–S12 完整场景矩阵（TLS/规则/脚本/WebSocket/长稳）
-- 峰值内存曲线、CPU 采样、P99.9
-- mitmproxy 对照
-- CI 强门禁（当前仅 smoke + 产物上传）
+- mitmproxy 对照脚本（`compare_mitmproxy.sh`，需安装 mitmproxy）
 
 ## Requirements
 
@@ -48,6 +47,16 @@
 
 # 5) 严格模式（DoD/回归告警视为失败）
 ./benchmarks/bench_minimal.sh --strict
+
+# 6) 综合基准套件（micro + e2e）
+./benchmarks/harness.sh
+./benchmarks/harness.sh quick     # 快速冒烟
+./benchmarks/harness.sh micro     # 仅微基准
+./benchmarks/harness.sh e2e       # 仅端到端
+
+# 7) mitmproxy 对照基准
+./benchmarks/compare_mitmproxy.sh                 # 默认 30s, 100 并发
+./benchmarks/compare_mitmproxy.sh --duration 60   # 自定义时长
 ```
 
 ## Environment Variables
