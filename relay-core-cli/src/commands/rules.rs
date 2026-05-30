@@ -60,10 +60,11 @@ pub fn execute(action: RulesAction) -> Result<()> {
             let body = resp.into_string().context("Failed to read API response")?;
             let parsed: serde_json::Value =
                 serde_json::from_str(&body).context("Failed to parse rules JSON")?;
-            let items = parsed
+            let items: &Vec<serde_json::Value> = parsed
                 .get("items")
                 .and_then(|v| v.as_array())
-                .context("Unexpected API response format: missing 'items' array")?;
+                .or_else(|| parsed.as_array())
+                .context("Unexpected API response format")?;
             if items.is_empty() {
                 println!("No rules loaded.");
             } else {

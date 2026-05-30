@@ -364,3 +364,28 @@ fn test_analyze_help() {
         .success()
         .stdout(predicate::str::contains("Analyze offline flow data"));
 }
+
+#[test]
+fn test_rules_parse_failure_exits_nonzero() {
+    let dir = tempdir().unwrap();
+    let invalid = dir.path().join("invalid.txt");
+    fs::write(&invalid, "not valid json or yaml {{{").unwrap();
+
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.arg("rules")
+        .arg("validate")
+        .arg(&invalid)
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_rules_list_help() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.arg("rules")
+        .arg("list")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--api-url"));
+}

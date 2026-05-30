@@ -43,7 +43,10 @@ impl Interceptor for RuleInterceptor {
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
         let engine = self.state.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::RequestBody) {
-            engine.execute(RuleStage::RequestBody, flow).await;
+            let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+            if ctx.is_terminated() {
+                return Ok(RequestAction::Drop);
+            }
         }
         Ok(RequestAction::Continue(body))
     }
@@ -51,7 +54,10 @@ impl Interceptor for RuleInterceptor {
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
         let engine = self.state.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::ResponseHeaders) {
-            engine.execute(RuleStage::ResponseHeaders, flow).await;
+            let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
+            if ctx.is_terminated() {
+                return InterceptionResult::Drop;
+            }
         }
         InterceptionResult::Continue
     }
@@ -63,7 +69,10 @@ impl Interceptor for RuleInterceptor {
     ) -> Result<ResponseAction, BoxError> {
         let engine = self.state.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
-            engine.execute(RuleStage::ResponseBody, flow).await;
+            let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
+            if ctx.is_terminated() {
+                return Ok(ResponseAction::Drop);
+            }
         }
         Ok(ResponseAction::Continue(body))
     }
