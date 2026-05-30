@@ -6,8 +6,11 @@ use relay_core_api::flow::{
     ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
 };
 use relay_core_lib::InterceptionResult;
+use relay_core_lib::intercept::Interceptor;
 use relay_core_lib::rule::{Action, Filter, Rule, RuleStage, RuleTermination, RuleTraceSummary};
 use relay_core_runtime::CoreState;
+use relay_core_runtime::interceptors::rule::RuleInterceptor;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use url::Url;
 use uuid::Uuid;
@@ -583,5 +586,49 @@ async fn test_intercept_orphan_cleanup_after_channel_drop() {
     assert!(
         second.is_err(),
         "second resolve should fail (key already cleaned)"
+    );
+}
+
+#[tokio::test]
+async fn test_rule_interceptor_applies_request_header_rule() {
+    let state = CoreState::new(None).await;
+    let rule = Rule {
+        id: "ri-rule".to_string(),
+        name: "ri rule".to_string(),
+        active: true,
+        priority: 100,
+        stage: RuleStage::RequestHeaders,
+        filter: Filter::All,
+        actions: vec![Action::AddRequestHeader {
+            name: "x-rule-interceptor".to_string(),
+            value: "yes".to_string(),
+        }],
+        termination: RuleTermination::Continue,
+        constraints: None,
+    };
+    state.set_rules(vec![rule]).await;
+
+    let interceptor = RuleInterceptor::new(Arc::new(state));
+    let mut flow = create_test_flow("http://example.com/ri", "GET");
+
+    let result = interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        matches!(result, InterceptionResult::Continue),
+        "RuleInterceptor should return Continue for non-terminal rule"
+    );
+
+    let Layer::Http(http) = &flow.layer else {
+        panic!("expected http flow");
+    };
+    assert!(
+        http.request
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("x-rule-interceptor") && v == "yes"),
+        "RuleInterceptor should apply AddRequestHeader action"
+    );
+    assert!(
+        flow.matched_rules.contains(&"ri-rule".to_string()),
+        "flow.matched_rules should contain ri-rule after execution"
     );
 }
