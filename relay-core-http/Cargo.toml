@@ -13,7 +13,7 @@ script = ["relay-core-runtime/script"]
 
 [dependencies]
 relay-core-api.workspace = true
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.4.1" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.5.0" }
 axum = { version = "0.8.8", features = ["ws"] }
 tokio.workspace = true
 tokio-stream = { version = "0.1.18", features = ["sync"] }
