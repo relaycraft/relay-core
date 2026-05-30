@@ -269,6 +269,12 @@ pub enum RulesAction {
         #[arg(long)]
         flow: PathBuf,
     },
+    /// List currently active rules from a running proxy via HTTP API
+    List {
+        /// API base URL (default: http://127.0.0.1:18082)
+        #[arg(long, default_value = "http://127.0.0.1:18082")]
+        api_url: String,
+    },
 }
 
 #[cfg(feature = "script")]

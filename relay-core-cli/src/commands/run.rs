@@ -392,7 +392,10 @@ pub async fn execute(
                     info!("Loaded rules from {:?}", rules_path);
                 }
             }
-            Err(e) => error!("Failed to parse rules file: {}", e),
+            Err(e) => {
+                error!("Failed to parse rules file: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse rules file: {}", e));
+            }
         }
     }
 

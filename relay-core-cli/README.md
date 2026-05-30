@@ -27,7 +27,7 @@ The proxy listens on `127.0.0.1:8080` by default. Configure your browser or syst
 |---------|-------------|
 | `run` | Start the proxy server. Use `--ui` for TUI mode. |
 | `ca {init,install,status,export,uninstall}` | Manage CA certificate for HTTPS decryption |
-| `rules` | Manage interception rules (list, validate, add, delete) |
+| `rules {validate,print,test,list}` | Validate, print, test, or list interception rules |
 | `scripts` | Manage Deno scripts for dynamic traffic modification |
 | `flows` | Query captured flows (requires running proxy with `--api-port`) |
 | `metrics` | View proxy runtime metrics |

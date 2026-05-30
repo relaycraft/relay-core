@@ -51,6 +51,36 @@ pub fn execute(action: RulesAction) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        RulesAction::List { api_url } => {
+            let url = format!("{}/api/v1/rules", api_url.trim_end_matches('/'));
+            let resp = ureq::get(&url).call().context(format!(
+                "Failed to connect to API at {}. Is the proxy running?",
+                url
+            ))?;
+            let body = resp.into_string().context("Failed to read API response")?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&body).context("Failed to parse rules JSON")?;
+            let items = parsed
+                .get("items")
+                .and_then(|v| v.as_array())
+                .context("Unexpected API response format: missing 'items' array")?;
+            if items.is_empty() {
+                println!("No rules loaded.");
+            } else {
+                println!("{} active rules:", items.len());
+                for (i, rule) in items.iter().enumerate() {
+                    let id = rule.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = rule.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let active = rule
+                        .get("active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let stage = rule.get("stage").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = if active { "✓" } else { "✗" };
+                    println!("  {}. [{}] {} ({} {})", i + 1, status, id, stage, name);
+                }
+            }
+        }
     }
     Ok(())
 }
