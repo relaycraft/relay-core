@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/binaries-win32-x64",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "RelayCore native binaries (relay-core-cli, relay-core-probe) for Windows x64",
   "license": "MIT",
   "homepage": "https://relaycore.dev",
