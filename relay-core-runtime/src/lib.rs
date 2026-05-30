@@ -1334,6 +1334,10 @@ impl CoreState {
         #[cfg(not(feature = "script"))]
         let mut interceptors: Vec<Arc<dyn Interceptor>> = vec![];
 
+        interceptors.push(Arc::new(interceptors::rule::RuleInterceptor::new(
+            self.clone(),
+        )));
+
         interceptors.push(Arc::new(interceptors::metrics::MetricsInterceptor::new(
             self.clone(),
         )));
@@ -1468,7 +1472,7 @@ impl CoreState {
                 policy_rx,
                 None,
                 shutdown_rx,
-                None,
+                Some(self.get_rule_engine().await),
             )
             .await
             .map_err(|e| e.to_string());
@@ -1492,7 +1496,7 @@ impl CoreState {
                 policy_rx,
                 None,
                 shutdown_rx,
-                None,
+                Some(self.get_rule_engine().await),
             )
             .await
             .map_err(|e| e.to_string());
