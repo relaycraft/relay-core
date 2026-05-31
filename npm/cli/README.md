@@ -16,7 +16,7 @@ npm i -g @relay-core/cli
 ## Quick start
 
 ```bash
-relay-core ca init && relay-core ca install   # HTTPS interception
+relay-core ca generate && relay-core ca install   # HTTPS interception
 relay-core run --ui                           # proxy @ 127.0.0.1:8080
 ```
 

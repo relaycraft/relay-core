@@ -318,7 +318,7 @@ echo ""
 
 if [[ ! -f "$CA_CERT" ]]; then
   info "Generating benchmark CA..."
-  "$PROXY_BIN" ca init --cert "$CA_CERT" --key "$CA_KEY" >/dev/null 2>&1 || true
+  "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
 fi
 
 start_target

@@ -82,7 +82,7 @@ relay-core-cli run
 relay-core-cli run --ui
 
 # Generate CA certificate for HTTPS interception
-relay-core-cli ca init
+relay-core-cli ca generate
 
 # Validate rules
 relay-core-cli rules validate --file rules.yaml

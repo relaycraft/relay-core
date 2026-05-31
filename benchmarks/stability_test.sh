@@ -72,7 +72,7 @@ CA_KEY="$SCRIPT_DIR/.bench_ca_key.pem"
 
 if [[ ! -f "$CA_CERT" ]]; then
   info "Generating benchmark CA..."
-  "$REPO_ROOT/target/release/relay-core-cli" ca init --cert "$CA_CERT" --key "$CA_KEY" >/dev/null 2>&1 || true
+  "$REPO_ROOT/target/release/relay-core-cli" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
 fi
 
 # ── Start target server ─────────────────────────────────────────────

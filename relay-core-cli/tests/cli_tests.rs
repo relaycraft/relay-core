@@ -12,18 +12,15 @@ fn test_cli_help() {
 }
 
 #[test]
-fn test_ca_init() {
+fn test_ca_generate_and_status_with_data_dir() {
     let dir = tempdir().unwrap();
-    let cert_path = dir.path().join("test_ca.pem");
-    let key_path = dir.path().join("test_key.pem");
+    let cert_path = dir.path().join("ca_cert.pem");
+    let key_path = dir.path().join("ca_key.pem");
 
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
-    cmd.arg("ca")
-        .arg("init")
-        .arg("--cert")
-        .arg(&cert_path)
-        .arg("--key")
-        .arg(&key_path)
+    cmd.env("RELAY_DATA_DIR", dir.path())
+        .arg("ca")
+        .arg("generate")
         .assert()
         .success();
 
@@ -32,12 +29,51 @@ fn test_ca_init() {
 
     // Test CA status
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
-    cmd.arg("ca")
+    cmd.env("RELAY_DATA_DIR", dir.path())
+        .arg("ca")
         .arg("status")
-        .arg("--cert")
-        .arg(&cert_path)
         .assert()
         .success();
+}
+
+#[test]
+fn test_ca_generate_arg_paths_override_env() {
+    let dir = tempdir().unwrap();
+    let env_dir = dir.path().join("env");
+    let arg_dir = dir.path().join("arg");
+    fs::create_dir_all(&env_dir).unwrap();
+    fs::create_dir_all(&arg_dir).unwrap();
+
+    let cert_path = arg_dir.join("custom_cert.pem");
+    let key_path = arg_dir.join("custom_key.pem");
+
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.env("RELAY_DATA_DIR", &env_dir)
+        .arg("ca")
+        .arg("generate")
+        .arg("--ca-cert")
+        .arg(&cert_path)
+        .arg("--ca-key")
+        .arg(&key_path)
+        .assert()
+        .success();
+
+    assert!(cert_path.exists());
+    assert!(key_path.exists());
+    assert!(!env_dir.join("ca_cert.pem").exists());
+}
+
+#[test]
+fn test_run_fails_when_ca_missing() {
+    let dir = tempdir().unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.env("RELAY_DATA_DIR", dir.path())
+        .arg("run")
+        .arg("--listen")
+        .arg("127.0.0.1:38080")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ca generate"));
 }
 
 #[test]

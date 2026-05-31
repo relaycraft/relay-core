@@ -1,6 +1,7 @@
 use crate::args::CaAction;
 use anyhow::Result;
 use relay_core_lib::tls::CertificateAuthority;
+use relay_core_runtime::CaPaths;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -11,42 +12,59 @@ const DEFAULT_PROXY_LISTEN: &str = "127.0.0.1:8080";
 #[allow(unused_variables)]
 pub fn execute(action: CaAction) -> Result<()> {
     match action {
-        CaAction::Init { cert, key, force } => {
-            if cert.exists() && !force {
+        CaAction::Generate {
+            ca_cert,
+            ca_key,
+            force,
+        } => {
+            let ca = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
+            if let Some(parent) = ca.cert.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if let Some(parent) = ca.key.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            if ca.cert.exists() && ca.key.exists() && !force {
                 println!(
                     "CA certificate already exists at {:?}. Use --force to overwrite.",
-                    cert
+                    ca.cert
                 );
                 return Ok(());
             }
 
             if force {
-                if cert.exists() {
-                    let _ = std::fs::remove_file(&cert);
+                if ca.cert.exists() {
+                    let _ = std::fs::remove_file(&ca.cert);
                 }
-                if key.exists() {
-                    let _ = std::fs::remove_file(&key);
+                if ca.key.exists() {
+                    let _ = std::fs::remove_file(&ca.key);
                 }
-                let meta = cert.with_extension("json");
+                let meta = ca.cert.with_extension("json");
                 if meta.exists() {
                     let _ = std::fs::remove_file(&meta);
                 }
             }
 
-            match CertificateAuthority::load_or_create(&cert, &key) {
-                Ok(_) => println!("CA certificate initialized at {:?}", cert),
+            match CertificateAuthority::load_or_create(&ca.cert, &ca.key) {
+                Ok(_) => println!("CA certificate generated at {:?}", ca.cert),
                 Err(e) => {
-                    eprintln!("Failed to initialize CA: {}", e);
+                    eprintln!("Failed to generate CA: {}", e);
                     std::process::exit(1);
                 }
             }
         }
-        CaAction::Export { cert, output } => {
-            if !cert.exists() {
-                eprintln!("CA certificate not found at {:?}. Run 'init' first.", cert);
+        CaAction::Export {
+            ca_cert,
+            ca_key,
+            output,
+        } => {
+            let ca = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
+            if !ca_files_exist(&ca) {
+                eprintln!("{}", missing_ca_guidance(&ca));
                 std::process::exit(1);
             }
-            let content = std::fs::read_to_string(&cert)?;
+            let content = std::fs::read_to_string(&ca.cert)?;
             if let Some(out_path) = output {
                 std::fs::write(&out_path, content)?;
                 println!("CA certificate exported to {:?}", out_path);
@@ -54,9 +72,10 @@ pub fn execute(action: CaAction) -> Result<()> {
                 println!("{}", content);
             }
         }
-        CaAction::Install { cert } => {
-            if !cert.exists() {
-                eprintln!("CA certificate not found at {:?}. Run 'init' first.", cert);
+        CaAction::Install { ca_cert, ca_key } => {
+            let ca = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
+            if !ca_files_exist(&ca) {
+                eprintln!("{}", missing_ca_guidance(&ca));
                 std::process::exit(1);
             }
 
@@ -77,11 +96,11 @@ pub fn execute(action: CaAction) -> Result<()> {
                     .arg("trustRoot")
                     .arg("-k")
                     .arg(macos_system_keychain())
-                    .arg(&cert)
+                    .arg(&ca.cert)
                     .status()?;
 
                 if status.success() {
-                    match get_file_sha1(&cert).and_then(macos_trust_status_for_local_cert) {
+                    match get_file_sha1(&ca.cert).and_then(macos_trust_status_for_local_cert) {
                         Ok(MacosTrustStatus::Trusted) => {
                             println!();
                             println!("CA certificate installed and trusted by macOS.");
@@ -109,7 +128,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                     eprintln!(
                         "Try: sudo security add-trusted-cert -d -r trustRoot -k {} {:?}",
                         macos_system_keychain(),
-                        cert
+                        ca.cert
                     );
                 }
             }
@@ -119,11 +138,11 @@ pub fn execute(action: CaAction) -> Result<()> {
                 println!("Automatic installation is not supported on this platform yet.");
                 println!(
                     "Please install {:?} manually to your system's trust store.",
-                    cert
+                    ca.cert
                 );
             }
         }
-        CaAction::Uninstall { cert } => {
+        CaAction::Uninstall { .. } => {
             #[cfg(target_os = "macos")]
             {
                 println!("Uninstalling RelayCraft CA from System Keychain (requires sudo)...");
@@ -136,32 +155,49 @@ pub fn execute(action: CaAction) -> Result<()> {
                     Ok(_) => println!("No RelayCraft CA certificate found in the system keychain."),
                     Err(e) => eprintln!("Failed to uninstall CA certificate: {e}"),
                 }
-                let _ = cert;
             }
         }
-        CaAction::Status { cert } => {
-            if !cert.exists() {
-                println!("Status: Not Initialized (file missing at {:?})", cert);
+        CaAction::Status { ca_cert, ca_key } => {
+            let ca = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
+            if !ca_files_exist(&ca) {
+                println!("CA Status: Not generated");
+                println!("  cert: {}", ca.cert.display());
+                println!("  key:  {}", ca.key.display());
+                println!("  next: relay-core-cli ca generate");
                 return Ok(());
             }
 
-            println!("Status: Initialized (file at {:?})", cert);
+            println!("CA Status: Generated");
+            println!("  cert: {}", ca.cert.display());
+            println!("  key:  {}", ca.key.display());
 
             #[cfg(target_os = "macos")]
             {
-                match get_file_sha1(&cert).and_then(macos_trust_status_for_local_cert) {
-                    Ok(status) => println!("System Trust: {}", status.summary_line()),
-                    Err(e) => println!("System Trust: Unknown ({e})"),
+                match get_file_sha1(&ca.cert).and_then(macos_trust_status_for_local_cert) {
+                    Ok(status) => println!("  trust: {}", status.summary_line()),
+                    Err(e) => println!("  trust: unknown ({e})"),
                 }
             }
 
             #[cfg(not(target_os = "macos"))]
             {
-                println!("System Trust: (automatic check not available on this platform)");
+                println!("  trust: not auto-checked on this platform");
             }
         }
     }
     Ok(())
+}
+
+fn ca_files_exist(ca: &CaPaths) -> bool {
+    ca.cert.exists() && ca.key.exists()
+}
+
+fn missing_ca_guidance(ca: &CaPaths) -> String {
+    format!(
+        "CA files are missing.\n  cert: {}\n  key:  {}\nRun `relay-core-cli ca generate` first.",
+        ca.cert.display(),
+        ca.key.display()
+    )
 }
 
 #[cfg(target_os = "macos")]

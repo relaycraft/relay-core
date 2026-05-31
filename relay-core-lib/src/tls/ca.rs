@@ -1,5 +1,6 @@
 use rcgen::{
-    Certificate, CertificateParams, DnType, Ia5String, IsCa, KeyPair, SanType, SerialNumber,
+    Certificate, CertificateParams, DnType, Ia5String, IsCa, KeyPair, KeyUsagePurpose, SanType,
+    SerialNumber,
 };
 
 use moka::future::Cache;
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
+use tracing::warn;
 
 #[derive(Serialize, Deserialize)]
 struct CaMetadata {
@@ -26,6 +28,10 @@ pub struct CertificateAuthority {
 }
 
 impl CertificateAuthority {
+    // Keep cache TTL strictly lower than leaf validity to avoid serving stale configs.
+    const LEAF_CERT_VALIDITY_DAYS: i64 = 365;
+    const CACHE_TTL_SECS: u64 = 60 * 60 * 24 * 180; // 180 days
+
     fn create_ca_params(
         key_pair: &KeyPair,
         meta: &CaMetadata,
@@ -38,6 +44,7 @@ impl CertificateAuthority {
         params
             .distinguished_name
             .push(DnType::OrganizationName, "RelayCraft");
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
         // Restore validity
         let not_before = OffsetDateTime::from_unix_timestamp(meta.not_before_unix)?;
@@ -56,67 +63,98 @@ impl CertificateAuthority {
     fn build_cert_cache() -> Cache<String, Arc<ServerConfig>> {
         Cache::builder()
             .max_capacity(1_000)
-            .time_to_live(std::time::Duration::from_secs(60 * 60 * 24 * 180)) // 180 days
+            .time_to_live(std::time::Duration::from_secs(Self::CACHE_TTL_SECS))
             .build()
     }
 
-    fn load_from_pem(ca_cert_path: &Path, ca_key_path: &Path) -> crate::error::Result<Self> {
-        let cert_pem = std::fs::read_to_string(ca_cert_path)?;
-        let key_pem = std::fs::read_to_string(ca_key_path)?;
+    fn validate_ca_certificate(cert_pem: &str, ca_cert_path: &Path) -> crate::error::Result<()> {
+        use x509_parser::prelude::{FromDer, X509Certificate};
 
-        // Parse Key
-        let key_pair = KeyPair::from_pem(&key_pem)?;
+        let pem = x509_parser::pem::Pem::iter_from_buffer(cert_pem.as_bytes())
+            .next()
+            .ok_or_else(|| {
+                crate::error::RelayError::Config(format!(
+                    "Failed to parse CA PEM at {:?}: empty content",
+                    ca_cert_path
+                ))
+            })?
+            .map_err(|e| {
+                crate::error::RelayError::Config(format!(
+                    "Failed to parse CA PEM at {:?}: {}",
+                    ca_cert_path, e
+                ))
+            })?;
 
-        // Parse Cert
-        let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes()).map_err(|e| {
-            crate::error::RelayError::Config(format!("Failed to parse CA PEM: {}", e))
+        let (_, x509) = X509Certificate::from_der(&pem.contents).map_err(|e| {
+            crate::error::RelayError::Config(format!(
+                "Failed to parse CA X509 at {:?}: {}",
+                ca_cert_path, e
+            ))
         })?;
-        let x509 = pem.parse_x509().map_err(|e| {
-            crate::error::RelayError::Config(format!("Failed to parse CA X509: {}", e))
+
+        let basic_constraints = x509.basic_constraints().map_err(|e| {
+            crate::error::RelayError::Config(format!(
+                "Failed to read BasicConstraints for {:?}: {}",
+                ca_cert_path, e
+            ))
         })?;
-
-        let mut params = CertificateParams::default();
-        params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-
-        // Copy Validity
-        params.not_before =
-            OffsetDateTime::from_unix_timestamp(x509.validity().not_before.timestamp())?;
-        params.not_after =
-            OffsetDateTime::from_unix_timestamp(x509.validity().not_after.timestamp())?;
-
-        // Copy Serial Number
-        let serial = &x509.tbs_certificate.serial;
-        params.serial_number = Some(SerialNumber::from(serial.to_bytes_be()));
-
-        // Copy Subject DN
-        for rdn in x509.subject().iter() {
-            for attr in rdn.iter() {
-                let oid = attr.attr_type();
-                let content = attr.attr_value().as_str().unwrap_or_default();
-
-                let dn_type = if oid == &x509_parser::oid_registry::OID_X509_COMMON_NAME {
-                    Some(DnType::CommonName)
-                } else if oid == &x509_parser::oid_registry::OID_X509_ORGANIZATION_NAME {
-                    Some(DnType::OrganizationName)
-                } else if oid == &x509_parser::oid_registry::OID_X509_ORGANIZATIONAL_UNIT {
-                    Some(DnType::OrganizationalUnitName)
-                } else if oid == &x509_parser::oid_registry::OID_X509_COUNTRY_NAME {
-                    Some(DnType::CountryName)
-                } else if oid == &x509_parser::oid_registry::OID_X509_LOCALITY_NAME {
-                    Some(DnType::LocalityName)
-                } else if oid == &x509_parser::oid_registry::OID_X509_STATE_OR_PROVINCE_NAME {
-                    Some(DnType::StateOrProvinceName)
-                } else {
-                    None
-                };
-
-                if let Some(t) = dn_type {
-                    params.distinguished_name.push(t, content);
-                }
-            }
+        let is_ca = basic_constraints.is_some_and(|bc| bc.value.ca);
+        if !is_ca {
+            return Err(crate::error::RelayError::Config(format!(
+                "Certificate at {:?} is not a CA certificate (BasicConstraints CA=true is required)",
+                ca_cert_path
+            )));
         }
 
-        let cert = params.self_signed(&key_pair)?;
+        let key_usage = x509.key_usage().map_err(|e| {
+            crate::error::RelayError::Config(format!(
+                "Failed to read KeyUsage for {:?}: {}",
+                ca_cert_path, e
+            ))
+        })?;
+        let key_usage = key_usage.ok_or_else(|| {
+            crate::error::RelayError::Config(format!(
+                "Certificate at {:?} is missing KeyUsage extension (requires keyCertSign and cRLSign)",
+                ca_cert_path
+            ))
+        })?;
+        if !key_usage.value.key_cert_sign() || !key_usage.value.crl_sign() {
+            return Err(crate::error::RelayError::Config(format!(
+                "Certificate at {:?} must include KeyUsage keyCertSign and cRLSign",
+                ca_cert_path
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn load_from_persistent_files(
+        ca_key_path: &Path,
+        meta_path: &Path,
+    ) -> crate::error::Result<Self> {
+        let key_pem = std::fs::read_to_string(ca_key_path)?;
+
+        // Parse key
+        let key_pair = KeyPair::from_pem(&key_pem)?;
+
+        // Load metadata produced by relay-core and reconstruct deterministic CA cert params.
+        // If metadata is invalid, fail fast instead of silently changing behavior.
+        let meta_json = std::fs::read_to_string(meta_path)?;
+        let meta = match serde_json::from_str::<CaMetadata>(&meta_json) {
+            Ok(meta) => meta,
+            Err(e) => {
+                warn!(
+                    meta_path = ?meta_path,
+                    error = %e,
+                    "Failed to parse CA metadata JSON"
+                );
+                return Err(crate::error::RelayError::Config(format!(
+                    "Failed to parse CA metadata at {:?}: {}",
+                    meta_path, e
+                )));
+            }
+        };
+        let cert = Self::create_ca_params(&key_pair, &meta)?;
 
         Ok(Self {
             ca_cert: Arc::new(cert),
@@ -125,7 +163,16 @@ impl CertificateAuthority {
         })
     }
 
+    /// Create an in-memory CA that is not written to disk.
+    pub fn new_ephemeral() -> crate::error::Result<Self> {
+        Self::create_fresh_ca()
+    }
+
     pub fn new() -> crate::error::Result<Self> {
+        Self::new_ephemeral()
+    }
+
+    fn create_fresh_ca() -> crate::error::Result<Self> {
         // Generate new metadata
         let now = OffsetDateTime::now_utc();
         let not_after = now + Duration::days(365 * 10);
@@ -148,43 +195,39 @@ impl CertificateAuthority {
         })
     }
 
+    /// Load existing CA from files, or create and persist a new one when files are missing.
+    pub fn load_or_create_persistent(
+        ca_cert_path: &Path,
+        ca_key_path: &Path,
+    ) -> crate::error::Result<Self> {
+        Self::load_or_create(ca_cert_path, ca_key_path)
+    }
+
     /// Load existing CA from files or create new one if not exists
     pub fn load_or_create(ca_cert_path: &Path, ca_key_path: &Path) -> crate::error::Result<Self> {
         let meta_path = ca_cert_path.with_extension("json");
 
         if ca_cert_path.exists() && ca_key_path.exists() {
-            // Try loading from JSON first (legacy/native mode)
-            if meta_path.exists() {
-                let key_pem = std::fs::read_to_string(ca_key_path)?;
-                let key_pair = KeyPair::from_pem(&key_pem)?;
-
-                let meta_json = std::fs::read_to_string(&meta_path)?;
-                match serde_json::from_str::<CaMetadata>(&meta_json) {
-                    Ok(meta) => {
-                        let cert = Self::create_ca_params(&key_pair, &meta)?;
-                        return Ok(Self {
-                            ca_cert: Arc::new(cert),
-                            ca_key_pair: Arc::new(key_pair),
-                            cache: Self::build_cert_cache(),
-                        });
-                    }
-                    Err(_) => {
-                        // JSON might be corrupted or incompatible, fallback to PEM parsing
-                    }
-                }
+            if !meta_path.exists() {
+                return Err(crate::error::RelayError::Config(format!(
+                    "CA metadata file is missing: {:?}. This relay-core version requires metadata to load persistent CA. Run `relay-core-cli ca generate --force` to regenerate.",
+                    meta_path
+                )));
             }
 
-            // Fallback: Try loading directly from PEM (import mode)
-            match Self::load_from_pem(ca_cert_path, ca_key_path) {
-                Ok(ca) => return Ok(ca),
-                Err(e) => {
-                    // If both fail, and we have partial files, return error
-                    return Err(crate::error::RelayError::Config(format!(
-                        "Failed to load CA from {:?}: {}. If you want to regenerate, please remove existing files manually.",
-                        ca_cert_path, e
-                    )));
-                }
+            if let Err(err) = Self::validate_ca_certificate(
+                &std::fs::read_to_string(ca_cert_path)?,
+                ca_cert_path,
+            ) {
+                warn!(
+                    ca_cert_path = ?ca_cert_path,
+                    error = %err,
+                    "CA certificate validation failed before loading metadata"
+                );
+                return Err(err);
             }
+
+            return Self::load_from_persistent_files(ca_key_path, &meta_path);
         }
 
         // Create new
@@ -215,24 +258,39 @@ impl CertificateAuthority {
 
     pub async fn gen_server_config(&self, domain: &str) -> crate::error::Result<Arc<ServerConfig>> {
         let domain = domain.to_string();
+        let domain_for_error = domain.clone();
         let ca_cert = self.ca_cert.clone();
         let ca_key_pair = self.ca_key_pair.clone();
 
         self.cache
             .try_get_with(domain.clone(), async move {
-                let key_pair = KeyPair::generate().map_err(std::io::Error::other)?;
+                let key_pair = KeyPair::generate().map_err(|e| {
+                    std::io::Error::other(format!(
+                        "failed to generate leaf key pair for domain {}: {}",
+                        domain, e
+                    ))
+                })?;
 
                 let mut params = CertificateParams::default();
                 params.distinguished_name.push(DnType::CommonName, &domain);
                 params.subject_alt_names = vec![SanType::DnsName(
-                    Ia5String::try_from(domain.as_str()).map_err(std::io::Error::other)?,
+                    Ia5String::try_from(domain.as_str()).map_err(|e| {
+                        std::io::Error::other(format!(
+                            "failed to encode SAN DNS name for domain {}: {}",
+                            domain, e
+                        ))
+                    })?,
                 )];
                 params.not_before = OffsetDateTime::now_utc();
-                params.not_after = OffsetDateTime::now_utc() + Duration::days(365);
+                params.not_after =
+                    OffsetDateTime::now_utc() + Duration::days(Self::LEAF_CERT_VALIDITY_DAYS);
 
-                let cert = params
-                    .signed_by(&key_pair, &ca_cert, &ca_key_pair)
-                    .map_err(std::io::Error::other)?;
+                let cert = params.signed_by(&key_pair, &ca_cert, &ca_key_pair).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "failed to sign leaf certificate for domain {}: {}",
+                        domain, e
+                    ))
+                })?;
 
                 let mut server_config = ServerConfig::builder()
                     .with_no_client_auth()
@@ -240,14 +298,24 @@ impl CertificateAuthority {
                         vec![cert.der().clone()],
                         PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
                     )
-                    .map_err(std::io::Error::other)?;
+                    .map_err(|e| {
+                        std::io::Error::other(format!(
+                            "failed to build rustls server config for domain {}: {}",
+                            domain, e
+                        ))
+                    })?;
 
                 server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
                 Ok(Arc::new(server_config)) as Result<Arc<ServerConfig>, std::io::Error>
             })
             .await
-            .map_err(|e| crate::error::RelayError::Proxy(e.to_string()))
+            .map_err(|e| {
+                crate::error::RelayError::Proxy(format!(
+                    "failed to get/generate cached TLS config for domain {}: {}",
+                    domain_for_error, e
+                ))
+            })
     }
 
     pub fn get_ca_cert_pem(&self) -> String {
@@ -370,7 +438,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_load_from_pem_without_json() {
+    async fn test_load_without_metadata_fails() {
         init_crypto();
         // 1. Create a temp directory
         let temp_dir = tempfile::tempdir().unwrap();
@@ -389,20 +457,62 @@ mod tests {
         let key_pair = rcgen::KeyPair::generate().unwrap();
         let cert = params.self_signed(&key_pair).unwrap();
 
-        // 3. Save as PEM (without the .json metadata file that RelayCore usually creates)
+        // 3. Save as PEM without metadata file
         std::fs::write(&cert_path, cert.pem()).unwrap();
         std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
 
-        // 4. Try to load it using load_or_create
-        let ca = CertificateAuthority::load_or_create(&cert_path, &key_path)
-            .expect("Should load from PEM");
-
-        // 5. Verify the loaded CA
-        // We check if we can generate a leaf cert
-        let server_config = ca.gen_server_config("example.com").await;
+        // 4. Strict mode: persistent load requires metadata and should fail.
+        let err = match CertificateAuthority::load_or_create(&cert_path, &key_path) {
+            Ok(_) => panic!("expected missing metadata to fail"),
+            Err(err) => err,
+        };
         assert!(
-            server_config.is_ok(),
-            "Should generate server config successfully"
+            err.to_string().contains("metadata file is missing"),
+            "error should clearly explain missing metadata, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_ca_without_signing_keyusage_fails() {
+        init_crypto();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cert_path = temp_dir.path().join("test_ca.crt");
+        let key_path = temp_dir.path().join("test_ca.key");
+        let meta_path = cert_path.with_extension("json");
+
+        // Create CA cert with invalid KeyUsage for a signing CA.
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "InvalidKeyUsage CA");
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+
+        std::fs::write(&cert_path, cert.pem()).unwrap();
+        std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+        // Keep metadata present so the failure is strictly from KeyUsage validation.
+        std::fs::write(
+            &meta_path,
+            serde_json::to_string_pretty(&CaMetadata {
+                serial_number: 1,
+                not_before_unix: OffsetDateTime::now_utc().unix_timestamp(),
+                not_after_unix: (OffsetDateTime::now_utc() + Duration::days(1)).unix_timestamp(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = match CertificateAuthority::load_or_create(&cert_path, &key_path) {
+            Ok(_) => panic!("expected KeyUsage validation to fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("keyCertSign and cRLSign"),
+            "error should point to KeyUsage requirement, got: {}",
+            err
         );
     }
 }

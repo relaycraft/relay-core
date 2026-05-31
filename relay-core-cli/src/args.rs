@@ -14,12 +14,15 @@ Examples:
   relay analyze --file export.har --format har  Analyze HAR export
   relay scripts init                        Scaffold a new script project
   relay scripts build                       Bundle script with esbuild
-  relay ca init                  Generate a CA certificate for HTTPS interception
+  relay ca generate              Generate CA certificate/key pair
   relay ca install               Install CA to system trust store (macOS)
   relay rules validate rules.json   Validate a rules file
 
 Environment:
-  RELAY_LOG     Log filter (default: info, e.g. debug, trace)"
+  RELAY_LOG       Log filter (default: info, e.g. debug, trace)
+  RELAY_DATA_DIR  Data directory (default: ~/.relay-core)
+  RELAY_CA_CERT   CA cert path (overrides data dir default)
+  RELAY_CA_KEY    CA key path (overrides data dir default)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -43,12 +46,12 @@ pub enum Commands {
         udp_tproxy_port: Option<u16>,
 
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        ca_cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
 
         /// Path to CA key
-        #[arg(long, default_value = "ca_key.pem")]
-        ca_key: PathBuf,
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
 
         /// Path to rules file (JSON/YAML)
         #[arg(long)]
@@ -324,15 +327,15 @@ pub enum ScriptsAction {
 
 #[derive(Subcommand)]
 pub enum CaAction {
-    /// Initialize CA (generate if not exists)
-    Init {
+    /// Generate CA (if missing). Use --force to overwrite.
+    Generate {
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
 
         /// Path to CA key
-        #[arg(long, default_value = "ca_key.pem")]
-        key: PathBuf,
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
 
         /// Force regenerate even if exists
         #[arg(long)]
@@ -341,8 +344,12 @@ pub enum CaAction {
     /// Export CA certificate
     Export {
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
 
         /// Output file path (default: stdout)
         #[arg(short, long)]
@@ -351,19 +358,31 @@ pub enum CaAction {
     /// Install CA certificate to system trust store
     Install {
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
     },
     /// Uninstall CA certificate from system trust store
     Uninstall {
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
     },
     /// Check CA certificate status
     Status {
         /// Path to CA certificate
-        #[arg(long, default_value = "ca_cert.pem")]
-        cert: PathBuf,
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
     },
 }

@@ -22,7 +22,7 @@ Requires **Node** ≥ 18. Binaries install via `@relay-core/binaries-*` (same as
 Install and trust the RelayCore CA once:
 
 ```bash
-npx @relay-core/cli ca init && npx @relay-core/cli ca install
+npx @relay-core/cli ca generate && npx @relay-core/cli ca install
 ```
 
 ## Tools (overview)

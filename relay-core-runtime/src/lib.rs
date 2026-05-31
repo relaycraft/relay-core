@@ -60,11 +60,13 @@ pub mod actors;
 pub mod audit;
 pub mod interceptors;
 pub mod modification;
+pub mod paths;
 pub mod rule;
 pub mod services;
 
 // ── Re-exports for user convenience ──
 // Users can do `use relay_core_runtime::flow::Flow;` without knowing relay_core_api exists.
+pub use paths::CaPaths;
 pub use relay_core_api::{flow, policy};
 pub use relay_core_lib::InterceptionResult;
 pub use relay_core_lib::rule as lib_rule;

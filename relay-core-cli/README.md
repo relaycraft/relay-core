@@ -9,7 +9,7 @@ Standalone CLI and TUI for [RelayCore](https://github.com/relaycraft/relay-core)
 cargo install relay-core-cli
 
 # Generate CA certificate for HTTPS interception
-relay-core-cli ca init
+relay-core-cli ca generate
 relay-core-cli ca install
 
 # Start proxy
@@ -26,7 +26,7 @@ The proxy listens on `127.0.0.1:8080` by default. Configure your browser or syst
 | Command | Description |
 |---------|-------------|
 | `run` | Start the proxy server. Use `--ui` for TUI mode. |
-| `ca {init,install,status,export,uninstall}` | Manage CA certificate for HTTPS decryption |
+| `ca {generate,install,status,export,uninstall}` | Manage CA certificate for HTTPS decryption |
 | `rules {validate,print,test,list}` | Validate, print, test, or list interception rules |
 | `scripts` | Manage Deno scripts for dynamic traffic modification |
 | `flows` | Query captured flows (requires running proxy with `--api-port`) |
@@ -82,7 +82,7 @@ To intercept HTTPS traffic, you need to generate and install a CA certificate:
 
 ```bash
 # Generate CA (one-time)
-relay-core-cli ca init
+relay-core-cli ca generate
 
 # Install to system trust store (macOS)
 relay-core-cli ca install

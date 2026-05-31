@@ -16,7 +16,7 @@ use relay_core_http::{HttpApiConfig, HttpApiServer};
 use relay_core_lib::intercept::types::{
     BoxError, HttpBody, Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
 };
-use relay_core_runtime::{CoreState, ProxyConfig, ProxySpawnResult, audit::AuditActor};
+use relay_core_runtime::{CaPaths, CoreState, ProxyConfig, ProxySpawnResult, audit::AuditActor};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -302,8 +302,8 @@ pub async fn execute(
     listen: String,
     control_port: u16,
     udp_tproxy_port: Option<u16>,
-    ca_cert: PathBuf,
-    ca_key: PathBuf,
+    ca_cert: Option<PathBuf>,
+    ca_key: Option<PathBuf>,
     rules: Option<PathBuf>,
     #[cfg(feature = "script")] script: Option<PathBuf>,
     #[cfg(feature = "script")] script_watch: bool,
@@ -317,6 +317,15 @@ pub async fn execute(
     api_token: Option<String>,
     api_cors: Option<String>,
 ) -> Result<()> {
+    let ca_paths = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
+    if !ca_paths.cert.exists() || !ca_paths.key.exists() {
+        return Err(anyhow::anyhow!(
+            "CA files not found:\n  cert: {}\n  key: {}\nRun `relay-core-cli ca generate` first.",
+            ca_paths.cert.display(),
+            ca_paths.key.display()
+        ));
+    }
+
     let state = Arc::new(CoreState::new(None).await);
     let interception_enabled = Arc::new(AtomicBool::new(true));
 
@@ -513,7 +522,7 @@ pub async fn execute(
         watcher
     };
 
-    let config = ProxyConfig::new(port, ca_cert.clone(), ca_key.clone())
+    let config = ProxyConfig::new(port, ca_paths.cert.clone(), ca_paths.key.clone())
         .with_transparent(transparent)
         .with_udp_tproxy_port(udp_tproxy_port);
 
@@ -627,35 +636,11 @@ pub async fn execute(
         info!("  TUI     run with --ui for interactive mode");
         info!("──────────────────────────────────────────────");
 
-        // CA certificate guidance
-        if !ca_cert.exists() || !ca_key.exists() {
-            info!("");
-            info!("  First run — CA certificate not found. To intercept HTTPS traffic:");
-            if cfg!(target_os = "macos") {
-                info!("    1. relay-core-cli ca init");
-                info!("    2. relay-core-cli ca install");
-                info!("");
-                info!("  Then configure your system/browser to use this proxy:");
-                info!("    Proxy: {}  |  No authentication", addr);
-            } else {
-                info!("    1. relay-core-cli ca init");
-                info!(
-                    "    2. Install {:?} to your system trust store manually",
-                    ca_cert
-                );
-                info!(
-                    "       (Linux: cp to /usr/local/share/ca-certificates/ && update-ca-certificates)"
-                );
-                info!("       (Windows: certmgr.msc → Trusted Root Certification Authorities)");
-            }
-            info!("");
-        } else if !cfg!(target_os = "macos") && !ca_cert.exists() {
-            // Only show if CA exists but might not be installed (non-macOS)
-            info!(
-                "  CA cert ready at {:?} — may need manual system trust installation",
-                ca_cert
-            );
-        }
+        info!(
+            "  CA      cert={} key={}",
+            ca_paths.cert.display(),
+            ca_paths.key.display()
+        );
 
         // Run proxy in main thread
         if let Err(e) = state.start_proxy(config, proxy_tx, extra_interceptor).await {

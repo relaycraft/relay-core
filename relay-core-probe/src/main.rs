@@ -1,6 +1,5 @@
-use relay_core_lib::tls::CertificateAuthority;
 use relay_core_probe::{ProbeConfig, ProbeServer, ProbeTransport};
-use relay_core_runtime::{CoreState, ProxyConfig};
+use relay_core_runtime::{CaPaths, CoreState, ProxyConfig};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,21 +25,26 @@ async fn main() {
     let port = parse_arg_env("--port=", "RELAY_PORT")
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-    let ca_cert_path = parse_arg_env("--ca-cert=", "RELAY_CA_CERT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs_next_or_cwd().join("ca_cert.pem"));
-    let ca_key_path = parse_arg_env("--ca-key=", "RELAY_CA_KEY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs_next_or_cwd().join("ca_key.pem"));
-
-    // Auto-init CA if not exists
-    if (!ca_cert_path.exists() || !ca_key_path.exists())
-        && let Err(e) = CertificateAuthority::load_or_create(&ca_cert_path, &ca_key_path)
-    {
-        eprintln!("Failed to init CA: {}", e);
+    let ca_paths = match CaPaths::resolve(
+        parse_arg_env("--ca-cert=", "RELAY_CA_CERT").map(PathBuf::from),
+        parse_arg_env("--ca-key=", "RELAY_CA_KEY").map(PathBuf::from),
+    ) {
+        Ok(paths) => paths,
+        Err(e) => {
+            eprintln!("Invalid CA path configuration: {e}");
+            std::process::exit(1);
+        }
+    };
+    if !ca_paths.cert.exists() || !ca_paths.key.exists() {
+        eprintln!(
+            "CA files not found:\n  cert: {}\n  key: {}\nRun `relay-core-cli ca generate` first.",
+            ca_paths.cert.display(),
+            ca_paths.key.display()
+        );
+        std::process::exit(1);
     }
 
-    let config = ProxyConfig::new(port, ca_cert_path.clone(), ca_key_path.clone());
+    let config = ProxyConfig::new(port, ca_paths.cert.clone(), ca_paths.key.clone());
     let (tx, _rx) = tokio::sync::mpsc::channel(1000);
     match state.spawn_proxy(config, tx, None) {
         Ok(_) => {}
@@ -51,9 +55,9 @@ async fn main() {
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!("RelayCore MCP proxy started");
     eprintln!("  Proxy:  127.0.0.1:{}", port);
-    eprintln!("  CA:     {}", ca_cert_path.display());
+    eprintln!("  CA:     {}", ca_paths.cert.display());
     eprintln!();
-    if !cfg!(target_os = "macos") || ca_cert_path.exists() {
+    if !cfg!(target_os = "macos") || ca_paths.cert.exists() {
         eprintln!("Configure your browser/system to use this proxy.");
     }
     if cfg!(target_os = "macos") {
@@ -92,10 +96,4 @@ fn parse_transport() -> ProbeTransport {
         }
         _ => ProbeTransport::Stdio,
     }
-}
-
-fn dirs_next_or_cwd() -> PathBuf {
-    dirs::data_local_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }

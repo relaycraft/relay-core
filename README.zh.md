@@ -82,7 +82,7 @@ relay-core-cli run
 relay-core-cli run --ui
 
 # 生成用于 HTTPS 拦截的 CA 证书
-relay-core-cli ca init
+relay-core-cli ca generate
 
 # 验证规则文件
 relay-core-cli rules validate --file rules.yaml
