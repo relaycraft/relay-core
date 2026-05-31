@@ -215,10 +215,9 @@ impl CertificateAuthority {
                 )));
             }
 
-            if let Err(err) = Self::validate_ca_certificate(
-                &std::fs::read_to_string(ca_cert_path)?,
-                ca_cert_path,
-            ) {
+            if let Err(err) =
+                Self::validate_ca_certificate(&std::fs::read_to_string(ca_cert_path)?, ca_cert_path)
+            {
                 warn!(
                     ca_cert_path = ?ca_cert_path,
                     error = %err,
@@ -285,12 +284,14 @@ impl CertificateAuthority {
                 params.not_after =
                     OffsetDateTime::now_utc() + Duration::days(Self::LEAF_CERT_VALIDITY_DAYS);
 
-                let cert = params.signed_by(&key_pair, &ca_cert, &ca_key_pair).map_err(|e| {
-                    std::io::Error::other(format!(
-                        "failed to sign leaf certificate for domain {}: {}",
-                        domain, e
-                    ))
-                })?;
+                let cert = params
+                    .signed_by(&key_pair, &ca_cert, &ca_key_pair)
+                    .map_err(|e| {
+                        std::io::Error::other(format!(
+                            "failed to sign leaf certificate for domain {}: {}",
+                            domain, e
+                        ))
+                    })?;
 
                 let mut server_config = ServerConfig::builder()
                     .with_no_client_auth()

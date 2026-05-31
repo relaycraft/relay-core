@@ -34,3 +34,4 @@ tauri-plugin = { version = "2", features = ["build"] }
 chrono.workspace = true
 uuid.workspace = true
 rustls.workspace = true
+tempfile = "3"
