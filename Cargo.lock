@@ -4600,7 +4600,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "relay-core-api"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "chrono",
  "http",
@@ -4613,7 +4613,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-cli"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4658,7 +4658,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-http"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "axum",
  "regex",
@@ -4677,7 +4677,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-lib"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4720,7 +4720,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-probe"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -4745,7 +4745,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-runtime"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4769,7 +4769,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-script"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4800,7 +4800,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-storage"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "libsqlite3-sys",
  "relay-core-api",
@@ -4813,7 +4813,7 @@ dependencies = [
 
 [[package]]
 name = "relay-core-tauri"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4831,6 +4831,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-plugin",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "url",
