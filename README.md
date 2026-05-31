@@ -38,8 +38,8 @@ relay-core-api / relay-core-script / relay-core-storage
 |-------|------|--------|
 | `relay-core-runtime` | Main API — state orchestration, proxy lifecycle, rules, events | Public |
 | `relay-core-http` | REST + SSE adapter for Web UIs and external tooling | Public |
-| `relay-core-probe` | MCP adapter for AI agents and automation | Beta |
-| `relay-core-cli` | Standalone CLI and TUI binary | Beta |
+| `relay-core-probe` | MCP adapter for AI agents and automation | GA |
+| `relay-core-cli` | Standalone CLI and TUI binary | GA |
 | `relay-core-tauri` | Tauri plugin for RelayCraft desktop application | Internal |
 
 *Internal support crates: `relay-core-api` (types), `relay-core-lib` (engine), `relay-core-storage` (SQLite), `relay-core-script` (Deno). Not intended for direct use.*

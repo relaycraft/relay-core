@@ -38,8 +38,8 @@ relay-core-api / relay-core-script / relay-core-storage
 |------|------|--------|
 | `relay-core-runtime` | 主 API — 状态编排、代理生命周期、规则管理、事件流 | 公开 |
 | `relay-core-http` | REST + SSE 适配器，供 Web UI 和外部工具集成 | 公开 |
-| `relay-core-probe` | MCP 适配器，供 AI Agent 与自动化使用 | Beta |
-| `relay-core-cli` | 独立 CLI 与 TUI 二进制程序 | Beta |
+| `relay-core-probe` | MCP 适配器，供 AI Agent 与自动化使用 | GA |
+| `relay-core-cli` | 独立 CLI 与 TUI 二进制程序 | GA |
 | `relay-core-tauri` | RelayCraft 桌面端 Tauri 插件 | 内部 |
 
 *内部支撑包：`relay-core-api`（类型合约）、`relay-core-lib`（引擎）、`relay-core-storage`（SQLite）、`relay-core-script`（Deno）。非面向用户，不应直接依赖。*
