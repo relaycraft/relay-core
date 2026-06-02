@@ -104,6 +104,22 @@ pub enum Commands {
         #[cfg(feature = "script")]
         #[arg(long)]
         script_env_allow: Option<String>,
+
+        /// Upstream proxy URL, e.g. "http://corp-proxy:8080" or "https://secure-proxy:8443"
+        #[arg(long)]
+        upstream: Option<String>,
+
+        /// Username for upstream proxy Basic auth (password from RELAYCORE_UPSTREAM_PASSWORD env var)
+        #[arg(long)]
+        upstream_auth_user: Option<String>,
+
+        /// Comma-separated hosts to bypass upstream (CIDR with "cidr:" prefix, IP literals, or globs)
+        #[arg(long)]
+        upstream_bypass: Option<String>,
+
+        /// Allow fallback to direct connection when upstream is unreachable
+        #[arg(long, default_value_t = false)]
+        upstream_fail_open: bool,
     },
     /// Manage Certificate Authority
     Ca {

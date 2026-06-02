@@ -9,9 +9,10 @@ use crate::interceptor::{
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
-    HttpsClient, build_forward_request, create_error_response, create_initial_flow,
-    mock_to_response, parse_request_meta, update_flow_with_response_headers,
+    build_forward_request, create_error_response, create_initial_flow, mock_to_response,
+    parse_request_meta, update_flow_with_response_headers,
 };
+use crate::proxy::outbound::OutboundConnector;
 use crate::proxy::tap::TapBody;
 use crate::proxy::tunnel;
 use crate::proxy::websocket::handle_websocket_handshake;
@@ -29,7 +30,7 @@ pub async fn handle_request(
     client_addr: SocketAddr,
     on_flow: Sender<FlowUpdate>,
     ca: Arc<CertificateAuthority>,
-    client: Arc<HttpsClient>,
+    connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
     target_addr: Option<SocketAddr>,
     policy_rx: watch::Receiver<ProxyPolicy>,
@@ -69,7 +70,7 @@ pub async fn handle_request(
                         client_addr,
                         ca,
                         on_flow,
-                        client,
+                        connector,
                         interceptor,
                         policy_rx,
                         target_addr,
@@ -94,7 +95,7 @@ pub async fn handle_request(
         req,
         client_addr,
         on_flow,
-        client,
+        connector,
         interceptor,
         false,
         policy_rx,
@@ -110,7 +111,7 @@ pub(crate) async fn handle_http_request<B>(
     req: Request<B>,
     client_addr: SocketAddr,
     on_flow: Sender<FlowUpdate>,
-    client: Arc<HttpsClient>,
+    connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
     is_mitm: bool,
     policy_rx: watch::Receiver<ProxyPolicy>,
@@ -158,7 +159,7 @@ where
             req,
             client_addr,
             on_flow,
-            client,
+            connector,
             interceptor,
             is_mitm,
             policy_rx,
@@ -273,16 +274,23 @@ where
         Err(res) => return Ok(res),
     };
 
-    // P3: Circuit breaker check before upstream request
-    let upstream_host = forward_req
-        .uri()
-        .authority()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    if !circuit_breaker.allow_request(&upstream_host).await {
+    // P3: Circuit breaker check before upstream request.
+    // When going through an upstream proxy, key on the proxy address so
+    // that a failing upstream proxy isolates correctly from target hosts.
+    let circuit_breaker_key = connector
+        .upstream_proxy_url()
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| {
+            forward_req
+                .uri()
+                .authority()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        });
+    if !circuit_breaker.allow_request(&circuit_breaker_key).await {
         tracing::warn!(
             "Circuit breaker open for upstream {}, returning 503",
-            upstream_host
+            circuit_breaker_key
         );
         // P4: Record circuit breaker open in resilience trace
         flow.resilience_trace = Some(ResilienceTrace {
@@ -294,24 +302,32 @@ where
         }
         return Ok(create_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("Circuit breaker open for upstream {}", upstream_host),
+            format!("Circuit breaker open for upstream {}", circuit_breaker_key),
         ));
     }
 
     // Send Request
     let upstream_start = std::time::Instant::now();
+    let target_host = forward_req.uri().host().unwrap_or("unknown").to_string();
+    let target_port = forward_req.uri().port_u16().unwrap_or(
+        if forward_req.uri().scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        },
+    );
     let res = match tokio::time::timeout(
         std::time::Duration::from_millis(policy.request_timeout_ms),
-        client.request(forward_req),
+        connector.send_request(forward_req, &target_host, target_port, &mut flow),
     )
     .await
     {
         Ok(Ok(res)) => {
-            circuit_breaker.record_success(&upstream_host).await;
+            circuit_breaker.record_success(&circuit_breaker_key).await;
             res
         }
         Ok(Err(e)) => {
-            circuit_breaker.record_failure(&upstream_host).await;
+            circuit_breaker.record_failure(&circuit_breaker_key).await;
             tracing::error!("Upstream request failed: {}", e);
             // P4: Record upstream error in resilience trace
             flow.resilience_trace = Some(ResilienceTrace {
@@ -330,7 +346,7 @@ where
             ));
         }
         Err(_) => {
-            circuit_breaker.record_failure(&upstream_host).await;
+            circuit_breaker.record_failure(&circuit_breaker_key).await;
             tracing::error!("Upstream request timed out");
             // Record timeout in resilience trace
             // We use a single tokio::time::timeout wrapping the entire upstream

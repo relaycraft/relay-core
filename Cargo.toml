@@ -51,6 +51,7 @@ relay-core-storage = { path = "./relay-core-storage", version = "0.5.2" }
 relay-core-probe = { path = "./relay-core-probe", version = "0.5.2" }
 relay-core-http = { path = "./relay-core-http", version = "0.5.2" }
 tracing = "0.1"
+secrecy = "0.10"
 
 [workspace.metadata.release]
 shared-version = true

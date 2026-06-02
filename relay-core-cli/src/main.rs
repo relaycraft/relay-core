@@ -75,6 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_bind,
             api_token,
             api_cors,
+            upstream,
+            upstream_auth_user,
+            upstream_bypass,
+            upstream_fail_open,
         } => {
             #[cfg(feature = "script")]
             commands::run::execute(
@@ -95,6 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 api_bind,
                 api_token,
                 api_cors,
+                upstream,
+                upstream_auth_user,
+                upstream_bypass,
+                upstream_fail_open,
             )
             .await?;
             #[cfg(not(feature = "script"))]
@@ -113,6 +121,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 api_bind,
                 api_token,
                 api_cors,
+                upstream,
+                upstream_auth_user,
+                upstream_bypass,
+                upstream_fail_open,
             )
             .await?;
         }

@@ -243,6 +243,7 @@ fn test_redaction_patch_partial_update_keeps_unspecified_fields() {
             redact_bodies: Some(true),
             ..Default::default()
         }),
+        upstream: None,
     });
 
     assert!(policy.redaction.enabled);

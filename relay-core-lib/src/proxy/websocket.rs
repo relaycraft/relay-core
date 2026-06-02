@@ -3,8 +3,9 @@ use crate::intercept::types::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, WebSocketMessageAction,
 };
 use crate::proxy::http_utils::{
-    HttpsClient, create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
+    create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
 };
+use crate::proxy::outbound::OutboundConnector;
 use chrono::Utc;
 use data_encoding::BASE64;
 use futures_util::{SinkExt, StreamExt};
@@ -67,7 +68,7 @@ pub async fn handle_websocket_handshake<B>(
     req: Request<B>,
     client_addr: SocketAddr,
     on_flow: Sender<FlowUpdate>,
-    client: Arc<HttpsClient>,
+    connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
     is_mitm: bool,
     policy_rx: watch::Receiver<ProxyPolicy>,
@@ -232,9 +233,18 @@ where
             }
         };
 
+    let target_host = forward_req.uri().host().unwrap_or("unknown").to_string();
+    let port = forward_req.uri().port_u16().unwrap_or(
+        if forward_req.uri().scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        },
+    );
+
     match tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        client.request(forward_req),
+        connector.send_request(forward_req, &target_host, port, &mut flow),
     )
     .await
     {

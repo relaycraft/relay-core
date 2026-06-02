@@ -289,6 +289,7 @@ async fn policy_service_trait_read_and_write() {
                 redact_bodies: Some(true),
                 ..Default::default()
             }),
+            upstream: None,
         },
     );
     let patched = service.policy_snapshot();

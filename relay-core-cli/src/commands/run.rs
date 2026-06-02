@@ -316,6 +316,10 @@ pub async fn execute(
     api_bind: String,
     api_token: Option<String>,
     api_cors: Option<String>,
+    upstream: Option<String>,
+    upstream_auth_user: Option<String>,
+    upstream_bypass: Option<String>,
+    upstream_fail_open: bool,
 ) -> Result<()> {
     let ca_paths = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
     if !ca_paths.cert.exists() || !ca_paths.key.exists() {
@@ -328,6 +332,41 @@ pub async fn execute(
 
     let state = Arc::new(CoreState::new(None).await);
     let interception_enabled = Arc::new(AtomicBool::new(true));
+
+    // Configure upstream proxy if --upstream is set
+    if let Some(upstream_url) = upstream.as_deref() {
+        let auth = upstream_auth_user.map(|user| {
+            let password = std::env::var("RELAYCORE_UPSTREAM_PASSWORD").unwrap_or_default();
+            if password.is_empty() {
+                error!(
+                    "RELAYCORE_UPSTREAM_PASSWORD env var is required when --upstream-auth-user is set"
+                );
+            }
+            relay_core_api::policy::UpstreamAuth::new(user, password)
+        });
+        let bypass_hosts: Vec<String> = upstream_bypass
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let upstream_cfg = relay_core_api::policy::UpstreamProxyConfig {
+            proxy_url: upstream_url.to_string(),
+            auth,
+            bypass_hosts,
+            fail_open: upstream_fail_open,
+        };
+        state.patch_policy_from(
+            AuditActor::Runtime,
+            "cli --upstream".to_string(),
+            relay_core_api::policy::ProxyPolicyPatch {
+                redaction: None,
+                upstream: Some(upstream_cfg),
+            },
+        );
+        info!("Upstream proxy configured: {}", upstream_url);
+    }
 
     // Create broadcast channel for flow updates (TUI + WebSocket)
     let (flow_tx, _) = tokio::sync::broadcast::channel(1024);

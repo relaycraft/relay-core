@@ -1,4 +1,6 @@
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,7 +31,93 @@ pub struct RedactionPolicyPatch {
 pub struct ProxyPolicyPatch {
     #[serde(default)]
     pub redaction: Option<RedactionPolicyPatch>,
+    #[serde(default)]
+    pub upstream: Option<UpstreamProxyConfig>,
 }
+
+// ── Upstream Proxy ──────────────────────────────────────
+
+/// Upstream proxy configuration.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UpstreamProxyConfig {
+    /// Upstream proxy URL, e.g. "http://corp-proxy:8080" or "https://secure-proxy:8443"
+    pub proxy_url: String,
+    /// Optional HTTP Basic authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<UpstreamAuth>,
+    /// Hosts to bypass upstream (CIDR with `cidr:` prefix, IP literals, or glob hostnames)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bypass_hosts: Vec<String>,
+    /// When true, unreachable upstream falls back to direct connection (default false = fail-closed)
+    #[serde(default)]
+    pub fail_open: bool,
+}
+
+/// HTTP Basic credentials for upstream proxy authentication.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UpstreamAuth {
+    pub username: String,
+    #[serde(
+        serialize_with = "serialize_secret",
+        deserialize_with = "deserialize_secret"
+    )]
+    pub password: SecretString,
+}
+
+fn serialize_secret<S: serde::Serializer>(_v: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str("***")
+}
+fn deserialize_secret<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(SecretString::new(s.into()))
+}
+
+impl fmt::Debug for UpstreamProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpstreamProxyConfig")
+            .field("proxy_url", &self.proxy_url)
+            .field("auth", &self.auth.as_ref().map(|_| "***"))
+            .field("bypass_hosts", &self.bypass_hosts)
+            .field("fail_open", &self.fail_open)
+            .finish()
+    }
+}
+
+impl UpstreamAuth {
+    pub fn new(username: String, password: String) -> Self {
+        Self {
+            username,
+            password: SecretString::new(password.into()),
+        }
+    }
+}
+
+impl fmt::Debug for UpstreamAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpstreamAuth")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
+}
+
+impl PartialEq for UpstreamProxyConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.proxy_url == other.proxy_url
+            && self.bypass_hosts == other.bypass_hosts
+            && self.fail_open == other.fail_open
+            && match (&self.auth, &other.auth) {
+                (Some(a), Some(b)) => {
+                    a.username == b.username
+                        && a.password.expose_secret() == b.password.expose_secret()
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for UpstreamProxyConfig {}
 
 impl Default for RedactionPolicy {
     fn default() -> Self {
@@ -119,6 +207,10 @@ pub struct ProxyPolicy {
 
     #[serde(default)]
     pub redaction: RedactionPolicy,
+
+    /// Upstream (parent) proxy configuration. None = direct connection mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<UpstreamProxyConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -168,6 +260,7 @@ impl Default for ProxyPolicy {
             quic_mode: QuicMode::Downgrade,
             quic_downgrade_clear_cache: false,
             redaction: RedactionPolicy::default(),
+            upstream: None,
         }
     }
 }
@@ -193,6 +286,9 @@ impl ProxyPolicy {
     pub fn apply_patch(&mut self, patch: ProxyPolicyPatch) {
         if let Some(redaction_patch) = patch.redaction {
             self.redaction.apply_patch(redaction_patch);
+        }
+        if let Some(upstream) = patch.upstream {
+            self.upstream = Some(upstream);
         }
     }
 }
@@ -241,4 +337,113 @@ fn default_sensitive_query_keys() -> Vec<String> {
         "password".to_string(),
         "secret".to_string(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::SecretString;
+
+    #[test]
+    fn upstream_proxy_config_debug_masks_password() {
+        let cfg = UpstreamProxyConfig {
+            proxy_url: "http://proxy:8080".to_string(),
+            auth: Some(UpstreamAuth {
+                username: "user".to_string(),
+                password: SecretString::new("s3cret".to_string().into()),
+            }),
+            bypass_hosts: vec!["*.local".to_string()],
+            fail_open: false,
+        };
+        let dbg = format!("{:?}", cfg);
+        assert!(dbg.contains("http://proxy:8080"));
+        assert!(dbg.contains("***"));
+        assert!(!dbg.contains("s3cret"));
+    }
+
+    #[test]
+    fn upstream_auth_debug_masks_password() {
+        let auth = UpstreamAuth {
+            username: "user".to_string(),
+            password: SecretString::new("s3cret".to_string().into()),
+        };
+        let dbg = format!("{:?}", auth);
+        assert!(dbg.contains("user"));
+        assert!(dbg.contains("***"));
+        assert!(!dbg.contains("s3cret"));
+    }
+
+    #[test]
+    fn proxy_policy_default_has_no_upstream() {
+        let policy = ProxyPolicy::default();
+        assert!(policy.upstream.is_none());
+    }
+
+    #[test]
+    fn proxy_policy_patch_applies_upstream() {
+        let mut policy = ProxyPolicy::default();
+        let upstream = UpstreamProxyConfig {
+            proxy_url: "http://corp:8080".to_string(),
+            auth: None,
+            bypass_hosts: vec![],
+            fail_open: false,
+        };
+        policy.apply_patch(ProxyPolicyPatch {
+            redaction: None,
+            upstream: Some(upstream.clone()),
+        });
+        assert_eq!(policy.upstream, Some(upstream));
+    }
+
+    #[test]
+    fn upstream_proxy_config_serde_masks_password() {
+        let cfg = UpstreamProxyConfig {
+            proxy_url: "https://secure-proxy:8443".to_string(),
+            auth: Some(UpstreamAuth {
+                username: "admin".to_string(),
+                password: SecretString::new("p@ss".to_string().into()),
+            }),
+            bypass_hosts: vec!["cidr:10.0.0.0/8".to_string(), "*.internal".to_string()],
+            fail_open: true,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        // Serialized JSON must NOT contain the real password.
+        assert!(!json.contains("p@ss"));
+        assert!(json.contains("***"));
+        // Non-password fields round-trip correctly.
+        let decoded: UpstreamProxyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.proxy_url, cfg.proxy_url);
+        assert_eq!(decoded.bypass_hosts, cfg.bypass_hosts);
+        assert_eq!(decoded.fail_open, cfg.fail_open);
+    }
+
+    #[test]
+    fn proxy_policy_serialization_hides_upstream_when_none() {
+        let policy = ProxyPolicy::default();
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(!json.contains("upstream"));
+    }
+
+    #[test]
+    fn upstream_partial_eq_compares_password() {
+        let a = UpstreamProxyConfig {
+            proxy_url: "http://p:8080".to_string(),
+            auth: Some(UpstreamAuth {
+                username: "u".to_string(),
+                password: SecretString::new("a".to_string().into()),
+            }),
+            bypass_hosts: vec![],
+            fail_open: false,
+        };
+        let b = UpstreamProxyConfig {
+            proxy_url: "http://p:8080".to_string(),
+            auth: Some(UpstreamAuth {
+                username: "u".to_string(),
+                password: SecretString::new("b".to_string().into()),
+            }),
+            bypass_hosts: vec![],
+            fail_open: false,
+        };
+        assert_ne!(a, b);
+    }
 }

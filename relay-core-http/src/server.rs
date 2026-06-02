@@ -15,7 +15,7 @@ use relay_core_runtime::CoreState;
 #[cfg(feature = "script")]
 use relay_core_runtime::services::ScriptService;
 use relay_core_runtime::services::{
-    AuditService, FlowEventHub, FlowReadService, InterceptService, RuleService,
+    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
     RuntimeStatusService,
 };
 use tower_http::cors::CorsLayer;
@@ -61,6 +61,7 @@ pub struct HttpApiContext {
     pub rules: Arc<dyn RuleService>,
     pub intercepts: Arc<dyn InterceptService>,
     pub audit: Arc<dyn AuditService>,
+    pub policy: Arc<dyn PolicyService>,
     pub status: Arc<dyn RuntimeStatusService>,
     #[cfg(feature = "script")]
     pub scripts: Arc<dyn ScriptService>,
@@ -74,6 +75,7 @@ impl HttpApiContext {
             rules: core.clone(),
             intercepts: core.clone(),
             audit: core.clone(),
+            policy: core.clone(),
             status: core.clone(),
             #[cfg(feature = "script")]
             scripts: core.clone(),
@@ -121,7 +123,8 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
         .merge(routes::flows::router(ctx.clone()))
         .merge(routes::rules::router(ctx.clone()))
         .merge(routes::intercepts::router(ctx.clone()))
-        .merge(routes::events::router(ctx.clone()));
+        .merge(routes::events::router(ctx.clone()))
+        .merge(routes::policy::router(ctx.clone()));
 
     #[cfg(feature = "script")]
     let router = router.merge(routes::scripts::router(ctx.clone()));

@@ -395,6 +395,7 @@ mod tests {
                     enabled: Some(true),
                     ..Default::default()
                 }),
+                upstream: None,
             },
         );
 

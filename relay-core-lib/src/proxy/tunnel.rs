@@ -1,7 +1,7 @@
 use crate::interceptor::Interceptor;
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_http_request;
-use crate::proxy::http_utils::HttpsClient;
+use crate::proxy::outbound::OutboundConnector;
 use crate::tls::CertificateAuthority;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
@@ -26,7 +26,7 @@ pub async fn handle_tunnel(
     client_addr: SocketAddr,
     ca: Arc<CertificateAuthority>,
     on_flow: Sender<FlowUpdate>,
-    client: Arc<HttpsClient>,
+    connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
     policy_rx: watch::Receiver<ProxyPolicy>,
     target_addr: Option<SocketAddr>,
@@ -101,7 +101,7 @@ pub async fn handle_tunnel(
                     req,
                     client_addr,
                     on_flow.clone(),
-                    client.clone(),
+                    connector.clone(),
                     interceptor.clone(),
                     true,
                     policy_rx.clone(),

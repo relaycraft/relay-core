@@ -2,6 +2,7 @@ pub mod events;
 pub mod flows;
 pub mod intercepts;
 pub mod metrics;
+pub mod policy;
 pub mod rules;
 #[cfg(feature = "script")]
 pub mod scripts;

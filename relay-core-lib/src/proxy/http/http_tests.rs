@@ -1,5 +1,7 @@
 use super::*;
 use crate::capture::loop_detection::LoopDetector;
+use crate::proxy::http_utils::HttpsClient;
+use crate::proxy::outbound::{DirectConnector, OutboundConnector};
 use chrono::Utc;
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -88,7 +90,7 @@ async fn test_request_timeout() {
         req,
         "127.0.0.1:12345".parse().unwrap(),
         tx,
-        create_dummy_client(),
+        create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
         false, // is_mitm
         rx_policy,
@@ -103,7 +105,7 @@ async fn test_request_timeout() {
     assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
 }
 
-fn create_dummy_client() -> Arc<HttpsClient> {
+fn create_dummy_connector() -> Arc<dyn OutboundConnector> {
     init_crypto();
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
@@ -111,7 +113,8 @@ fn create_dummy_client() -> Arc<HttpsClient> {
         .https_or_http()
         .enable_http1()
         .build();
-    Arc::new(Client::builder(hyper_util::rt::TokioExecutor::new()).build(https))
+    let client: HttpsClient = Client::builder(hyper_util::rt::TokioExecutor::new()).build(https);
+    Arc::new(DirectConnector::new(Arc::new(client)))
 }
 
 #[test]
@@ -239,7 +242,7 @@ async fn test_timeout_sets_trace_timeout_type() {
         req,
         "127.0.0.1:12345".parse().unwrap(),
         tx,
-        create_dummy_client(),
+        create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
         false,
         rx_policy,
@@ -315,7 +318,7 @@ async fn test_circuit_breaker_sets_trace() {
         req,
         "127.0.0.1:12345".parse().unwrap(),
         tx,
-        create_dummy_client(),
+        create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
         false,
         rx_policy,
@@ -391,7 +394,7 @@ async fn test_throttle_wires_into_http_pipeline() {
         req,
         "127.0.0.1:12345".parse().unwrap(),
         tx,
-        create_dummy_client(),
+        create_dummy_connector(),
         throttle_interceptor,
         false,
         rx_policy,

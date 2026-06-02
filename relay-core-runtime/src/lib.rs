@@ -2418,6 +2418,7 @@ mod tests {
                     redact_bodies: Some(true),
                     ..Default::default()
                 }),
+                upstream: None,
             },
         );
 

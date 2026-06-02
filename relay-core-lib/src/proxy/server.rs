@@ -16,6 +16,9 @@ use crate::interceptor::{ConnectAction, ConnectionInfo, ENGINE_INDEX, Intercepto
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_request;
 use crate::proxy::http_utils::HttpsClient;
+use crate::proxy::outbound::{
+    DirectConnector, HttpUpstreamConnector, HttpsUpstreamConnector, OutboundConnector,
+};
 use crate::rule::engine::executor::{ConnectOverride, RuleEngine};
 use crate::tls::CertificateAuthority;
 use chrono::Utc;
@@ -24,6 +27,7 @@ use relay_core_api::policy::ProxyPolicy;
 use relay_core_api::rule::RuleStage;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use url::Url;
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,9 +49,10 @@ where
 {
     info!("RelayCore Proxy starting...");
     info!("CA Loaded. Root cert:\n{}", ca.get_ca_cert_pem());
-    info!("Proxy Policy: {:?}", policy.borrow());
+    let startup_policy = policy.borrow().clone();
+    info!("Proxy Policy: {:?}", startup_policy);
 
-    // Initialize HTTP Client (shared)
+    // Initialize HTTP Client (shared) — used by DirectConnector
     let client = if let Some(c) = client {
         c
     } else {
@@ -61,12 +66,52 @@ where
             .timer(hyper_util::rt::TokioTimer::new())
             .pool_idle_timeout(Duration::from_secs(60))
             .pool_max_idle_per_host(32)
-            .http2_initial_stream_window_size(2 * 1024 * 1024) // 2MB
-            .http2_initial_connection_window_size(4 * 1024 * 1024) // 4MB
+            .http2_initial_stream_window_size(2 * 1024 * 1024)
+            .http2_initial_connection_window_size(4 * 1024 * 1024)
             .http2_keep_alive_interval(Duration::from_secs(20))
             .http2_keep_alive_timeout(Duration::from_secs(10))
             .build(https);
         Arc::new(client)
+    };
+
+    // Initialize OutboundConnector based on ProxyPolicy.upstream
+    let connector: Arc<dyn OutboundConnector> = match &startup_policy.upstream {
+        Some(upstream) => {
+            let scheme = Url::parse(&upstream.proxy_url)
+                .map(|u| u.scheme().to_string())
+                .unwrap_or_else(|_| "http".to_string());
+            let result = if scheme == "https" {
+                HttpsUpstreamConnector::new(upstream)
+                    .await
+                    .map(|c| Arc::new(c) as Arc<dyn OutboundConnector>)
+            } else {
+                HttpUpstreamConnector::new(upstream)
+                    .await
+                    .map(|c| Arc::new(c) as Arc<dyn OutboundConnector>)
+            };
+            match result {
+                Ok(c) => c,
+                Err(e) => {
+                    if upstream.fail_open {
+                        tracing::warn!(
+                            "Failed to create upstream connector: {:?}, falling back to direct (fail_open=true)",
+                            e
+                        );
+                        Arc::new(DirectConnector::new(client.clone()))
+                    } else {
+                        tracing::error!(
+                            "Failed to create upstream connector: {:?}, aborting startup (fail_open=false)",
+                            e
+                        );
+                        return Err(crate::error::RelayError::Proxy(format!(
+                            "upstream proxy configuration failed: {}",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
+        None => Arc::new(DirectConnector::new(client.clone())),
     };
 
     // Initialize Loop Detector
@@ -209,7 +254,7 @@ where
         let io = TokioIo::new(stream);
         let on_flow = on_flow.clone();
         let ca = ca.clone();
-        let client = client.clone();
+        let connector = connector.clone();
         let interceptor = interceptor.clone();
         let policy = policy.clone();
         let loop_detector = loop_detector.clone();
@@ -235,7 +280,7 @@ where
                             client_addr,
                             on_flow.clone(),
                             ca.clone(),
-                            client.clone(),
+                            connector.clone(),
                             interceptor.clone(),
                             target_addr,
                             policy.clone(),
