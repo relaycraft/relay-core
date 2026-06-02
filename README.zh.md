@@ -1,154 +1,164 @@
 # RelayCore
 
-基于 Rust 的高性能流量拦截引擎。
+**可嵌入的 Rust 流量拦截引擎 — 一套 runtime，CLI / REST / MCP / Tauri 多种接入。**
 
-RelayCore 是一个独立的代理平台，在共享运行时之上提供了多种宿主适配器（CLI、TUI、HTTP API、MCP、Tauri 插件）。
+在本地捕获、检查、修改 HTTP/HTTPS/WebSocket 流量。面向需要程序化控制（规则、脚本、断点）的开发者，以及通过原生 MCP 观察实时流量的 AI Agent — 而不只是 GUI 抓包工具。
 
-> `relay-core` 名称在 crates.io 已被占用，`relay-core-runtime` 是官方主包。
+[![Website](https://img.shields.io/badge/website-relaycore.dev-00d4ff?style=flat-square)](https://relaycore.dev) [![crates.io](https://img.shields.io/crates/v/relay-core-runtime?style=flat-square)](https://crates.io/crates/relay-core-runtime) [![docs.rs](https://img.shields.io/docsrs/relay-core-runtime?style=flat-square)](https://docs.rs/relay-core-runtime) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-## 功能特性
+[English](README.md) · [文档](https://relaycore.dev/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases)
 
-- **HTTP/HTTPS 代理** — 完整的中间人代理，支持动态 TLS 证书生成
-- **WebSocket 拦截** — 消息级别的检查、修改与重放
-- **规则引擎** — 匹配 + 动作管线（请求头、请求体、状态码、重定向、Mock、限速）
-- **脚本引擎** — 基于 Deno/V8 运行时，动态修改请求、响应与 WebSocket 消息
-- **断点拦截** — 暂停实时流量，检查、修改后放行或丢弃
-- **透明代理** — Linux TPROXY（TCP+UDP）、macOS PF（TCP+UDP）、Windows WinDivert（TCP）
-- **QUIC/HTTP3** — Tier 1 downgrade（剥离 Alt-Svc 头）+ Tier 2 UDP forward；应用层 MITM（解密）延期至 1.0 后
-- **流量脱敏** — 可配置的敏感字段掩码（请求头、查询参数、请求/响应体）
-- **审计追踪** — 控制面操作全量记录，支持执行者归因与持久化
-- **指标监控** — Prometheus 文本格式端点、结构化指标快照
-- **流量持久化** — 内存 LRU 缓存 + 可选 SQLite 持久化，支持分页查询
+> crates.io 上 `relay-core` 名称已被占用，**`relay-core-runtime`** 是官方主库 crate。
+
+---
+
+## 快速开始（CLI）
+
+```bash
+# 安装（任选其一）
+cargo install relay-core-cli
+npm install -g @relay-core/cli
+
+# HTTPS 拦截：生成并信任本地 CA（只需一次）
+relay-core-cli ca generate && relay-core-cli ca install
+# npm：relay-core ca generate && relay-core ca install
+
+# 启动代理（默认 127.0.0.1:8080），可选 REST/SSE API 端口 8082
+relay-core-cli run --listen 127.0.0.1:8080 --api-port 8082
+
+# 或使用终端 UI
+relay-core-cli run --ui
+```
+
+将浏览器或应用的代理指向 `127.0.0.1:8080`。完整指南：[快速开始](https://relaycore.dev/docs/getting-started) · [安装说明](https://relaycore.dev/docs/installation)
+
+---
+
+## 为什么选择 RelayCore
+
+| | RelayCore | GUI 抓包工具 | 脚本型工具 |
+|---|-----------|--------------|------------|
+| **形态** | 可嵌入引擎 + 多适配器 | 人工查看 | 自动化脚本 |
+| **运行时** | Rust 异步引擎 | JVM / 桌面应用 | Python 等 |
+| **集成** | CLI · REST · SSE · MCP · Tauri | API 有限 | 脚本能力强 |
+| **AI** | 原生 MCP（`relay-core-probe`） | 需自建 | 需自建 |
+
+**适合：** 本地 API 调试 · 开发环境 HTTPS MITM · WebSocket 检查 · CI 流量录制 · 桌面应用内嵌代理 · **AI Agent 观察实时流量**
+
+**不适合：** 生产反向代理、CDN 边缘、面向不可信用户的多租户公网 MITM。
+
+---
 
 ## 架构
 
+分层 crate 设计：**Adapter → API → Runtime → Engine**。公开适配器共享 `CoreState`；引擎负责 MITM、规则执行及可选脚本/持久化。
+
+<p align="center">
+  <a href="https://relaycore.dev/#architecture">
+    <img src="docs/architecture.svg" alt="RelayCore crate architecture" width="920" />
+  </a>
+</p>
+
+<p align="center"><sub>实线 = 主依赖 · 虚线 = 可选（持久化 / <code>feature "script"</code>）· <a href="https://relaycore.dev/docs/architecture">详细说明</a></sub></p>
+
+---
+
+## Crates
+
+| Crate | 角色 | 状态 |
+|-------|------|------|
+| [`relay-core-runtime`](https://crates.io/crates/relay-core-runtime) | 主 API — 状态、生命周期、规则、事件 | Public |
+| [`relay-core-http`](https://crates.io/crates/relay-core-http) | REST + SSE 适配器 | Public |
+| [`relay-core-probe`](https://crates.io/crates/relay-core-probe) | AI Agent MCP 适配器 | GA |
+| [`relay-core-cli`](https://crates.io/crates/relay-core-cli) | CLI · TUI · 内嵌 HTTP API | GA |
+| `relay-core-tauri` | Tauri 插件（RelayCraft 桌面端） | Internal |
+
+内部 crate：`relay-core-api`、`relay-core-lib`、`relay-core-storage`、`relay-core-script` — 不建议下游直接依赖。
+
+---
+
+## AI Agent（MCP）
+
+在 Cursor、Claude Desktop 等 MCP 宿主中连接实时流量：
+
+```json
+{
+  "mcpServers": {
+    "relay-core": {
+      "command": "npx",
+      "args": ["-y", "@relay-core/mcp"]
+    }
+  }
+}
 ```
-适配层（CLI、HTTP API、MCP、Tauri）
-        │
-relay-core-runtime（状态中心、生命周期、事件总线）
-        │
-relay-core-lib（流量捕获、代理、MITM、TLS、规则引擎）
-        │
-relay-core-api / relay-core-script / relay-core-storage
-```
 
-## 包说明
+常用工具：`search_flows`、`get_flow`、`set_rule`、`export_har`、`replay_flow`。  
+文档：[MCP 指南](https://relaycore.dev/docs/mcp) · npm：[`@relay-core/mcp`](https://www.npmjs.com/package/@relay-core/mcp)
 
-| 包 | 角色 | 状态 |
-|------|------|--------|
-| `relay-core-runtime` | 主 API — 状态编排、代理生命周期、规则管理、事件流 | 公开 |
-| `relay-core-http` | REST + SSE 适配器，供 Web UI 和外部工具集成 | 公开 |
-| `relay-core-probe` | MCP 适配器，供 AI Agent 与自动化使用 | GA |
-| `relay-core-cli` | 独立 CLI 与 TUI 二进制程序 | GA |
-| `relay-core-tauri` | RelayCraft 桌面端 Tauri 插件 | 内部 |
+---
 
-*内部支撑包：`relay-core-api`（类型合约）、`relay-core-lib`（引擎）、`relay-core-storage`（SQLite）、`relay-core-script`（Deno）。非面向用户，不应直接依赖。*
-
-## 快速开始
+## Rust 嵌入
 
 ```rust
 use relay_core_runtime::{CoreState, ProxyConfig};
 use std::sync::Arc;
 
 #[tokio::main]
-async fn main() {
-    // 创建运行时状态
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(CoreState::new(None).await);
-
-    // 配置代理
-    let config = ProxyConfig::from_app_data_dir("./proxy-data", 8080).unwrap();
+    let config = ProxyConfig::from_app_data_dir("./proxy-data", 8080)?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
 
-    // 启动代理
-    state.spawn_proxy(config, tx, None).unwrap();
+    state.spawn_proxy(config, tx, None)?;
 
-    // 接收实时流量更新
     while let Some(update) = rx.recv().await {
-        println!("Flow update: {:?}", update);
+        println!("flow update: {:?}", update);
     }
+    Ok(())
 }
 ```
 
-### 命令行使用
+HTTP 适配器：[`relay-core-http`](https://docs.rs/relay-core-http) · API 参考：[relaycore.dev/docs/api](https://relaycore.dev/docs/api)
 
-```bash
-# 安装
-cargo install relay-core-cli
+---
 
-# 在 8080 端口启动代理
-relay-core-cli run
+## 能力概览
 
-# 或使用 TUI 模式
-relay-core-cli run --ui
+- **MITM / TLS** — 动态证书、CA 管理
+- **WebSocket** — 消息级检查、修改、重放
+- **规则引擎** — 匹配 + 动作（Mock、重定向、延迟、限速等）
+- **脚本** — 可选 Deno/V8（`relay-core-script`）
+- **拦截断点** — 暂停、修改、继续或丢弃
+- **可观测性** — Prometheus 指标、审计、可选 SQLite 持久化
+- **进阶** — 透明代理（Linux/macOS/Windows）、QUIC/HTTP3 Tier-1 降级 — 见[配置文档](https://relaycore.dev/docs/configuration)
 
-# 生成用于 HTTPS 拦截的 CA 证书
-relay-core-cli ca generate
+---
 
-# 验证规则文件
-relay-core-cli rules validate --file rules.yaml
-```
+## 常见问题
 
-### HTTP API 集成
+**为什么要信任自签 CA？**  
+HTTPS MITM 需要本地 CA。使用 `relay-core-cli ca generate` 生成并按[安装文档](https://relaycore.dev/docs/installation)信任。
 
-```toml
-[dependencies]
-relay-core-http = "0.1"
-```
+**和 mitmproxy 有什么区别？**  
+RelayCore 是可嵌入的 Rust 引擎，提供 MCP 等多种适配器，适合应用集成与自动化。参见[脚本对比](https://relaycore.dev/docs/scripting-vs-mitmproxy)。
 
-```rust
-use relay_core_runtime::CoreState;
-use relay_core_http::HttpApiServer;
-use std::sync::Arc;
+**能当生产环境公网 MITM 吗？**  
+定位是**本地开发、调试、测试与 Agent 工具**，不是面向公网的拦截基础设施。
 
-let state = Arc::new(CoreState::new(None).await);
-let server = HttpApiServer::new(Default::default(), state);
-server.serve().await.unwrap();
-// REST API 地址: http://127.0.0.1:3000/api/v1/
-```
-
-## HTTP API 端点
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| GET | `/api/v1/flows` | 搜索与分页查询流量 |
-| GET | `/api/v1/flows/:id` | 获取流量详情 |
-| GET | `/api/v1/rules` | 列出全部规则 |
-| PUT | `/api/v1/rules` | 更新或创建规则 |
-| DELETE | `/api/v1/rules/:id` | 删除规则 |
-| POST | `/api/v1/intercepts` | 创建断点规则 |
-| POST | `/api/v1/intercepts/resolve` | 处理待定断点 |
-| GET | `/api/v1/intercepts` | 列出待定断点 |
-| GET | `/api/v1/metrics` | JSON 格式指标快照 |
-| GET | `/api/v1/metrics/prometheus` | Prometheus 文本格式 |
-| GET | `/api/v1/audit` | 查询审计事件 |
-| GET | `/api/v1/events` | SSE 实时事件流 |
-
-## 平台支持
-
-### 透明代理
-
-| 平台 | TCP | UDP | 状态 |
-|------|-----|-----|------|
-| Linux | 已验证 | 已验证 | 通过 TPROXY + SO_ORIGINAL_DST 完整支持 |
-| macOS | 已验证 | 实验性 | TCP 通过 PF DIOCNATLOOK；UDP 查询已就绪，待接线 |
-| Windows | 实验性 | 1.x | TCP 通过 WinDivert（需驱动签名）；UDP 延期 |
-
-> 集成测试见 `relay-core-lib/tests/transparent_proxy_test.rs`。
-> 不支持的平台请使用显式代理模式（`curl --proxy http://127.0.0.1:8080`）或系统代理配置。
+---
 
 ## 开发
 
 ```bash
-# 运行全部测试
 cargo test --workspace
-
-# 代码检查
 cargo clippy --workspace
-
-# 离线测试套件（Tauri 契约测试）
 cargo test --package relay-core-tauri --test offline_dev_tests
 ```
 
+透明代理平台矩阵与集成测试：`relay-core-lib/tests/transparent_proxy_test.rs`
+
+---
+
 ## 许可证
 
-MIT
+MIT — 见 [LICENSE](LICENSE)。
