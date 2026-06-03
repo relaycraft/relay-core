@@ -58,7 +58,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build binaries
+        shell: bash
         run: |
+          set -euo pipefail
           cargo build --release --package relay-core-cli --target ${{ matrix.target }}
           cargo build --release --package relay-core-probe --target ${{ matrix.target }}
 
@@ -83,10 +85,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $root = "target/${{ matrix.target }}/release"
+          $cli = Join-Path $root "relay-core-cli.exe"
+          $probe = Join-Path $root "relay-core-probe.exe"
+          if (-not (Test-Path $cli)) { throw "Build did not produce $cli — check the Build binaries step above" }
+          if (-not (Test-Path $probe)) { throw "Build did not produce $probe — check the Build binaries step above" }
           $pkg = "npm/packages/binaries-${{ matrix.npm_platform }}/bin"
           Remove-Item "$pkg/*" -ErrorAction SilentlyContinue
-          Copy-Item "target/${{ matrix.target }}/release/relay-core-cli.exe" "$pkg/"
-          Copy-Item "target/${{ matrix.target }}/release/relay-core-probe.exe" "$pkg/"
+          Copy-Item $cli $pkg
+          Copy-Item $probe $pkg
 
       - name: Publish @relay-core/binaries-${{ matrix.npm_platform }}
         run: npm publish --access public

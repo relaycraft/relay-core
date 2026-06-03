@@ -28,6 +28,24 @@ jobs:
       - name: npm set-version smoke (release scripts)
         run: node npm/scripts/set-version.js v0.0.0-ci-smoke
 
+  # Compile Windows-only cfg paths (ca certutil, etc.). Host Linux CI does not cover this.
+  windows-build:
+    runs-on: windows-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries (win32-x64)
+        run: |
+          cargo build --release --package relay-core-cli --target x86_64-pc-windows-msvc
+          cargo build --release --package relay-core-probe --target x86_64-pc-windows-msvc
+
   coverage:
     runs-on: ubuntu-latest
     needs: quality
