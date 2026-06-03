@@ -2,7 +2,7 @@ use crate::args::CaAction;
 use anyhow::Result;
 use relay_core_lib::tls::CertificateAuthority;
 use relay_core_runtime::CaPaths;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
 
 /// Must match `Run` default in `args.rs`.
@@ -253,7 +253,23 @@ pub fn execute(action: CaAction) -> Result<()> {
                 }
             }
 
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            {
+                if !cer.exists() {
+                    println!("  trust: DER certificate not found, run `ca generate` first");
+                } else {
+                    match windows_trust_status(&cer) {
+                        Ok(true) => println!("  trust: installed in Trusted Root store"),
+                        Ok(false) => println!(
+                            "  trust: not installed — run `ca install` or double-click {:?}",
+                            cer
+                        ),
+                        Err(e) => println!("  trust: unknown ({e})"),
+                    }
+                }
+            }
+
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 println!("  trust: not auto-checked on this platform");
             }
