@@ -1,8 +1,8 @@
 //! CLI log layout: RFC3339 timestamps, `relay_core_`-stripped targets, optional ANSI colors.
 
+use nu_ansi_term::{Color, Style};
 use std::borrow::Cow;
 use std::fs::File;
-use nu_ansi_term::{Color, Style};
 use tracing::Level;
 use tracing::Subscriber;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -32,11 +32,7 @@ where
     }
 }
 
-fn write_log_prefix(
-    writer: &mut Writer<'_>,
-    level: &Level,
-    target: &str,
-) -> std::fmt::Result {
+fn write_log_prefix(writer: &mut Writer<'_>, level: &Level, target: &str) -> std::fmt::Result {
     let ts = log_timestamp();
     let target = short_target_cow(target);
 
@@ -49,12 +45,7 @@ fn write_log_prefix(
             Color::Cyan.dimmed().paint(target.as_ref()),
         )
     } else {
-        write!(
-            writer,
-            "{ts} {} {} ",
-            level.as_str(),
-            target.as_ref(),
-        )
+        write!(writer, "{ts} {} {} ", level.as_str(), target.as_ref(),)
     }
 }
 
@@ -132,7 +123,10 @@ mod tests {
     #[test]
     fn short_target_cow_keeps_remainder_of_path() {
         let long = "relay_core_lib::proxy::something::deep";
-        assert_eq!(short_target_cow(long).as_ref(), "lib::proxy::something::deep");
+        assert_eq!(
+            short_target_cow(long).as_ref(),
+            "lib::proxy::something::deep"
+        );
     }
 
     #[test]
@@ -155,8 +149,14 @@ mod tests {
         let warn = paint_level(Level::WARN).to_string();
         assert!(warn.contains("\x1b[33m"), "WARN should be yellow: {warn:?}");
         let debug = paint_level(Level::DEBUG).to_string();
-        assert!(debug.contains("\x1b[34m"), "DEBUG should be blue: {debug:?}");
+        assert!(
+            debug.contains("\x1b[34m"),
+            "DEBUG should be blue: {debug:?}"
+        );
         let trace = paint_level(Level::TRACE).to_string();
-        assert!(trace.contains("\x1b[35m"), "TRACE should be purple: {trace:?}");
+        assert!(
+            trace.contains("\x1b[35m"),
+            "TRACE should be purple: {trace:?}"
+        );
     }
 }

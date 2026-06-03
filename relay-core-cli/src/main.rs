@@ -3,9 +3,9 @@ use clap::Parser;
 
 pub mod args;
 pub mod commands;
+mod logging;
 pub mod server;
 pub mod sse_client;
-mod logging;
 mod ui;
 pub mod utils;
 

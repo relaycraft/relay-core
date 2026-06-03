@@ -58,8 +58,8 @@ use serde_json::json;
 
 pub mod actors;
 pub mod audit;
-mod log_format;
 pub mod interceptors;
+mod log_format;
 pub mod modification;
 pub mod paths;
 pub mod rule;
