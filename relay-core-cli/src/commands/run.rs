@@ -585,11 +585,7 @@ pub async fn execute(
     if ui {
         let theme_id = theme::resolve_theme(theme).map_err(anyhow::Error::msg)?;
         theme::init(theme_id);
-        info!(
-            "TUI theme: {} — {}",
-            theme_id.id(),
-            theme_id.description()
-        );
+        info!("TUI theme: {} — {}", theme_id.id(), theme_id.description());
 
         // Spawn proxy in background if TUI is enabled
         let state = state.clone();

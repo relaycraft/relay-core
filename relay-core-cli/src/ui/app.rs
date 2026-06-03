@@ -241,7 +241,15 @@ impl TuiApp {
                             self.auto_scroll = false;
                             self.detail_scroll = 0;
                         }
-                        KeyCode::Home | KeyCode::Char('G') => {
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            if !self.get_filtered_flows().is_empty() {
+                                self.table_state.select(Some(0));
+                            }
+                            self.auto_scroll = true;
+                            self.pending_count = 0;
+                            self.detail_scroll = 0;
+                        }
+                        KeyCode::End | KeyCode::Char('G') => {
                             let len = self.get_filtered_flows().len();
                             if len > 0 {
                                 self.table_state.select(Some(len - 1));
@@ -249,14 +257,8 @@ impl TuiApp {
                             self.auto_scroll = false;
                             self.detail_scroll = 0;
                         }
-                        KeyCode::End | KeyCode::Char('g') => {
-                            self.table_state.select(Some(0));
-                            self.auto_scroll = true;
-                            self.pending_count = 0;
-                            self.detail_scroll = 0;
-                        }
                         KeyCode::Tab => {
-                            self.detail_tab = self.detail_tab.next();
+                            self.active_area = ActiveArea::FlowDetail;
                             self.detail_scroll = 0;
                         }
                         KeyCode::Char('1') => self.detail_tab = DetailTab::Overview,
@@ -540,8 +542,9 @@ impl TuiApp {
         lines.extend([
             help_binding("j  ↓", "Move selection down"),
             help_binding("k  ↑", "Move selection up"),
-            help_binding("g  End", "Jump to newest flow"),
-            help_binding("G  Home", "Jump to oldest flow"),
+            help_binding("g  Home", "Jump to newest (top)"),
+            help_binding("G  End", "Jump to oldest (bottom)"),
+            help_binding("Tab", "Focus detail panel (from list)"),
             help_binding("/", "Filter (host: path: method: status: err ws)"),
             help_binding("Enter  →", "Focus detail panel"),
         ]);
@@ -604,7 +607,10 @@ impl TuiApp {
             .collect();
 
         let border_style = Theme::border(self.active_area == ActiveArea::FlowList);
-        let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
+        let mut title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
+        if area.width < LAYOUT_NARROW_MAX {
+            title = format!("‹{title}");
+        }
 
         let (header, widths): (Vec<&str>, Vec<Constraint>) = if table_wide {
             (
@@ -650,9 +656,14 @@ impl TuiApp {
 
     fn render_flow_detail(&self, f: &mut Frame, area: Rect) {
         let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
+        let detail_title = if area.width < LAYOUT_NARROW_MAX {
+            "‹ Detail "
+        } else {
+            " Detail "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Detail ", Theme::section()))
+            .title(Span::styled(detail_title, Theme::section()))
             .border_style(border_style);
         let inner = block.inner(area);
 
@@ -702,7 +713,7 @@ impl TuiApp {
         let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Overview")
+            .title(detail_panel_title("Overview", self.detail_scroll))
             .border_style(border_style);
 
         let mut lines: Vec<Line> = Vec::new();
@@ -922,7 +933,7 @@ impl TuiApp {
         let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Request")
+            .title(detail_panel_title("Request", self.detail_scroll))
             .border_style(border_style);
 
         match &flow.layer {
@@ -986,7 +997,7 @@ impl TuiApp {
         let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Response")
+            .title(detail_panel_title("Response", self.detail_scroll))
             .border_style(border_style);
 
         match &flow.layer {
@@ -1054,7 +1065,7 @@ impl TuiApp {
         let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Messages")
+            .title(detail_panel_title("Messages", self.detail_scroll))
             .border_style(border_style);
 
         match &flow.layer {
@@ -1154,18 +1165,43 @@ impl TuiApp {
             })
             .collect();
 
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title, Theme::section()))
+            .border_style(border_style);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(2)])
+            .split(inner);
+
         let table = Table::new(rows, widths)
             .header(header)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(title, Theme::section()))
-                    .border_style(border_style),
-            )
             .row_highlight_style(Theme::row_highlight())
             .highlight_symbol("▌ ");
 
-        f.render_stateful_widget(table, area, &mut self.rules_table_state);
+        f.render_stateful_widget(table, layout[0], &mut self.rules_table_state);
+
+        if let Some(idx) = self.rules_table_state.selected()
+            && let Some(rule) = self.rules.get(idx)
+        {
+            let summary = Line::from(vec![
+                Span::styled(format!("p{} ", rule.priority), Theme::label()),
+                Span::styled(format!("{:?} ", rule.stage), Theme::muted()),
+                Span::styled(
+                    if rule.active { "on" } else { "off" },
+                    if rule.active {
+                        Theme::stat_ok()
+                    } else {
+                        Theme::muted()
+                    },
+                ),
+                Span::styled(format!(" · {} ", rule.id), Theme::accent_dim()),
+            ]);
+            f.render_widget(Paragraph::new(summary), layout[1]);
+        }
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
@@ -1286,15 +1322,24 @@ impl TuiApp {
                 spans
             }
             InputMode::Filtering => {
-                vec![
+                let mut spans = vec![
                     Span::styled("Filter: ", Theme::label()),
                     Span::styled(self.filter_input.as_str(), Theme::accent()),
+                ];
+                if self.filter_input.is_empty() {
+                    spans.push(Span::styled(
+                        "  host:api.example method:POST status:>=400 err",
+                        Theme::muted(),
+                    ));
+                }
+                spans.extend([
                     Span::styled(" | ", Theme::muted()),
                     Span::styled("Enter", Theme::hotkey()),
                     Span::styled(" apply | ", Theme::muted()),
                     Span::styled("Esc", Theme::hotkey()),
                     Span::styled(" cancel", Theme::muted()),
-                ]
+                ]);
+                spans
             }
             InputMode::Help => {
                 vec![
@@ -1371,11 +1416,13 @@ fn flow_table_row(
         method_label,
         Style::default().fg(method_color),
     ));
-    let status_cell = Cell::from(Span::styled(
-        status.clone(),
-        Style::default().fg(status_color),
-    ));
-    let dur_cell = Cell::from(Span::styled(dur_label, dur_style));
+    let (status_text, status_style) = if status == "---" {
+        ("…".to_string(), Theme::pending_status())
+    } else {
+        (status.clone(), Style::default().fg(status_color))
+    };
+    let status_cell = Cell::from(Span::styled(status_text, status_style));
+    let dur_cell = Cell::from(Span::styled(format!("{:>6}", dur_label), dur_style));
 
     // Build tags suffix (shown after path/url if any tags present).
     let tags_str = if flow.tags.is_empty() {
@@ -1397,7 +1444,7 @@ fn flow_table_row(
             method_cell,
             status_cell,
             dur_cell,
-            Cell::from(size_str),
+            Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
             Cell::from(Span::styled(host, Style::default().fg(host_color))),
             styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
         ])
@@ -1591,6 +1638,14 @@ fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
     }
 
     parts
+}
+
+fn detail_panel_title(label: &str, scroll: u16) -> String {
+    if scroll > 0 {
+        format!("{label} ↓{scroll}")
+    } else {
+        label.to_string()
+    }
 }
 
 fn help_section(title: &'static str) -> Line<'static> {
@@ -1810,6 +1865,7 @@ mod tests {
     fn test_detail_tab_cycle() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.detail_tab, DetailTab::Overview);
+        app.active_area = ActiveArea::FlowDetail;
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.detail_tab, DetailTab::Request);
         app.on_key(key(KeyCode::Tab));
@@ -1843,6 +1899,52 @@ mod tests {
         assert_eq!(app.filter_input, "api");
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn test_home_and_g_jump_to_newest_at_top() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        for i in 0..3 {
+            app.on_flow(make_http_flow(
+                &format!("00000000-0000-0000-0000-00000000000{i}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+        app.table_state.select(Some(2));
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert!(app.auto_scroll);
+        app.table_state.select(Some(2));
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_end_and_G_jump_to_oldest_at_bottom() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        for i in 0..3 {
+            app.on_flow(make_http_flow(
+                &format!("00000000-0000-0000-0000-00000000000{i}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.table_state.selected(), Some(2));
+        assert!(!app.auto_scroll);
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(app.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_tab_from_flow_list_focuses_detail() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        assert_eq!(app.active_area, ActiveArea::FlowList);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.active_area, ActiveArea::FlowDetail);
     }
 
     #[test]

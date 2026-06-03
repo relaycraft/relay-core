@@ -321,9 +321,14 @@ impl Theme {
     }
 
     pub fn row_highlight() -> Style {
+        Style::default().bg(palette().row_selected)
+    }
+
+    /// In-flight HTTP status (no response yet).
+    pub fn pending_status() -> Style {
         Style::default()
-            .fg(palette().accent)
-            .bg(palette().row_selected)
+            .fg(palette().accent_dim)
+            .add_modifier(Modifier::ITALIC)
     }
 
     pub fn accent_dim() -> Style {
