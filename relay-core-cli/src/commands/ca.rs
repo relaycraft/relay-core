@@ -423,6 +423,71 @@ fn get_file_sha1(path: &std::path::Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()).to_uppercase())
 }
 
+#[cfg(target_os = "windows")]
+fn windows_trust_status(cer_path: &std::path::Path) -> Result<bool> {
+    let local_sha1 = windows_file_sha1(cer_path)?;
+    let output = Command::new("certutil")
+        .arg("-store")
+        .arg("Root")
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "certutil -store Root failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_certutil_root_store_sha1_lines(&stdout).contains(&local_sha1))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_file_sha1(path: &std::path::Path) -> Result<String> {
+    let output = Command::new("certutil")
+        .arg("-hashfile")
+        .arg(path)
+        .arg("SHA1")
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "certutil -hashfile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    parse_certutil_hashfile_sha1(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| anyhow::anyhow!("could not parse SHA1 from certutil -hashfile output"))
+}
+
+/// Normalize certutil SHA1 output (may contain spaces) to 40 uppercase hex chars.
+#[cfg(any(target_os = "windows", test))]
+fn normalize_sha1_hex(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_uppercase()
+}
+
+/// Parse the hash line from `certutil -hashfile <file> SHA1` output.
+#[cfg(any(target_os = "windows", test))]
+fn parse_certutil_hashfile_sha1(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let normalized = normalize_sha1_hex(line);
+        (normalized.len() == 40).then_some(normalized)
+    })
+}
+
+/// Parse `Cert Hash(sha1):` lines from `certutil -store Root` output.
+#[cfg(any(target_os = "windows", test))]
+fn parse_certutil_root_store_sha1_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("Cert Hash(sha1):")?;
+            let normalized = normalize_sha1_hex(rest);
+            (normalized.len() == 40).then_some(normalized)
+        })
+        .collect()
+}
+
 /// Parse `SHA-1 hash: <HEX>` lines from `security find-certificate -Z` output.
 #[cfg(target_os = "macos")]
 fn parse_sha1_hashes_from_security_z_output(stdout: &str) -> Vec<String> {
@@ -442,6 +507,8 @@ fn parse_sha1_hashes_from_security_z_output(stdout: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{parse_certutil_hashfile_sha1, parse_certutil_root_store_sha1_lines};
+
     #[cfg(target_os = "macos")]
     use super::parse_sha1_hashes_from_security_z_output;
 
@@ -467,5 +534,23 @@ SHA-1 hash: 404139F8ABA4A86B0D15613CB6397DB1DBF894D7
             "SHA-256 hash: DEADBEEF\nSHA-1 hash: 134EDAF3BB29368DDCA26BE1858ABACE31A2485C\n";
         let hashes = parse_sha1_hashes_from_security_z_output(sample);
         assert_eq!(hashes, vec!["134EDAF3BB29368DDCA26BE1858ABACE31A2485C"]);
+    }
+
+    #[test]
+    fn parse_certutil_hashfile_sha1_extracts_thumbprint() {
+        let sample = "SHA1 hash of ca.cer:\r\n32 c6 b7 33 0f 30 64 41 f9 16 95 0d d5 65 a7 30 9c 50 b9 c2\r\nCertUtil: -hashfile command completed successfully.\r\n";
+        assert_eq!(
+            parse_certutil_hashfile_sha1(sample).as_deref(),
+            Some("32C6B7330F306441F916950DD565A7309C50B9C2")
+        );
+    }
+
+    #[test]
+    fn parse_certutil_root_store_sha1_lines_collects_hashes() {
+        let sample = "Root\r\n================ Certificate 0 ================\r\nCert Hash(sha1): 32 c6 b7 33 0f 30 64 41 f9 16 95 0d d5 65 a7 30 9c 50 b9 c2\r\nCert Hash(sha1): 11 22 33 44 55 66 77 88 99 00 11 22 33 44 55 66 77 88 99 00\r\n";
+        let hashes = parse_certutil_root_store_sha1_lines(sample);
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(hashes[0], "32C6B7330F306441F916950DD565A7309C50B9C2");
+        assert_eq!(hashes[1], "1122334455667788990011223344556677889900");
     }
 }
