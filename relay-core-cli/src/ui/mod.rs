@@ -1,3 +1,3 @@
 pub mod app;
 mod format;
-mod theme;
+pub mod theme;

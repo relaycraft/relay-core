@@ -585,7 +585,7 @@ impl TuiApp {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Help (? or Esc to close) ")
-            .style(Style::default().bg(Theme::BG_ELEVATED));
+            .style(Style::default().bg(Theme::bg_elevated()));
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(Clear, area);
         f.render_widget(paragraph, area);
@@ -740,7 +740,9 @@ impl TuiApp {
                 let size_str = format_size(size);
                 let dur_ms = flow_duration_ms(flow);
                 let dur_str = format_duration_ms(dur_ms);
-                let dur_color = dur_ms.map(Theme::duration_color).unwrap_or(Theme::MUTED);
+                let dur_color = dur_ms
+                    .map(Theme::duration_color)
+                    .unwrap_or_else(Theme::muted_color);
 
                 // Use String (owned) for 'static lifetime
                 let md = method_display.to_string();

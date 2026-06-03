@@ -9,6 +9,7 @@ use std::path::PathBuf;
 Examples:
   relay run                      Start proxy in background (default)
   relay run --ui                 Start proxy with interactive TUI
+  relay run --ui --theme slate   TUI with alternate color preset
   relay flows --output table     View captured flows in table format
   relay analyze --file flows.jsonl           Analyze captured flow data
   relay analyze --file export.har --format har  Analyze HAR export
@@ -20,9 +21,10 @@ Examples:
 
 Environment:
   RELAY_LOG       Log filter (default: info, e.g. debug, trace)
-  RELAY_DATA_DIR  Data directory (default: ~/.relay-core)
-  RELAY_CA_CERT   CA cert path (overrides data dir default)
-  RELAY_CA_KEY    CA key path (overrides data dir default)"
+  RELAY_DATA_DIR       Data directory (default: ~/.relay-core)
+  RELAY_CORE_TUI_THEME TUI preset when --theme is omitted (relay, slate, high-contrast)
+  RELAY_CA_CERT        CA cert path (overrides data dir default)
+  RELAY_CA_KEY         CA key path (overrides data dir default)"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -70,6 +72,10 @@ pub enum Commands {
         /// Enable TUI mode
         #[arg(long)]
         ui: bool,
+
+        /// TUI color preset (relay, slate, high-contrast). Overrides config; env: RELAY_CORE_TUI_THEME
+        #[arg(long, env = "RELAY_CORE_TUI_THEME", value_name = "THEME")]
+        theme: Option<String>,
 
         /// Enable transparent proxy mode (macOS PF / Linux TPROXY)
         #[arg(long)]

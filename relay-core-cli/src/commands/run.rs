@@ -1,6 +1,7 @@
 use crate::server;
 use crate::sse_client::ApiClient;
 use crate::ui::app::{ApiMode, TuiApp};
+use crate::ui::theme;
 use crate::utils::load_rules;
 use anyhow::Result;
 use crossterm::{
@@ -309,6 +310,7 @@ pub async fn execute(
     #[cfg(feature = "script")] script_watch: bool,
     #[cfg(feature = "script")] script_env_allow: Option<String>,
     ui: bool,
+    theme: Option<String>,
     transparent: bool,
     output: String,
     save_stream: Option<PathBuf>,
@@ -581,6 +583,14 @@ pub async fn execute(
     }) as Arc<dyn Interceptor>);
 
     if ui {
+        let theme_id = theme::resolve_theme(theme).map_err(anyhow::Error::msg)?;
+        theme::init(theme_id);
+        info!(
+            "TUI theme: {} — {}",
+            theme_id.id(),
+            theme_id.description()
+        );
+
         // Spawn proxy in background if TUI is enabled
         let state = state.clone();
         let config = config.clone();

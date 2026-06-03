@@ -56,6 +56,7 @@ http.workspace = true
 base64 = "0.22.1"
 url.workspace = true
 chrono.workspace = true
+toml = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2.1.2"

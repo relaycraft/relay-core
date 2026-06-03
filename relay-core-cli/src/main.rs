@@ -68,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "script")]
             script_env_allow,
             ui,
+            theme,
             transparent,
             output,
             save_stream,
@@ -92,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 script_watch,
                 script_env_allow,
                 ui,
+                theme,
                 transparent,
                 output,
                 save_stream,
@@ -114,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ca_key,
                 rules,
                 ui,
+                theme,
                 transparent,
                 output,
                 save_stream,
