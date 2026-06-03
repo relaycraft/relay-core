@@ -4,7 +4,10 @@ use reqwest::Client;
 
 pub async fn execute(proxy_url: String, output: String) -> Result<()> {
     let url = format!("{}/_relay/metrics", proxy_url.trim_end_matches('/'));
-    let client = Client::new();
+    // Never use system proxy settings — connecting to proxy port directly.
+    // On Windows with system proxy configured, reqwest would otherwise route
+    // the metrics request through the proxy itself, causing a loop (os error 10013).
+    let client = Client::builder().no_proxy().build()?;
     let resp = client.get(&url).send().await?;
 
     if !resp.status().is_success() {
