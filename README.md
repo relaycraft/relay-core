@@ -6,7 +6,7 @@ Capture, inspect, and modify HTTP/HTTPS/WebSocket traffic locally. Built for dev
 
 [![Website](https://img.shields.io/badge/website-relaycore.dev-00d4ff?style=flat-square)](https://relaycore.dev) [![crates.io](https://img.shields.io/crates/v/relay-core-runtime?style=flat-square)](https://crates.io/crates/relay-core-runtime) [![docs.rs](https://img.shields.io/docsrs/relay-core-runtime?style=flat-square)](https://docs.rs/relay-core-runtime) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-[中文](README.zh.md) · [Documentation](https://relaycore.dev/en/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases) · [RelayCraft desktop](https://github.com/relaycraft/relay-core) (Tauri)
+[中文](README.zh.md) · [Documentation](https://relaycore.dev/en/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases) · [RelayCraft Desktop](https://github.com/relaycraft/relaycraft) (Tauri)
 
 > The `relay-core` crate name was unavailable on crates.io. **`relay-core-runtime`** is the official main library crate.
 
@@ -71,7 +71,7 @@ Layered crates: **Adapters → API → Runtime → Engine**. Public adapters sha
 | [`relay-core-http`](https://crates.io/crates/relay-core-http) | REST + SSE adapter | Public |
 | [`relay-core-probe`](https://crates.io/crates/relay-core-probe) | MCP adapter for AI agents | GA |
 | [`relay-core-cli`](https://crates.io/crates/relay-core-cli) | CLI · TUI · embedded HTTP API | GA |
-| `relay-core-tauri` | Tauri plugin (RelayCraft desktop) | Internal |
+| `relay-core-tauri` | Tauri plugin (RelayCraft Desktop) | Internal |
 
 Internal: `relay-core-api`, `relay-core-lib`, `relay-core-storage`, `relay-core-script` — not for direct downstream use.
 

@@ -6,7 +6,7 @@
 
 [![Website](https://img.shields.io/badge/website-relaycore.dev-00d4ff?style=flat-square)](https://relaycore.dev) [![crates.io](https://img.shields.io/crates/v/relay-core-runtime?style=flat-square)](https://crates.io/crates/relay-core-runtime) [![docs.rs](https://img.shields.io/docsrs/relay-core-runtime?style=flat-square)](https://docs.rs/relay-core-runtime) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-[English](README.md) · [文档](https://relaycore.dev/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases)
+[English](README.md) · [文档](https://relaycore.dev/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases) · [RelayCraft Desktop](https://github.com/relaycraft/relaycraft)（Tauri）
 
 > crates.io 上 `relay-core` 名称已被占用，**`relay-core-runtime`** 是官方主库 crate。
 
@@ -71,7 +71,7 @@ relay-core-cli run --ui
 | [`relay-core-http`](https://crates.io/crates/relay-core-http) | REST + SSE 适配器 | Public |
 | [`relay-core-probe`](https://crates.io/crates/relay-core-probe) | AI Agent MCP 适配器 | GA |
 | [`relay-core-cli`](https://crates.io/crates/relay-core-cli) | CLI · TUI · 内嵌 HTTP API | GA |
-| `relay-core-tauri` | Tauri 插件（RelayCraft 桌面端） | Internal |
+| `relay-core-tauri` | Tauri 插件（RelayCraft Desktop） | Internal |
 
 内部 crate：`relay-core-api`、`relay-core-lib`、`relay-core-storage`、`relay-core-script` — 不建议下游直接依赖。
 
