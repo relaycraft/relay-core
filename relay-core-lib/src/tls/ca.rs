@@ -243,8 +243,10 @@ impl CertificateAuthority {
         let key_pair = KeyPair::generate()?;
         let cert = Self::create_ca_params(&key_pair, &meta)?;
 
-        // Save to disk
+        // Save to disk (PEM for general use, DER .cer for Windows native import)
         std::fs::write(ca_cert_path, cert.pem())?;
+        let cer_path = ca_cert_path.with_extension("cer");
+        std::fs::write(&cer_path, cert.der())?;
         std::fs::write(ca_key_path, key_pair.serialize_pem())?;
         std::fs::write(meta_path, serde_json::to_string_pretty(&meta)?)?;
 
@@ -321,6 +323,10 @@ impl CertificateAuthority {
 
     pub fn get_ca_cert_pem(&self) -> String {
         self.ca_cert.pem()
+    }
+
+    pub fn get_ca_cert_der(&self) -> Vec<u8> {
+        self.ca_cert.der().to_vec()
     }
 }
 

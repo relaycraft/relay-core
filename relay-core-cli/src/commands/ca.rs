@@ -44,10 +44,23 @@ pub fn execute(action: CaAction) -> Result<()> {
                 if meta.exists() {
                     let _ = std::fs::remove_file(&meta);
                 }
+                let cer = ca.cert.with_extension("cer");
+                if cer.exists() {
+                    let _ = std::fs::remove_file(&cer);
+                }
             }
 
             match CertificateAuthority::load_or_create(&ca.cert, &ca.key) {
-                Ok(_) => println!("CA certificate generated at {:?}", ca.cert),
+                Ok(_) => {
+                    let cer = ca.cert.with_extension("cer");
+                    println!("CA certificate generated:");
+                    println!("  PEM: {}", ca.cert.display());
+                    println!("  DER: {}", cer.display());
+                    #[cfg(target_os = "windows")]
+                    println!(
+                        "  On Windows, double-click the .cer file to import into Trusted Root store."
+                    );
+                }
                 Err(e) => {
                     eprintln!("Failed to generate CA: {}", e);
                     std::process::exit(1);
@@ -58,18 +71,37 @@ pub fn execute(action: CaAction) -> Result<()> {
             ca_cert,
             ca_key,
             output,
+            der,
         } => {
             let ca = CaPaths::resolve(ca_cert, ca_key).map_err(anyhow::Error::msg)?;
             if !ca_files_exist(&ca) {
                 eprintln!("{}", missing_ca_guidance(&ca));
                 std::process::exit(1);
             }
-            let content = std::fs::read_to_string(&ca.cert)?;
-            if let Some(out_path) = output {
-                std::fs::write(&out_path, content)?;
-                println!("CA certificate exported to {:?}", out_path);
+            if der {
+                let cer = ca.cert.with_extension("cer");
+                if !cer.exists() {
+                    anyhow::bail!(
+                        "DER certificate not found at {:?}. Run `relay-core-cli ca generate` first.",
+                        cer
+                    );
+                }
+                let der_bytes = std::fs::read(&cer)?;
+                if let Some(out_path) = output {
+                    std::fs::write(&out_path, &der_bytes)?;
+                    println!("CA certificate (DER) exported to {:?}", out_path);
+                } else {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&der_bytes)?;
+                }
             } else {
-                println!("{}", content);
+                let content = std::fs::read_to_string(&ca.cert)?;
+                if let Some(out_path) = output {
+                    std::fs::write(&out_path, content)?;
+                    println!("CA certificate exported to {:?}", out_path);
+                } else {
+                    println!("{}", content);
+                }
             }
         }
         CaAction::Install { ca_cert, ca_key } => {
@@ -135,11 +167,49 @@ pub fn execute(action: CaAction) -> Result<()> {
 
             #[cfg(not(target_os = "macos"))]
             {
-                println!("Automatic installation is not supported on this platform yet.");
-                println!(
-                    "Please install {:?} manually to your system's trust store.",
-                    ca.cert
-                );
+                #[cfg(target_os = "windows")]
+                {
+                    let cer = ca.cert.with_extension("cer");
+                    if !cer.exists() {
+                        eprintln!(
+                            "DER certificate not found at {:?}. Run `relay-core-cli ca generate` first.",
+                            cer
+                        );
+                        std::process::exit(1);
+                    }
+                    println!("Installing RelayCraft CA into Windows Trusted Root store...");
+                    let status = std::process::Command::new("certutil")
+                        .arg("-addstore")
+                        .arg("Root")
+                        .arg(&cer)
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            println!("CA certificate installed to Trusted Root store.");
+                            println!("You may need to accept a UAC prompt.");
+                        }
+                        Ok(s) => {
+                            eprintln!("certutil exited with code: {:?}", s.code());
+                            eprintln!("Try manually: certutil -addstore Root {:?}", cer);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to run certutil: {}", e);
+                            println!(
+                                "Open {:?} and import it into Trusted Root Certification Authorities.",
+                                cer
+                            );
+                        }
+                    }
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    println!("Automatic installation is not supported on this platform yet.");
+                    println!(
+                        "Please install {:?} manually to your system's trust store.",
+                        ca.cert
+                    );
+                }
             }
         }
         CaAction::Uninstall { .. } => {
@@ -168,7 +238,11 @@ pub fn execute(action: CaAction) -> Result<()> {
             }
 
             println!("CA Status: Generated");
-            println!("  cert: {}", ca.cert.display());
+            let cer = ca.cert.with_extension("cer");
+            println!("  cert: {} (PEM)", ca.cert.display());
+            if cer.exists() {
+                println!("  cert: {} (DER, Windows import)", cer.display());
+            }
             println!("  key:  {}", ca.key.display());
 
             #[cfg(target_os = "macos")]

@@ -370,6 +370,10 @@ pub enum CaAction {
         /// Output file path (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Export as DER format (suitable for Windows .cer import)
+        #[arg(long, default_value_t = false)]
+        der: bool,
     },
     /// Install CA certificate to system trust store
     Install {
