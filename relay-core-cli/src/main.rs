@@ -5,6 +5,7 @@ pub mod args;
 pub mod commands;
 pub mod server;
 pub mod sse_client;
+mod logging;
 mod ui;
 pub mod utils;
 
@@ -26,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         false
     };
 
-    if is_tui {
+    let _log_guard = if is_tui {
         // In TUI mode, log to a file "relay-core.log"
         // We use a file writer to avoid polluting stdout
         let file = std::fs::OpenOptions::new()
@@ -35,23 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .truncate(true)
             .open("relay-core.log")?;
 
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive(tracing::Level::INFO.into()),
-            )
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-            .init();
+        Some(logging::init_file(file))
     } else {
-        // Normal mode: log to stdout
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive(tracing::Level::INFO.into()),
-            )
-            .init();
-    }
+        logging::init_stdout();
+        None
+    };
 
     match cli.command {
         Commands::Run {

@@ -113,6 +113,21 @@ pub fn flow_list_title(filter: &str, filtered_count: usize, total_in_list: usize
     }
 }
 
+/// Suffix for flow-list URL/path cells. Omits universal `proxy`/`mitm` tags (shown in detail).
+pub fn tags_list_suffix(tags: &[String]) -> String {
+    const HIDDEN: &[&str] = &["proxy", "mitm"];
+    let visible: Vec<&str> = tags
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !HIDDEN.contains(t))
+        .collect();
+    if visible.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", visible.join(" "))
+    }
+}
+
 fn shell_escape_single(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
@@ -268,6 +283,20 @@ mod tests {
     #[test]
     fn smart_truncate_tiny_width() {
         assert_eq!(smart_truncate("abcdef", 2).len(), 2);
+    }
+
+    #[test]
+    fn tags_list_suffix_hides_proxy_mitm_only() {
+        assert_eq!(tags_list_suffix(&[]), "");
+        assert_eq!(tags_list_suffix(&["proxy".into(), "mitm".into()]), "");
+        assert_eq!(
+            tags_list_suffix(&["proxy".into(), "mitm".into(), "websocket".into()]),
+            "  websocket"
+        );
+        assert_eq!(
+            tags_list_suffix(&["budget-exceeded".into()]),
+            "  budget-exceeded"
+        );
     }
 
     #[test]

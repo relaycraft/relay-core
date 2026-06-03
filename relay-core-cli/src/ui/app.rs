@@ -17,7 +17,7 @@ use url::Url;
 use super::format::{
     LAYOUT_NARROW_MAX, TABLE_WIDE_MIN, copy_to_clipboard, display_method, display_path,
     flow_duration_ms, flow_list_title, format_duration_ms, format_size, host_from_url,
-    http_flow_to_curl, smart_truncate,
+    http_flow_to_curl, smart_truncate, tags_list_suffix,
 };
 use super::theme::Theme;
 
@@ -40,21 +40,14 @@ impl DetailTab {
     }
 
     fn tab_line(&self) -> Line<'static> {
-        match self {
-            Self::Overview => tab_line_pair("Overview", '1'),
-            Self::Request => tab_line_pair("Request", '2'),
-            Self::Response => tab_line_pair("Response", '3'),
-            Self::Messages => tab_line_pair("Messages", '4'),
-        }
+        let label = match self {
+            Self::Overview => "Overview 1",
+            Self::Request => "Request 2",
+            Self::Response => "Response 3",
+            Self::Messages => "Messages 4",
+        };
+        Line::from(Span::styled(label, Theme::section()))
     }
-}
-
-fn tab_line_pair(label: &'static str, num: char) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(label, Theme::section()),
-        Span::raw(" "),
-        Span::styled(num.to_string(), Theme::accent_dim()),
-    ])
 }
 
 #[derive(PartialEq, Debug)]
@@ -1424,12 +1417,7 @@ fn flow_table_row(
     let status_cell = Cell::from(Span::styled(status_text, status_style));
     let dur_cell = Cell::from(Span::styled(format!("{:>6}", dur_label), dur_style));
 
-    // Build tags suffix (shown after path/url if any tags present).
-    let tags_str = if flow.tags.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", flow.tags.join(" "))
-    };
+    let tags_str = tags_list_suffix(&flow.tags);
 
     if table_wide {
         let host = host_from_url(&url);

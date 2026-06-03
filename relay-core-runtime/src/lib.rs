@@ -58,6 +58,7 @@ use serde_json::json;
 
 pub mod actors;
 pub mod audit;
+mod log_format;
 pub mod interceptors;
 pub mod modification;
 pub mod paths;
@@ -1177,7 +1178,7 @@ impl CoreState {
             self.audit_events_failed.fetch_add(1, Ordering::Relaxed);
         }
 
-        let details = event.details.to_string();
+        let details = log_format::audit_details_log(&event.kind, &event.details);
         tracing::info!(
             target: "relay_core_audit",
             event_id = %event.id,
@@ -1267,7 +1268,9 @@ impl CoreState {
             phase = %lifecycle.phase.as_str(),
             port = ?lifecycle.port,
             started_at_ms = ?lifecycle.started_at_ms,
-            last_error = ?lifecycle.last_error
+            last_error = ?lifecycle.last_error,
+            "{}",
+            log_format::lifecycle_log_line(&lifecycle),
         );
         self.lifecycle_tx.send_replace(lifecycle);
     }
