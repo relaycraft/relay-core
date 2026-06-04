@@ -5,8 +5,8 @@ use ratatui::{
     style::Style,
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Padding, Paragraph, Row,
-        Table, TableState, Wrap,
+        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Padding, Paragraph, Row, Table,
+        TableState, Wrap,
     },
 };
 use relay_core_api::flow::{Flow, Layer};
@@ -319,10 +319,7 @@ impl TuiApp {
                         KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                             self.active_area = ActiveArea::FlowList
                         }
-                        KeyCode::Tab
-                        | KeyCode::Right
-                        | KeyCode::Char('l')
-                        | KeyCode::Char('i') => {
+                        KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('i') => {
                             self.active_area = ActiveArea::InterceptsPanel;
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
@@ -652,7 +649,10 @@ impl TuiApp {
             ]);
             let table = Table::new(
                 vec![row],
-                [Constraint::Length(FLOW_TABLE_MARKER_COL), Constraint::Min(0)],
+                [
+                    Constraint::Length(FLOW_TABLE_MARKER_COL),
+                    Constraint::Min(0),
+                ],
             )
             .block(outer_panel_block(&title, list_focused));
             f.render_widget(table, area);
@@ -841,11 +841,7 @@ impl TuiApp {
             Theme::value(),
         ));
         if net.tls {
-            let tls_val = net
-                .tls_version
-                .as_deref()
-                .unwrap_or("on")
-                .to_string();
+            let tls_val = net.tls_version.as_deref().unwrap_or("on").to_string();
             lines.push(panel_kv_line_indented(
                 PANEL_SECTION_INDENT,
                 "TLS:",
@@ -1135,7 +1131,10 @@ impl TuiApp {
             ]);
             let table = Table::new(
                 vec![row],
-                [Constraint::Length(RULES_TABLE_MARKER_COL), Constraint::Min(0)],
+                [
+                    Constraint::Length(RULES_TABLE_MARKER_COL),
+                    Constraint::Min(0),
+                ],
             )
             .block(outer_panel_block(&title, rules_focused));
             f.render_widget(table, area);
@@ -1149,8 +1148,8 @@ impl TuiApp {
             Constraint::Min(10),
         ];
 
-        let header = Row::new(vec!["On", "Stage", "Termination", "Name"])
-            .style(Theme::table_header());
+        let header =
+            Row::new(vec!["On", "Stage", "Termination", "Name"]).style(Theme::table_header());
 
         let selected = self.rules_table_state.selected();
         let rows: Vec<Row> = self
@@ -1218,7 +1217,10 @@ impl TuiApp {
                 ),
                 Span::styled(format!(" · {} ", rule.id), Theme::accent_dim()),
             ]);
-            f.render_widget(Paragraph::new(summary).block(panel_body_block(0)), layout[1]);
+            f.render_widget(
+                Paragraph::new(summary).block(panel_body_block(0)),
+                layout[1],
+            );
         }
     }
 
@@ -1895,7 +1897,10 @@ mod tests {
     fn panel_kv_label_column_is_fixed_width() {
         assert_eq!(panel_kv_label_column("ID:").len(), PANEL_KV_LABEL_WIDTH);
         assert_eq!(panel_kv_label_column("Host:").len(), PANEL_KV_LABEL_WIDTH);
-        assert_eq!(panel_kv_label_column("WS Pending:").len(), PANEL_KV_LABEL_WIDTH);
+        assert_eq!(
+            panel_kv_label_column("WS Pending:").len(),
+            PANEL_KV_LABEL_WIDTH
+        );
     }
     use relay_core_api::flow::{
         Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
