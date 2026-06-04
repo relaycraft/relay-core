@@ -105,6 +105,14 @@ pub fn host_from_url(url: &Url) -> String {
     url.host_str().unwrap_or("-").to_string()
 }
 
+pub fn empty_flow_list_message(filtering: bool) -> &'static str {
+    if filtering {
+        "No flows match the current filter"
+    } else {
+        "No flows yet — route traffic through the proxy to capture requests"
+    }
+}
+
 pub fn flow_list_title(filter: &str, filtered_count: usize, total_in_list: usize) -> String {
     if filter.is_empty() {
         format!(" Flows ({filtered_count}) ")

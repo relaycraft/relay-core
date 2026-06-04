@@ -80,6 +80,8 @@ static ACTIVE: OnceLock<ThemePalette> = OnceLock::new();
 #[derive(Debug, Clone, Copy)]
 pub struct ThemePalette {
     pub bg_elevated: Color,
+    /// Zebra stripe (odd rows).
+    pub row_alt: Color,
     pub row_selected: Color,
     pub text: Color,
     pub muted: Color,
@@ -88,6 +90,8 @@ pub struct ThemePalette {
     pub header_value: Color,
     pub accent: Color,
     pub accent_dim: Color,
+    /// Unfocused panel / status bar borders (low contrast).
+    pub border_subtle: Color,
     pub section: Color,
     pub uptime: Color,
     pub stat_ok: Color,
@@ -114,7 +118,8 @@ pub struct ThemePalette {
 // relaycore.dev tokens (--accent-primary #00d4ff, --bg-elevated #141414, etc.)
 const RELAY: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(20, 20, 20),
-    row_selected: Color::Rgb(42, 42, 42),
+    row_alt: Color::Rgb(24, 26, 30),
+    row_selected: Color::Rgb(30, 34, 40),
     text: Color::Rgb(224, 224, 224),
     muted: Color::Rgb(102, 102, 102),
     label: Color::Rgb(0, 212, 255),
@@ -122,6 +127,7 @@ const RELAY: ThemePalette = ThemePalette {
     header_value: Color::Rgb(224, 224, 224),
     accent: Color::Rgb(0, 212, 255),
     accent_dim: Color::Rgb(0, 153, 204),
+    border_subtle: Color::Rgb(52, 56, 60),
     section: Color::Rgb(0, 212, 255),
     uptime: Color::Rgb(0, 255, 65),
     stat_ok: Color::Rgb(0, 255, 65),
@@ -157,6 +163,7 @@ const RELAY: ThemePalette = ThemePalette {
 /// Previous default (Tokyo Night–style slate + amber).
 const SLATE: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(30, 33, 46),
+    row_alt: Color::Rgb(34, 38, 52),
     row_selected: Color::Rgb(51, 65, 85),
     text: Color::Rgb(226, 232, 240),
     muted: Color::Rgb(148, 163, 184),
@@ -165,6 +172,7 @@ const SLATE: ThemePalette = ThemePalette {
     header_value: Color::Rgb(203, 213, 225),
     accent: Color::Rgb(251, 191, 36),
     accent_dim: Color::Rgb(253, 224, 71),
+    border_subtle: Color::Rgb(55, 62, 78),
     section: Color::Rgb(147, 197, 253),
     uptime: Color::Rgb(134, 239, 172),
     stat_ok: Color::Rgb(74, 222, 128),
@@ -199,6 +207,7 @@ const SLATE: ThemePalette = ThemePalette {
 
 const HIGH_CONTRAST: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(10, 10, 10),
+    row_alt: Color::Rgb(18, 18, 18),
     row_selected: Color::Rgb(55, 55, 55),
     text: Color::Rgb(255, 255, 255),
     muted: Color::Rgb(180, 180, 180),
@@ -207,6 +216,7 @@ const HIGH_CONTRAST: ThemePalette = ThemePalette {
     header_value: Color::Rgb(255, 255, 255),
     accent: Color::Rgb(0, 255, 255),
     accent_dim: Color::Rgb(120, 255, 255),
+    border_subtle: Color::Rgb(70, 70, 70),
     section: Color::Rgb(0, 255, 255),
     uptime: Color::Rgb(0, 255, 120),
     stat_ok: Color::Rgb(0, 255, 120),
@@ -292,10 +302,14 @@ impl Theme {
         Style::default().fg(palette().header_key)
     }
 
-    pub fn section() -> Style {
-        Style::default()
-            .fg(palette().section)
-            .add_modifier(Modifier::BOLD)
+    /// L2 — panel / table titles.
+    pub fn panel_title() -> Style {
+        Style::default().fg(palette().accent_dim)
+    }
+
+    /// L3 — in-panel section labels (Overview, Help).
+    pub fn subsection() -> Style {
+        Style::default().fg(palette().muted)
     }
 
     pub fn accent() -> Style {
@@ -312,16 +326,44 @@ impl Theme {
         Style::default().fg(palette().uptime)
     }
 
+    /// Outer panel border when focused (soft accent, not full brightness).
     pub fn border(active: bool) -> Style {
         if active {
-            Style::default().fg(palette().accent)
+            Style::default().fg(palette().accent_dim)
         } else {
-            Style::default().fg(palette().muted)
+            Style::default().fg(palette().border_subtle)
+        }
+    }
+
+    /// Inner detail blocks — always low-contrast.
+    pub fn border_inner() -> Style {
+        Style::default().fg(palette().border_subtle)
+    }
+
+    pub fn status_bar_border() -> Style {
+        Style::default().fg(palette().border_subtle)
+    }
+
+    /// Selected row caret in the flow/rules list.
+    pub fn row_marker() -> Style {
+        Style::default()
+            .fg(palette().accent)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Apply zebra stripe background without clobbering badge cell backgrounds.
+    pub fn on_zebra_row(base: Style, zebra: bool) -> Style {
+        if zebra {
+            base.bg(palette().row_alt)
+        } else {
+            base
         }
     }
 
     pub fn row_highlight() -> Style {
-        Style::default().bg(palette().row_selected)
+        Style::default()
+            .bg(palette().row_selected)
+            .fg(palette().text)
     }
 
     /// In-flight HTTP status (no response yet).
@@ -335,6 +377,19 @@ impl Theme {
         Style::default().fg(palette().accent_dim)
     }
 
+    /// Detail panel tab bar — inactive label.
+    pub fn tab_inactive() -> Style {
+        Style::default().fg(palette().muted)
+    }
+
+    /// Detail panel tab bar — selected pill.
+    pub fn tab_active() -> Style {
+        Style::default()
+            .fg(palette().accent)
+            .bg(palette().row_selected)
+            .add_modifier(Modifier::BOLD)
+    }
+
     pub fn duration_color(ms: u64) -> Color {
         let p = palette();
         if ms < 100 {
@@ -346,10 +401,41 @@ impl Theme {
         }
     }
 
+    pub fn duration_style(ms: Option<u64>) -> Style {
+        let Some(ms) = ms else {
+            return Self::muted();
+        };
+        let mut style = Style::default().fg(Self::duration_color(ms));
+        if ms >= 2000 {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        style
+    }
+
     pub fn table_header() -> Style {
         Style::default()
-            .fg(palette().label)
+            .fg(palette().accent_dim)
             .add_modifier(Modifier::BOLD)
+    }
+
+    fn tint_bg(fg: Color) -> Color {
+        match fg {
+            Color::Rgb(r, g, b) => Color::Rgb(r / 8, g / 8, b / 8),
+            _ => palette().bg_elevated,
+        }
+    }
+
+    pub fn method_badge(method: &str) -> Style {
+        let fg = Self::method(method);
+        Style::default().fg(fg).bg(Self::tint_bg(fg))
+    }
+
+    pub fn status_badge(code: &str) -> Style {
+        if code == "---" || code == "…" {
+            return Self::pending_status();
+        }
+        let fg = Self::status(code);
+        Style::default().fg(fg).bg(Self::tint_bg(fg))
     }
 
     pub fn method(method: &str) -> Color {
@@ -429,7 +515,7 @@ impl Theme {
     }
 
     pub fn json_key() -> Style {
-        Style::default().fg(palette().label)
+        Style::default().fg(palette().section)
     }
 
     pub fn json_string() -> Style {

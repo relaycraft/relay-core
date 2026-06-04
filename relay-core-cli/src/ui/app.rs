@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table,
+        TableState, Wrap,
+    },
 };
 use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
@@ -16,8 +19,8 @@ use url::Url;
 
 use super::format::{
     LAYOUT_NARROW_MAX, TABLE_WIDE_MIN, copy_to_clipboard, display_method, display_path,
-    flow_duration_ms, flow_list_title, format_duration_ms, format_size, host_from_url,
-    http_flow_to_curl, smart_truncate, tags_list_suffix,
+    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
+    format_size, host_from_url, http_flow_to_curl, smart_truncate, tags_list_suffix,
 };
 use super::theme::Theme;
 
@@ -39,15 +42,16 @@ impl DetailTab {
         }
     }
 
-    fn tab_line(&self) -> Line<'static> {
-        let label = match self {
-            Self::Overview => "Overview 1",
-            Self::Request => "Request 2",
-            Self::Response => "Response 3",
-            Self::Messages => "Messages 4",
-        };
-        Line::from(Span::styled(label, Theme::section()))
+    fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Request => "Request",
+            Self::Response => "Response",
+            Self::Messages => "Messages",
+        }
     }
+
+    const ALL: [Self; 4] = [Self::Overview, Self::Request, Self::Response, Self::Messages];
 }
 
 #[derive(PartialEq, Debug)]
@@ -401,9 +405,15 @@ impl TuiApp {
     pub fn ui(&mut self, f: &mut Frame) {
         let area = f.area();
 
+        // 2 lines = top border + one content row; 3 when Normal mode shows a toast line.
+        let status_height = if matches!(self.input_mode, InputMode::Normal) && self.toast.is_some() {
+            3
+        } else {
+            2
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(0), Constraint::Length(status_height)].as_ref())
             .split(area);
 
         let narrow = area.width < LAYOUT_NARROW_MAX;
@@ -463,11 +473,7 @@ impl TuiApp {
         self.render_flow_detail(f, top[1]);
         self.render_rules_panel(f, bottom[0]);
 
-        let border_style = Theme::border(self.active_area == ActiveArea::RulesPanel);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Intercepts ")
-            .border_style(border_style);
+        let block = inner_panel_block(" Intercepts ");
         let inner = block.inner(bottom[1]);
         f.render_widget(block, bottom[1]);
 
@@ -580,7 +586,12 @@ impl TuiApp {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Help (? or Esc to close) ")
+            .border_type(BorderType::Rounded)
+            .border_style(Theme::border(true))
+            .title(Span::styled(
+                " Help (? or Esc to close) ",
+                Theme::panel_title(),
+            ))
             .style(Style::default().bg(Theme::bg_elevated()));
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(Clear, area);
@@ -594,23 +605,46 @@ impl TuiApp {
         let filtering = !filter.is_empty();
         let path_budget = usize::from(area.width.saturating_sub(if table_wide { 52 } else { 28 }));
 
-        let rows: Vec<Row> = filtered_flows
-            .iter()
-            .map(|flow| flow_table_row(flow, table_wide, path_budget, filter, filtering))
-            .collect();
-
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowList);
+        let list_focused = self.active_area == ActiveArea::FlowList;
         let mut title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
         if area.width < LAYOUT_NARROW_MAX {
             title = format!("‹{title}");
         }
 
+        if filtered_flows.is_empty() {
+            let block = outer_panel_block(&title, list_focused);
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            let p = Paragraph::new(empty_flow_list_message(filtering))
+                .style(Theme::muted())
+                .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(p, inner);
+            return;
+        }
+
+        let selected = self.table_state.selected();
+        let rows: Vec<Row> = filtered_flows
+            .iter()
+            .enumerate()
+            .map(|(i, flow)| {
+                flow_table_row(
+                    flow,
+                    table_wide,
+                    path_budget,
+                    filter,
+                    filtering,
+                    selected == Some(i),
+                    i % 2 == 1 && selected != Some(i),
+                )
+            })
+            .collect();
+
         let (header, widths): (Vec<&str>, Vec<Constraint>) = if table_wide {
             (
                 vec!["Method", "Code", "Dur", "Size", "Host", "Path"],
                 vec![
-                    Constraint::Length(6),
-                    Constraint::Length(4),
+                    Constraint::Length(7),
+                    Constraint::Length(5),
                     Constraint::Length(7),
                     Constraint::Length(9),
                     Constraint::Length(18),
@@ -621,8 +655,8 @@ impl TuiApp {
             (
                 vec!["Method", "Code", "Dur", "URL"],
                 vec![
-                    Constraint::Length(6),
-                    Constraint::Length(4),
+                    Constraint::Length(7),
+                    Constraint::Length(5),
                     Constraint::Length(7),
                     Constraint::Min(10),
                 ],
@@ -635,29 +669,21 @@ impl TuiApp {
 
         let table = Table::new(rows, widths)
             .header(header_row)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(title, Theme::section()))
-                    .border_style(border_style),
-            )
+            .block(outer_panel_block(&title, list_focused))
             .row_highlight_style(Theme::row_highlight())
-            .highlight_symbol("▌ ");
+            .highlight_spacing(HighlightSpacing::Never);
 
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
     fn render_flow_detail(&self, f: &mut Frame, area: Rect) {
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
+        let detail_focused = self.active_area == ActiveArea::FlowDetail;
         let detail_title = if area.width < LAYOUT_NARROW_MAX {
-            "‹ Detail "
+            "‹ Detail"
         } else {
-            " Detail "
+            "Detail"
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(detail_title, Theme::section()))
-            .border_style(border_style);
+        let block = outer_panel_block(detail_title, detail_focused);
         let inner = block.inner(area);
 
         let chunks = Layout::default()
@@ -665,18 +691,8 @@ impl TuiApp {
             .constraints([Constraint::Length(1), Constraint::Min(0)].as_ref())
             .split(inner);
 
-        let titles = vec![
-            DetailTab::Overview.tab_line(),
-            DetailTab::Request.tab_line(),
-            DetailTab::Response.tab_line(),
-            DetailTab::Messages.tab_line(),
-        ];
-
-        let tabs = Tabs::new(titles)
-            .highlight_style(Theme::accent())
-            .select(self.detail_tab as usize);
+        render_detail_tab_bar(f, chunks[0], self.detail_tab);
         f.render_widget(block, area);
-        f.render_widget(tabs, chunks[0]);
 
         let content_block = Block::default();
         let filtered_flows = self.get_filtered_flows();
@@ -696,22 +712,25 @@ impl TuiApp {
             }
         } else {
             f.render_widget(
-                Paragraph::new("Select a flow to view details").block(content_block),
+                Paragraph::new("Select a flow to view details")
+                    .style(Theme::muted())
+                    .alignment(ratatui::layout::Alignment::Center)
+                    .block(content_block),
                 chunks[1],
             );
         }
     }
 
     fn render_overview(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(detail_panel_title("Overview", self.detail_scroll))
-            .border_style(border_style);
+        let block = inner_panel_block(detail_panel_title("Overview", self.detail_scroll));
 
         let mut lines: Vec<Line> = Vec::new();
 
-        // ── Identity ──
+        if let Some(summary) = flow_summary_line(flow) {
+            lines.push(summary);
+            lines.push(Line::from(""));
+        }
+
         lines.push(Line::from(vec![
             Span::styled("ID:  ", Theme::label()),
             Span::styled(flow.id.to_string(), Theme::muted()),
@@ -816,7 +835,7 @@ impl TuiApp {
 
         // ── Network ──
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("── Network ──", Theme::section())));
+        lines.push(subsection_line("Network"));
         let net = &flow.network;
         let mut net_parts: Vec<Span> = vec![
             Span::styled("Client: ", Theme::label()),
@@ -845,7 +864,7 @@ impl TuiApp {
         // ── Tags ──
         if !flow.tags.is_empty() {
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("── Tags ──", Theme::section())));
+            lines.push(subsection_line("Tags"));
             lines.push(Line::from(vec![Span::styled(
                 flow.tags.join("  "),
                 Theme::accent_dim(),
@@ -864,7 +883,7 @@ impl TuiApp {
 
         if timing_present || flow.end_time.is_some() {
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("── Timing ──", Theme::section())));
+            lines.push(subsection_line("Timing"));
 
             let (ttfb, ttlb, connect, ssl) = match &flow.layer {
                 Layer::Http(h) => {
@@ -923,15 +942,11 @@ impl TuiApp {
     }
 
     fn render_request(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(detail_panel_title("Request", self.detail_scroll))
-            .border_style(border_style);
+        let block = inner_panel_block(detail_panel_title("Request", self.detail_scroll));
 
         match &flow.layer {
             Layer::Http(h) => {
-                let mut text = vec![Line::from(Span::styled("Headers:", Theme::section()))];
+                let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
                 for header in &h.request.headers {
                     text.push(Line::from(vec![
                         Span::styled(format!("  {}: ", header.0), Theme::header_key()),
@@ -940,7 +955,7 @@ impl TuiApp {
                 }
 
                 text.push(Line::from(""));
-                text.push(Line::from(Span::styled("Body:", Theme::section())));
+                text.push(Line::from(Span::styled("Body", Theme::subsection())));
 
                 if let Some(body) = &h.request.body {
                     text.push(Line::from(format!(
@@ -967,8 +982,8 @@ impl TuiApp {
             }
             Layer::WebSocket(w) => {
                 let mut text = vec![Line::from(Span::styled(
-                    "Handshake Request Headers:",
-                    Theme::section(),
+                    "Handshake request headers",
+                    Theme::subsection(),
                 ))];
                 for header in &w.handshake_request.headers {
                     text.push(Line::from(vec![
@@ -987,16 +1002,12 @@ impl TuiApp {
     }
 
     fn render_response(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(detail_panel_title("Response", self.detail_scroll))
-            .border_style(border_style);
+        let block = inner_panel_block(detail_panel_title("Response", self.detail_scroll));
 
         match &flow.layer {
             Layer::Http(h) => {
                 if let Some(resp) = &h.response {
-                    let mut text = vec![Line::from(Span::styled("Headers:", Theme::section()))];
+                    let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
                     for header in &resp.headers {
                         text.push(Line::from(vec![
                             Span::styled(format!("  {}: ", header.0), Theme::header_key()),
@@ -1005,7 +1016,7 @@ impl TuiApp {
                     }
 
                     text.push(Line::from(""));
-                    text.push(Line::from(Span::styled("Body:", Theme::section())));
+                    text.push(Line::from(Span::styled("Body", Theme::subsection())));
 
                     if let Some(body) = &resp.body {
                         text.push(Line::from(format!(
@@ -1035,8 +1046,8 @@ impl TuiApp {
             }
             Layer::WebSocket(w) => {
                 let mut text = vec![Line::from(Span::styled(
-                    "Handshake Response Headers:",
-                    Theme::section(),
+                    "Handshake response headers",
+                    Theme::subsection(),
                 ))];
                 for header in &w.handshake_response.headers {
                     text.push(Line::from(vec![
@@ -1055,11 +1066,7 @@ impl TuiApp {
     }
 
     fn render_messages(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let border_style = Theme::border(self.active_area == ActiveArea::FlowDetail);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(detail_panel_title("Messages", self.detail_scroll))
-            .border_style(border_style);
+        let block = inner_panel_block(detail_panel_title("Messages", self.detail_scroll));
 
         match &flow.layer {
             Layer::WebSocket(w) => {
@@ -1105,15 +1112,12 @@ impl TuiApp {
     }
 
     fn render_rules_panel(&mut self, f: &mut Frame, area: Rect) {
-        let border_style = Theme::border(self.active_area == ActiveArea::RulesPanel);
+        let rules_focused = self.active_area == ActiveArea::RulesPanel;
         let count = self.rules.len();
-        let title = format!(" Rules ({count}) ");
+        let title = format!("Rules ({count})");
 
         if self.rules.is_empty() {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(title, Theme::section()))
-                .border_style(border_style);
+            let block = outer_panel_block(&title, rules_focused);
             let inner = block.inner(area);
             f.render_widget(block, area);
             let p = Paragraph::new("(no rules loaded)")
@@ -1134,18 +1138,28 @@ impl TuiApp {
             .style(Theme::table_header())
             .bottom_margin(1);
 
+        let selected = self.rules_table_state.selected();
         let rows: Vec<Row> = self
             .rules
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let on = if r.active { "✓" } else { "✗" };
+                let on_cell = if selected == Some(i) {
+                    Cell::from(Line::from(vec![
+                        Span::styled("▸", Theme::row_marker()),
+                        Span::styled(on, Theme::text()),
+                    ]))
+                } else {
+                    Cell::from(Span::styled(format!(" {on}"), Theme::text()))
+                };
                 let stage = format!("{:?}", r.stage);
                 let term = match r.termination {
                     relay_core_api::rule::RuleTermination::Continue => "→",
                     relay_core_api::rule::RuleTermination::Stop => "■",
                 };
                 Row::new(vec![
-                    Cell::from(on),
+                    on_cell,
                     Cell::from(stage),
                     Cell::from(term),
                     Cell::from(r.name.clone()),
@@ -1158,10 +1172,7 @@ impl TuiApp {
             })
             .collect();
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(title, Theme::section()))
-            .border_style(border_style);
+        let block = outer_panel_block(&title, rules_focused);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -1173,7 +1184,7 @@ impl TuiApp {
         let table = Table::new(rows, widths)
             .header(header)
             .row_highlight_style(Theme::row_highlight())
-            .highlight_symbol("▌ ");
+            .highlight_spacing(HighlightSpacing::Never);
 
         f.render_stateful_widget(table, layout[0], &mut self.rules_table_state);
 
@@ -1271,24 +1282,21 @@ impl TuiApp {
                     Span::styled(format!("up {}", uptime), Theme::uptime()),
                 ];
 
-                // Right section
-                let mut right = vec![
-                    Span::styled(format!("[{}] ", active), Theme::accent_bold()),
+                let p_action = if self.paused { "resume" } else { "pause" };
+
+                let right = vec![
+                    Span::styled(format!("[{active}] "), Theme::accent_bold()),
                     Span::styled("q", Theme::hotkey()),
-                    Span::styled(" quit ", Theme::muted()),
+                    Span::styled("·", Theme::muted()),
                     Span::styled("/", Theme::hotkey()),
-                    Span::styled(" filter ", Theme::muted()),
+                    Span::styled("·", Theme::muted()),
                     Span::styled("p", Theme::hotkey()),
-                    Span::styled(" rec ", Theme::muted()),
+                    Span::styled(format!(" {p_action} "), Theme::muted()),
+                    Span::styled("·", Theme::muted()),
                     Span::styled("c", Theme::hotkey()),
                     Span::styled(" clear", Theme::muted()),
                 ];
-                if let Some(ref msg) = self.toast {
-                    right.push(Span::styled(" | ", Theme::muted()));
-                    right.push(Span::styled(msg.as_str(), Theme::accent()));
-                }
 
-                // Build bar: measure widths first, then build final spans
                 let left_text = Text::from(Line::from(left.clone()));
                 let middle_text = Text::from(Line::from(middle.clone()));
                 let right_text = Text::from(Line::from(right.clone()));
@@ -1296,7 +1304,7 @@ impl TuiApp {
                 let left_width = left_text.width() as u16;
                 let middle_width = middle_text.width() as u16;
                 let right_width = right_text.width() as u16;
-                let total_width = area.width.saturating_sub(2); // account for borders
+                let total_width = area.width;
 
                 let spacer1 = if left_width + middle_width + right_width < total_width {
                     (total_width - left_width - middle_width - right_width) / 2
@@ -1306,13 +1314,39 @@ impl TuiApp {
                 let spacer2 =
                     total_width.saturating_sub(left_width + spacer1 + middle_width + right_width);
 
-                let mut spans: Vec<Span> = Vec::new();
-                spans.extend(left);
-                spans.push(Span::raw(" ".repeat(spacer1 as usize)));
-                spans.extend(middle);
-                spans.push(Span::raw(" ".repeat(spacer2 as usize)));
-                spans.extend(right);
-                spans
+                let mut main_spans: Vec<Span> = Vec::new();
+                main_spans.extend(left);
+                main_spans.push(Span::raw(" ".repeat(spacer1 as usize)));
+                main_spans.extend(middle);
+                main_spans.push(Span::raw(" ".repeat(spacer2 as usize)));
+                main_spans.extend(right);
+
+                let bar_block = Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Theme::status_bar_border())
+                    .style(Style::default().bg(Theme::bg_elevated()));
+                let bar_area = bar_block.inner(area);
+                f.render_widget(bar_block, area);
+
+                if let Some(ref msg) = self.toast {
+                    let status_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(1), Constraint::Length(1)])
+                        .split(bar_area);
+                    f.render_widget(Paragraph::new(Line::from(main_spans)), status_chunks[0]);
+                    let toast_line = Line::from(vec![
+                        Span::styled("▸ ", Theme::row_marker()),
+                        Span::styled(msg.as_str(), Theme::accent_dim()),
+                    ]);
+                    f.render_widget(Paragraph::new(toast_line), status_chunks[1]);
+                } else {
+                    let content = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(1), Constraint::Min(0)])
+                        .split(bar_area);
+                    f.render_widget(Paragraph::new(Line::from(main_spans)), content[0]);
+                }
+                return;
             }
             InputMode::Filtering => {
                 let mut spans = vec![
@@ -1345,7 +1379,12 @@ impl TuiApp {
         };
 
         let text = Text::from(Line::from(bar_text));
-        let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
+        let paragraph = Paragraph::new(text).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Theme::status_bar_border())
+                .style(Style::default().bg(Theme::bg_elevated())),
+        );
         f.render_widget(paragraph, area);
     }
 }
@@ -1356,6 +1395,8 @@ fn flow_table_row(
     path_budget: usize,
     filter: &str,
     filtering: bool,
+    selected: bool,
+    zebra: bool,
 ) -> Row<'static> {
     let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
         Layer::Http(h) => {
@@ -1397,25 +1438,35 @@ fn flow_table_row(
     };
 
     let method_label = display_method(&method, has_body);
-    let method_color = Theme::method(method_label.trim_end_matches('+'));
-    let status_color = Theme::status(&status);
     let dur_ms = flow_duration_ms(flow);
     let dur_label = format_duration_ms(dur_ms);
-    let dur_style = dur_ms
-        .map(|ms| Style::default().fg(Theme::duration_color(ms)))
-        .unwrap_or(Theme::muted());
 
-    let method_cell = Cell::from(Span::styled(
-        method_label,
-        Style::default().fg(method_color),
-    ));
+    let method_key = method_label.trim_end_matches('+');
+    let method_cell = if selected {
+        Cell::from(Line::from(vec![
+            Span::styled("▸", Theme::row_marker()),
+            Span::raw(" "),
+            Span::styled(method_label.clone(), Theme::method_badge(method_key)),
+        ]))
+    } else {
+        Cell::from(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(method_label.clone(), Theme::method_badge(method_key)),
+        ]))
+    };
     let (status_text, status_style) = if status == "---" {
         ("…".to_string(), Theme::pending_status())
     } else {
-        (status.clone(), Style::default().fg(status_color))
+        (
+            format!("{:>3}", status),
+            Theme::status_badge(&status),
+        )
     };
     let status_cell = Cell::from(Span::styled(status_text, status_style));
-    let dur_cell = Cell::from(Span::styled(format!("{:>6}", dur_label), dur_style));
+    let dur_cell = Cell::from(Span::styled(
+        format!("{:>6}", dur_label),
+        Theme::on_zebra_row(Theme::duration_style(dur_ms), zebra),
+    ));
 
     let tags_str = tags_list_suffix(&flow.tags);
 
@@ -1432,9 +1483,20 @@ fn flow_table_row(
             method_cell,
             status_cell,
             dur_cell,
-            Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
-            Cell::from(Span::styled(host, Style::default().fg(host_color))),
-            styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
+            Cell::from(Span::styled(
+                format!("{:>7}", size_str),
+                Theme::on_zebra_row(Theme::text(), zebra),
+            )),
+            Cell::from(Span::styled(
+                host,
+                Theme::on_zebra_row(Style::default().fg(host_color), zebra),
+            )),
+            styled_text_cell(
+                &path_with_tags,
+                filter,
+                filtering,
+                Theme::on_zebra_row(Theme::text(), zebra),
+            ),
         ])
     } else {
         let url_text = smart_truncate(url.as_str(), path_budget);
@@ -1447,7 +1509,12 @@ fn flow_table_row(
             method_cell,
             status_cell,
             dur_cell,
-            styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
+            styled_text_cell(
+                &url_with_tags,
+                filter,
+                filtering,
+                Theme::on_zebra_row(Theme::text(), zebra),
+            ),
         ])
     }
 }
@@ -1628,6 +1695,99 @@ fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
     parts
 }
 
+fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
+    let title_str = if focused {
+        format!("▎ {title} ")
+    } else {
+        format!(" {title} ")
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Theme::border(focused))
+        .title(Span::styled(title_str, Theme::panel_title()))
+}
+
+fn inner_panel_block(title: impl Into<String>) -> Block<'static> {
+    let title = title.into();
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Theme::border_inner())
+        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
+}
+
+fn render_detail_tab_bar(f: &mut Frame, area: Rect, selected: DetailTab) {
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, &tab) in DetailTab::ALL.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let label = format!(" {} ", tab.label());
+        let style = if tab == selected {
+            Theme::tab_active()
+        } else {
+            Theme::tab_inactive()
+        };
+        spans.push(Span::styled(label, style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn subsection_line(title: &'static str) -> Line<'static> {
+    Line::from(Span::styled(format!("· {title} ·"), Theme::subsection()))
+}
+
+fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
+    match &flow.layer {
+        Layer::Http(h) => {
+            let method_label = display_method(&h.request.method, h.request.body.is_some());
+            let method_key = method_label.trim_end_matches('+');
+            let status = h
+                .response
+                .as_ref()
+                .map(|r| r.status.to_string())
+                .unwrap_or_else(|| "…".to_string());
+            let dur = format_duration_ms(flow_duration_ms(flow));
+            let host = host_from_url(&h.request.url);
+            let path = h.request.url.path();
+            let path = if path.is_empty() { "/" } else { path };
+            let path_show = smart_truncate(path, 40);
+            Some(Line::from(vec![
+                Span::styled(method_label.clone(), Theme::method_badge(method_key)),
+                Span::raw("  "),
+                Span::styled(format!("{status:>3}"), Theme::status_badge(&status)),
+                Span::styled(
+                    format!("  {dur}  "),
+                    Theme::duration_style(flow_duration_ms(flow)),
+                ),
+                Span::styled(format!("{host}{path_show}"), Theme::value()),
+            ]))
+        }
+        Layer::WebSocket(w) => {
+            let status = w.handshake_response.status.to_string();
+            let dur = format_duration_ms(flow_duration_ms(flow));
+            let host = host_from_url(&w.handshake_request.url);
+            let path = w.handshake_request.url.path();
+            let path = if path.is_empty() { "/" } else { path };
+            let path_show = smart_truncate(path, 40);
+            let msg_count = w.messages.len();
+            Some(Line::from(vec![
+                Span::styled("WS", Theme::method_badge("WS")),
+                Span::raw("  "),
+                Span::styled(format!("{status:>3}"), Theme::status_badge(&status)),
+                Span::styled(
+                    format!("  {dur}  "),
+                    Theme::duration_style(flow_duration_ms(flow)),
+                ),
+                Span::styled(format!("{host}{path_show}"), Theme::value()),
+                Span::styled(format!("  ({msg_count} msgs)"), Theme::muted()),
+            ]))
+        }
+        _ => None,
+    }
+}
+
 fn detail_panel_title(label: &str, scroll: u16) -> String {
     if scroll > 0 {
         format!("{label} ↓{scroll}")
@@ -1639,7 +1799,7 @@ fn detail_panel_title(label: &str, scroll: u16) -> String {
 fn help_section(title: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("── {title} ──"), Theme::section()),
+        Span::styled(format!("· {title} ·"), Theme::subsection()),
     ])
 }
 
