@@ -19,8 +19,8 @@ use url::Url;
 
 use super::format::{
     LAYOUT_NARROW_MAX, TABLE_WIDE_MIN, copy_to_clipboard, display_method, display_path,
-    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
-    format_size, host_from_url, http_flow_to_curl, smart_truncate, tags_list_suffix,
+    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms, format_size,
+    host_from_url, http_flow_to_curl, smart_truncate, tags_list_suffix,
 };
 use super::theme::Theme;
 
@@ -51,7 +51,12 @@ impl DetailTab {
         }
     }
 
-    const ALL: [Self; 4] = [Self::Overview, Self::Request, Self::Response, Self::Messages];
+    const ALL: [Self; 4] = [
+        Self::Overview,
+        Self::Request,
+        Self::Response,
+        Self::Messages,
+    ];
 }
 
 #[derive(PartialEq, Debug)]
@@ -406,7 +411,8 @@ impl TuiApp {
         let area = f.area();
 
         // 2 lines = top border + one content row; 3 when Normal mode shows a toast line.
-        let status_height = if matches!(self.input_mode, InputMode::Normal) && self.toast.is_some() {
+        let status_height = if matches!(self.input_mode, InputMode::Normal) && self.toast.is_some()
+        {
             3
         } else {
             2
@@ -1457,10 +1463,7 @@ fn flow_table_row(
     let (status_text, status_style) = if status == "---" {
         ("…".to_string(), Theme::pending_status())
     } else {
-        (
-            format!("{:>3}", status),
-            Theme::status_badge(&status),
-        )
+        (format!("{:>3}", status), Theme::status_badge(&status))
     };
     let status_cell = Cell::from(Span::styled(status_text, status_style));
     let dur_cell = Cell::from(Span::styled(
