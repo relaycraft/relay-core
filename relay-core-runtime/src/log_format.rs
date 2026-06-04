@@ -1,26 +1,29 @@
 //! Human-readable `tracing` messages (avoid `Option` Debug noise like `Some(9090)`).
 
-use crate::RuntimeLifecycle;
 use crate::audit::AuditEventKind;
 use serde_json::Value;
 
-/// One-line lifecycle snapshot for logs.
-pub fn lifecycle_log_line(lifecycle: &RuntimeLifecycle) -> String {
-    let port = opt_u16(lifecycle.port);
-    let started = opt_u64(lifecycle.started_at_ms);
-    let err = lifecycle.last_error.as_deref().unwrap_or("-");
+pub(crate) fn opt_u16(v: Option<u16>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string())
+}
+
+pub(crate) fn opt_u64(v: Option<u64>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string())
+}
+
+/// Stable `key=value` lifecycle line for tests and log pipelines (matches tracing field values).
+#[cfg(test)]
+fn lifecycle_fields_line(
+    phase: &str,
+    port: Option<u16>,
+    started_at_ms: Option<u64>,
+    last_error: &str,
+) -> String {
     format!(
-        "phase={} port={port} started_at_ms={started} last_error={err}",
-        lifecycle.phase.as_str(),
+        "phase={phase} port={} started_at_ms={} last_error={last_error}",
+        opt_u16(port),
+        opt_u64(started_at_ms),
     )
-}
-
-fn opt_u16(v: Option<u16>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string())
-}
-
-fn opt_u64(v: Option<u64>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string())
 }
 
 /// Compact audit `details` for logs.
@@ -69,20 +72,21 @@ fn truncate_json(v: &Value, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RuntimeLifecyclePhase;
     use serde_json::json;
 
     #[test]
-    fn lifecycle_line_uses_dash_for_none() {
-        let line = lifecycle_log_line(&RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Starting,
-            port: Some(9090),
-            started_at_ms: None,
-            last_error: None,
-        });
+    fn lifecycle_fields_line_uses_dash_for_none() {
         assert_eq!(
-            line,
+            lifecycle_fields_line("starting", Some(9090), None, "-"),
             "phase=starting port=9090 started_at_ms=- last_error=-"
+        );
+    }
+
+    #[test]
+    fn lifecycle_fields_line_running_snapshot() {
+        assert_eq!(
+            lifecycle_fields_line("running", Some(9090), Some(1_780_585_037_045), "-"),
+            "phase=running port=9090 started_at_ms=1780585037045 last_error=-"
         );
     }
 

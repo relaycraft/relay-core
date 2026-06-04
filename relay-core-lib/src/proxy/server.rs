@@ -47,7 +47,7 @@ where
     S: CaptureSource + Send + 'static,
     S::IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    info!("RelayCore Proxy starting...");
+    tracing::debug!("RelayCore proxy engine starting");
     info!("CA Loaded. Root cert:\n{}", ca.get_ca_cert_pem());
     let startup_policy = policy.borrow().clone();
     info!("Proxy Policy: {:?}", startup_policy);

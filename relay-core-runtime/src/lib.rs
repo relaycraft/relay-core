@@ -1263,14 +1263,17 @@ impl CoreState {
     }
 
     fn update_lifecycle(&self, lifecycle: RuntimeLifecycle) {
+        let err = lifecycle
+            .last_error
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-");
         tracing::info!(
             target: "relay_core_lifecycle",
             phase = %lifecycle.phase.as_str(),
-            port = ?lifecycle.port,
-            started_at_ms = ?lifecycle.started_at_ms,
-            last_error = ?lifecycle.last_error,
-            "{}",
-            log_format::lifecycle_log_line(&lifecycle),
+            port = %log_format::opt_u16(lifecycle.port),
+            started_at_ms = %log_format::opt_u64(lifecycle.started_at_ms),
+            last_error = %err,
         );
         self.lifecycle_tx.send_replace(lifecycle);
     }

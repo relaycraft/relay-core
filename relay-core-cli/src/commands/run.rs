@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 struct CliInterceptor {
     enabled: Arc<AtomicBool>,
@@ -216,6 +216,36 @@ async fn run_tui_broadcast(
     }
 
     Ok(())
+}
+
+fn startup_row(label: &str, value: impl std::fmt::Display) -> String {
+    format!("  {:7} {value}", label)
+}
+
+/// Endpoint summary printed once; Control API bind is logged at debug only.
+fn log_startup_endpoints(
+    addr: std::net::SocketAddr,
+    control_port: u16,
+    api_bind: &str,
+    api_port: Option<u16>,
+) {
+    info!("──────────────────────────────────────────────");
+    info!("{}", startup_row("Proxy", addr));
+    info!(
+        "{}",
+        startup_row("Control", format!("http://127.0.0.1:{control_port}/"))
+    );
+    if let Some(port) = api_port {
+        info!(
+            "{}",
+            startup_row("REST", format!("http://{api_bind}:{port}/api/v1/"))
+        );
+    }
+    info!(
+        "{}",
+        startup_row("TUI", "run with --ui for interactive mode")
+    );
+    info!("──────────────────────────────────────────────");
 }
 
 async fn run_tui_with_polling(
@@ -608,7 +638,7 @@ pub async fn execute(
             ApiMode::Offline
         };
         let app = TuiApp::new(port, api_mode);
-        info!("Proxy listening on {} | Press ? for help, q to quit", addr);
+        debug!("Proxy listening on {} | Press ? for help, q to quit", addr);
 
         if api_mode == ApiMode::Connected {
             let api_port = api_port.unwrap();
@@ -671,23 +701,20 @@ pub async fn execute(
             eprintln!("TUI error: {}", e);
         }
     } else {
-        info!("──────────────────────────────────────────────");
-        info!("RelayCore proxy started");
-        info!("  Proxy   {}", addr);
-        info!("  Control http://127.0.0.1:{}/", control_port);
-        if let Some(port) = api_port {
-            info!("  REST    http://{}:{}/api/v1/", api_bind, port);
-        }
-        info!("  TUI     run with --ui for interactive mode");
-        info!("──────────────────────────────────────────────");
-
-        info!(
-            "  CA      cert={} key={}",
-            ca_paths.cert.display(),
-            ca_paths.key.display()
+        log_startup_endpoints(addr, control_port, &api_bind, api_port);
+        debug!(
+            "{}",
+            startup_row(
+                "CA",
+                format!(
+                    "cert={} key={}",
+                    ca_paths.cert.display(),
+                    ca_paths.key.display()
+                )
+            )
         );
+        info!("Starting proxy on {}...", addr);
 
-        // Run proxy in main thread
         if let Err(e) = state.start_proxy(config, proxy_tx, extra_interceptor).await {
             error!("Failed to start proxy: {}", e);
         }

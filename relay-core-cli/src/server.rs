@@ -43,7 +43,7 @@ pub async fn start_server(
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    info!("Control API listening on {}", addr);
+    tracing::debug!("Control API listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
