@@ -115,9 +115,9 @@ pub fn empty_flow_list_message(filtering: bool) -> &'static str {
 
 pub fn flow_list_title(filter: &str, filtered_count: usize, total_in_list: usize) -> String {
     if filter.is_empty() {
-        format!(" Flows ({filtered_count}) ")
+        "Flows".to_string()
     } else {
-        format!(" Flows · filter: {filter} ({filtered_count}/{total_in_list}) ")
+        format!("Flows · filter: {filter} ({filtered_count}/{total_in_list})")
     }
 }
 
@@ -343,6 +343,11 @@ mod tests {
         let url = Url::parse("http://h.example/a/b?q=1").unwrap();
         assert!(display_path(&url, 40, true).ends_with('?'));
         assert!(!display_path(&url, 40, false).ends_with('?'));
+    }
+
+    #[test]
+    fn flow_list_title_without_filter_omits_count() {
+        assert_eq!(flow_list_title("", 124, 124), "Flows");
     }
 
     #[test]

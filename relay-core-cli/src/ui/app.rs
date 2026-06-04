@@ -2,11 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span, Text},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table,
-        TableState, Wrap,
+        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Padding, Paragraph, Row,
+        Table, TableState, Wrap,
     },
 };
 use relay_core_api::flow::{Flow, Layer};
@@ -71,6 +71,7 @@ pub enum ActiveArea {
     FlowList,
     FlowDetail,
     RulesPanel,
+    InterceptsPanel,
 }
 
 /// Whether the TUI is connected to the HTTP API for richer features.
@@ -233,6 +234,9 @@ impl TuiApp {
                         KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
                             self.active_area = ActiveArea::RulesPanel;
                         }
+                        KeyCode::Char('i') if self.api_mode == ApiMode::Connected => {
+                            self.active_area = ActiveArea::InterceptsPanel;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
                             self.auto_scroll = false;
@@ -282,6 +286,9 @@ impl TuiApp {
                         KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
                             self.active_area = ActiveArea::RulesPanel;
                         }
+                        KeyCode::Char('i') if self.api_mode == ApiMode::Connected => {
+                            self.active_area = ActiveArea::InterceptsPanel;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.detail_scroll = self.detail_scroll.saturating_add(1)
                         }
@@ -312,6 +319,12 @@ impl TuiApp {
                         KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                             self.active_area = ActiveArea::FlowList
                         }
+                        KeyCode::Tab
+                        | KeyCode::Right
+                        | KeyCode::Char('l')
+                        | KeyCode::Char('i') => {
+                            self.active_area = ActiveArea::InterceptsPanel;
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             let len = self.rules.len();
                             let i = self
@@ -329,6 +342,14 @@ impl TuiApp {
                                 .map(|i| if i > 0 { i - 1 } else { len.saturating_sub(1) })
                                 .unwrap_or(0);
                             self.rules_table_state.select(Some(i));
+                        }
+                        _ => {}
+                    },
+                    ActiveArea::InterceptsPanel => match key {
+                        KeyCode::Char('q') => self.should_quit = true,
+                        KeyCode::Esc => self.active_area = ActiveArea::FlowList,
+                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('r') => {
+                            self.active_area = ActiveArea::RulesPanel;
                         }
                         _ => {}
                     },
@@ -409,13 +430,14 @@ impl TuiApp {
 
     pub fn ui(&mut self, f: &mut Frame) {
         let area = f.area();
+        f.render_widget(Block::default().style(Theme::surface()), area);
 
-        // 2 lines = top border + one content row; 3 when Normal mode shows a toast line.
+        // Top rule + text (+ optional toast) + bottom rule — one row each, no blank filler band.
         let status_height = if matches!(self.input_mode, InputMode::Normal) && self.toast.is_some()
         {
-            3
+            4
         } else {
-            2
+            3
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -431,6 +453,7 @@ impl TuiApp {
                 ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
                 ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
                 ActiveArea::RulesPanel => self.render_rules_panel(f, chunks[0]),
+                ActiveArea::InterceptsPanel => self.render_intercepts_panel(f, chunks[0]),
             }
         } else {
             let (list_width, detail_width) = if area.width < 100 {
@@ -478,15 +501,20 @@ impl TuiApp {
         self.render_flow_list(f, top[0]);
         self.render_flow_detail(f, top[1]);
         self.render_rules_panel(f, bottom[0]);
+        self.render_intercepts_panel(f, bottom[1]);
+    }
 
-        let block = inner_panel_block(" Intercepts ");
-        let inner = block.inner(bottom[1]);
-        f.render_widget(block, bottom[1]);
+    fn render_intercepts_panel(&self, f: &mut Frame, area: Rect) {
+        let focused = self.active_area == ActiveArea::InterceptsPanel;
+        let block = inner_panel_block("Intercepts", focused);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
+        let body = panel_body_block(0);
         if self.intercept_summary.is_null() {
             let p = Paragraph::new("(no intercepts)")
                 .style(Theme::muted())
-                .alignment(ratatui::layout::Alignment::Center);
+                .block(body);
             f.render_widget(p, inner);
         } else {
             let pending = self.intercept_summary["pending_count"]
@@ -495,17 +523,12 @@ impl TuiApp {
             let ws = self.intercept_summary["ws_pending_count"]
                 .as_u64()
                 .unwrap_or(0);
-            let text = Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled("Pending: ", Theme::label()),
-                    Span::styled(pending.to_string(), Theme::value()),
-                ]),
-                Line::from(vec![
-                    Span::styled("WS Pending: ", Theme::label()),
-                    Span::styled(ws.to_string(), Theme::value()),
-                ]),
-            ]);
-            f.render_widget(text, inner);
+            let p = Paragraph::new(vec![
+                panel_kv_line("Pending:", pending.to_string(), Theme::value()),
+                panel_kv_line("WS Pending:", ws.to_string(), Theme::value()),
+            ])
+            .block(body);
+            f.render_widget(p, inner);
         }
     }
 
@@ -576,7 +599,11 @@ impl TuiApp {
             help_binding("c", "Clear flow list"),
         ]);
         if self.api_mode == ApiMode::Connected {
-            lines.push(help_binding("r", "Focus rules panel"));
+            lines.extend([
+                help_binding("r", "Focus rules (bottom-left)"),
+                help_binding("i", "Focus intercepts (bottom-right)"),
+                help_binding("l", "Rules → intercepts (when on rules)"),
+            ]);
         }
 
         lines.push(Line::from(""));
@@ -609,22 +636,26 @@ impl TuiApp {
         let table_wide = area.width >= TABLE_WIDE_MIN;
         let filter = &self.filter_input;
         let filtering = !filter.is_empty();
-        let path_budget = usize::from(area.width.saturating_sub(if table_wide { 52 } else { 28 }));
+        let path_budget = usize::from(area.width.saturating_sub(if table_wide { 50 } else { 26 }));
 
         let list_focused = self.active_area == ActiveArea::FlowList;
-        let mut title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
-        if area.width < LAYOUT_NARROW_MAX {
-            title = format!("‹{title}");
-        }
+        let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
 
         if filtered_flows.is_empty() {
-            let block = outer_panel_block(&title, list_focused);
-            let inner = block.inner(area);
-            f.render_widget(block, area);
-            let p = Paragraph::new(empty_flow_list_message(filtering))
-                .style(Theme::muted())
-                .alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(p, inner);
+            // Same [marker | body] columns as the populated table so the hint aligns with rows.
+            let row = Row::new(vec![
+                Cell::from(""),
+                Cell::from(Line::from(Span::styled(
+                    empty_flow_list_message(filtering),
+                    Theme::muted(),
+                ))),
+            ]);
+            let table = Table::new(
+                vec![row],
+                [Constraint::Length(FLOW_TABLE_MARKER_COL), Constraint::Min(0)],
+            )
+            .block(outer_panel_block(&title, list_focused));
+            f.render_widget(table, area);
             return;
         }
 
@@ -640,16 +671,16 @@ impl TuiApp {
                     filter,
                     filtering,
                     selected == Some(i),
-                    i % 2 == 1 && selected != Some(i),
                 )
             })
             .collect();
 
         let (header, widths): (Vec<&str>, Vec<Constraint>) = if table_wide {
             (
-                vec!["Method", "Code", "Dur", "Size", "Host", "Path"],
+                vec!["", "M", "Code", "Dur", "Size", "Host", "Path"],
                 vec![
-                    Constraint::Length(7),
+                    Constraint::Length(FLOW_TABLE_MARKER_COL),
+                    Constraint::Length(6),
                     Constraint::Length(5),
                     Constraint::Length(7),
                     Constraint::Length(9),
@@ -659,9 +690,10 @@ impl TuiApp {
             )
         } else {
             (
-                vec!["Method", "Code", "Dur", "URL"],
+                vec!["", "M", "Code", "Dur", "URL"],
                 vec![
-                    Constraint::Length(7),
+                    Constraint::Length(FLOW_TABLE_MARKER_COL),
+                    Constraint::Length(6),
                     Constraint::Length(5),
                     Constraint::Length(7),
                     Constraint::Min(10),
@@ -669,9 +701,7 @@ impl TuiApp {
             )
         };
 
-        let header_row = Row::new(header)
-            .style(Theme::table_header())
-            .bottom_margin(1);
+        let header_row = Row::new(header).style(Theme::table_header());
 
         let table = Table::new(rows, widths)
             .header(header_row)
@@ -684,11 +714,7 @@ impl TuiApp {
 
     fn render_flow_detail(&self, f: &mut Frame, area: Rect) {
         let detail_focused = self.active_area == ActiveArea::FlowDetail;
-        let detail_title = if area.width < LAYOUT_NARROW_MAX {
-            "‹ Detail"
-        } else {
-            "Detail"
-        };
+        let detail_title = "Detail";
         let block = outer_panel_block(detail_title, detail_focused);
         let inner = block.inner(area);
 
@@ -700,7 +726,6 @@ impl TuiApp {
         render_detail_tab_bar(f, chunks[0], self.detail_tab);
         f.render_widget(block, area);
 
-        let content_block = Block::default();
         let filtered_flows = self.get_filtered_flows();
         if let Some(selected) = self.table_state.selected() {
             if let Some(flow) = filtered_flows.get(selected) {
@@ -712,7 +737,9 @@ impl TuiApp {
                 }
             } else {
                 f.render_widget(
-                    Paragraph::new("Flow not found").block(content_block),
+                    Paragraph::new("Flow not found")
+                        .style(Theme::muted())
+                        .block(panel_body_block(0)),
                     chunks[1],
                 );
             }
@@ -720,164 +747,129 @@ impl TuiApp {
             f.render_widget(
                 Paragraph::new("Select a flow to view details")
                     .style(Theme::muted())
-                    .alignment(ratatui::layout::Alignment::Center)
-                    .block(content_block),
+                    .block(panel_body_block(0)),
                 chunks[1],
             );
         }
     }
 
     fn render_overview(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = inner_panel_block(detail_panel_title("Overview", self.detail_scroll));
+        let block = panel_body_block(self.detail_scroll);
 
         let mut lines: Vec<Line> = Vec::new();
 
         if let Some(summary) = flow_summary_line(flow) {
             lines.push(summary);
-            lines.push(Line::from(""));
         }
 
-        lines.push(Line::from(vec![
-            Span::styled("ID:  ", Theme::label()),
-            Span::styled(flow.id.to_string(), Theme::muted()),
-        ]));
+        lines.push(panel_kv_line("ID:", flow.id.to_string(), Theme::muted()));
 
         match &flow.layer {
             Layer::Http(h) => {
-                let url_str = h.request.url.to_string();
-                lines.push(Line::from(vec![
-                    Span::styled("URL: ", Theme::label()),
-                    Span::styled(url_str, Theme::value()),
-                ]));
-                lines.push(Line::from(""));
-
-                // ── Status line: Method + Status + Size + Duration ──
-                let method_color = Theme::method(&h.request.method);
-                let method_display = display_method(&h.request.method, h.request.body.is_some());
-                let status_str = h
-                    .response
-                    .as_ref()
-                    .map(|r| r.status.to_string())
-                    .unwrap_or_else(|| "---".to_string());
-                let status_color = Theme::status(&status_str);
+                lines.push(panel_kv_line(
+                    "Host:",
+                    host_from_url(&h.request.url),
+                    Theme::value(),
+                ));
+                lines.push(panel_kv_line(
+                    "Path:",
+                    display_path(&h.request.url, 160, false),
+                    Theme::value(),
+                ));
+                if let Some(query) = h.request.url.query() {
+                    lines.push(panel_kv_line(
+                        "Query:",
+                        smart_truncate(query, 160),
+                        Theme::muted(),
+                    ));
+                }
                 let size = h
                     .response
                     .as_ref()
                     .and_then(|r| r.body.as_ref())
                     .map(|b| b.size)
                     .unwrap_or(0);
-                let size_str = format_size(size);
-                let dur_ms = flow_duration_ms(flow);
-                let dur_str = format_duration_ms(dur_ms);
-                let dur_color = dur_ms
-                    .map(Theme::duration_color)
-                    .unwrap_or_else(Theme::muted_color);
-
-                // Use String (owned) for 'static lifetime
-                let md = method_display.to_string();
-                let ss = status_str.to_string();
-                let sz = size_str.to_string();
-                let ds = dur_str.to_string();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        md,
-                        Style::default()
-                            .fg(method_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        ss,
-                        Style::default()
-                            .fg(status_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(sz, Theme::muted()),
-                    Span::raw("  "),
-                    Span::styled(ds, Style::default().fg(dur_color)),
-                ]));
+                if size > 0 {
+                    lines.push(panel_kv_line("Size:", format_size(size), Theme::value()));
+                }
 
                 if let Some(err) = &h.error {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![
-                        Span::styled("Error: ", Theme::error_bold()),
-                        Span::styled(err, Theme::error()),
-                    ]));
+                    lines.push(panel_kv_line("Error:", err.as_str(), Theme::error()));
                 }
             }
             Layer::WebSocket(w) => {
-                lines.push(Line::from(vec![
-                    Span::styled("URL: ", Theme::label()),
-                    Span::styled(w.handshake_request.url.to_string(), Theme::value()),
-                ]));
-                lines.push(Line::from(""));
-                let status_str = w.handshake_response.status.to_string();
-                let status_color = Theme::status(&status_str);
-                // Use String (owned) for 'static lifetime
-                let ws_status = status_str.to_string();
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "WebSocket",
-                        Style::default()
-                            .fg(Theme::method("WS"))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        ws_status,
-                        Style::default()
-                            .fg(status_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::styled(format!("{} messages", w.messages.len()), Theme::muted()),
-                ]));
+                lines.push(panel_kv_line(
+                    "Host:",
+                    host_from_url(&w.handshake_request.url),
+                    Theme::value(),
+                ));
+                lines.push(panel_kv_line(
+                    "Path:",
+                    display_path(&w.handshake_request.url, 160, false),
+                    Theme::value(),
+                ));
+                if let Some(query) = w.handshake_request.url.query() {
+                    lines.push(panel_kv_line(
+                        "Query:",
+                        smart_truncate(query, 160),
+                        Theme::muted(),
+                    ));
+                }
+                lines.push(panel_kv_line(
+                    "Messages:",
+                    w.messages.len().to_string(),
+                    Theme::value(),
+                ));
             }
             _ => {
                 lines.push(Line::from("Unknown Layer"));
             }
         }
 
-        // ── Network ──
-        lines.push(Line::from(""));
-        lines.push(subsection_line("Network"));
+        push_panel_section(&mut lines, "Network");
         let net = &flow.network;
-        let mut net_parts: Vec<Span> = vec![
-            Span::styled("Client: ", Theme::label()),
-            Span::styled(
-                format!("{}:{}  ", net.client_ip, net.client_port),
-                Theme::value(),
-            ),
-            Span::styled("Server: ", Theme::label()),
-            Span::styled(
-                format!("{}:{}  ", net.server_ip, net.server_port),
-                Theme::value(),
-            ),
-        ];
+        lines.push(panel_kv_line_indented(
+            PANEL_SECTION_INDENT,
+            "Client:",
+            format!("{}:{}", net.client_ip, net.client_port),
+            Theme::value(),
+        ));
+        lines.push(panel_kv_line_indented(
+            PANEL_SECTION_INDENT,
+            "Server:",
+            format!("{}:{}", net.server_ip, net.server_port),
+            Theme::value(),
+        ));
         if net.tls {
-            net_parts.push(Span::styled("TLS ", Theme::stat_ok()));
-            if let Some(ref ver) = net.tls_version {
-                net_parts.push(Span::styled(format!("{} ", ver), Theme::value()));
-            }
+            let tls_val = net
+                .tls_version
+                .as_deref()
+                .unwrap_or("on")
+                .to_string();
+            lines.push(panel_kv_line_indented(
+                PANEL_SECTION_INDENT,
+                "TLS:",
+                tls_val,
+                Theme::stat_ok(),
+            ));
         }
         if let Some(ref sni) = net.sni {
-            net_parts.push(Span::styled("SNI: ", Theme::label()));
-            net_parts.push(Span::styled(sni, Theme::value()));
+            lines.push(panel_kv_line_indented(
+                PANEL_SECTION_INDENT,
+                "SNI:",
+                sni.clone(),
+                Theme::value(),
+            ));
         }
-        lines.push(Line::from(net_parts));
 
-        // ── Tags ──
         if !flow.tags.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(subsection_line("Tags"));
-            lines.push(Line::from(vec![Span::styled(
-                flow.tags.join("  "),
-                Theme::accent_dim(),
-            )]));
+            push_panel_section(&mut lines, "Tags");
+            lines.push(Line::from(vec![
+                Span::raw(PANEL_SECTION_INDENT),
+                Span::styled(flow.tags.join("  "), Theme::accent_dim()),
+            ]));
         }
 
-        // ── Timing ──
         let timing_present = match &flow.layer {
             Layer::Http(h) => h
                 .response
@@ -888,8 +880,7 @@ impl TuiApp {
         };
 
         if timing_present || flow.end_time.is_some() {
-            lines.push(Line::from(""));
-            lines.push(subsection_line("Timing"));
+            push_panel_section(&mut lines, "Timing");
 
             let (ttfb, ttlb, connect, ssl) = match &flow.layer {
                 Layer::Http(h) => {
@@ -921,22 +912,38 @@ impl TuiApp {
                 .map(|e| (e - flow.start_time).num_milliseconds() as u64)
                 .or(ttlb);
 
-            let timing_spans: Vec<Span> = vec![
-                timing_label_val("Total:  ", total_ms),
-                Span::raw("  "),
-                timing_label_val("TTFB:   ", ttfb),
-                Span::raw("  "),
-                timing_label_val("TTLB:   ", ttlb),
-            ];
-            lines.push(Line::from(timing_spans));
+            lines.push(panel_kv_line_indented(
+                PANEL_SECTION_INDENT,
+                "Total:",
+                format_timing_ms(total_ms),
+                timing_value_style(total_ms),
+            ));
+            lines.push(panel_kv_line_indented(
+                PANEL_SECTION_INDENT,
+                "TTFB:",
+                format_timing_ms(ttfb),
+                timing_value_style(ttfb),
+            ));
+            lines.push(panel_kv_line_indented(
+                PANEL_SECTION_INDENT,
+                "TTLB:",
+                format_timing_ms(ttlb),
+                timing_value_style(ttlb),
+            ));
 
             if connect.is_some() || ssl.is_some() {
-                let conn_spans: Vec<Span> = vec![
-                    timing_label_val("Connect:", connect),
-                    Span::raw("  "),
-                    timing_label_val("SSL:    ", ssl),
-                ];
-                lines.push(Line::from(conn_spans));
+                lines.push(panel_kv_line_indented(
+                    PANEL_SECTION_INDENT,
+                    "Connect:",
+                    format_timing_ms(connect),
+                    timing_value_style(connect),
+                ));
+                lines.push(panel_kv_line_indented(
+                    PANEL_SECTION_INDENT,
+                    "SSL:",
+                    format_timing_ms(ssl),
+                    timing_value_style(ssl),
+                ));
             }
         }
 
@@ -948,14 +955,14 @@ impl TuiApp {
     }
 
     fn render_request(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = inner_panel_block(detail_panel_title("Request", self.detail_scroll));
+        let block = panel_body_block(self.detail_scroll);
 
         match &flow.layer {
             Layer::Http(h) => {
                 let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
                 for header in &h.request.headers {
                     text.push(Line::from(vec![
-                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
                         Span::styled(&header.1, Theme::value()),
                     ]));
                 }
@@ -965,19 +972,17 @@ impl TuiApp {
 
                 if let Some(body) = &h.request.body {
                     text.push(Line::from(format!(
-                        "  Size: {} bytes, Encoding: {}",
+                        "Size: {} bytes, Encoding: {}",
                         body.size, body.encoding
                     )));
                     if body.size > 0 {
                         text.push(Line::from(""));
                         for line in render_body_lines(&body.content) {
-                            let mut spans = vec![Span::raw("  ")];
-                            spans.extend(line);
-                            text.push(Line::from(spans));
+                            text.push(line);
                         }
                     }
                 } else {
-                    text.push(Line::from("  (No Body)"));
+                    text.push(Line::from("(No Body)"));
                 }
 
                 let p = Paragraph::new(text)
@@ -993,7 +998,7 @@ impl TuiApp {
                 ))];
                 for header in &w.handshake_request.headers {
                     text.push(Line::from(vec![
-                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
                         Span::styled(&header.1, Theme::value()),
                     ]));
                 }
@@ -1008,7 +1013,7 @@ impl TuiApp {
     }
 
     fn render_response(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = inner_panel_block(detail_panel_title("Response", self.detail_scroll));
+        let block = panel_body_block(self.detail_scroll);
 
         match &flow.layer {
             Layer::Http(h) => {
@@ -1016,7 +1021,7 @@ impl TuiApp {
                     let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
                     for header in &resp.headers {
                         text.push(Line::from(vec![
-                            Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                            Span::styled(format!("{}: ", header.0), Theme::header_key()),
                             Span::styled(&header.1, Theme::value()),
                         ]));
                     }
@@ -1026,19 +1031,17 @@ impl TuiApp {
 
                     if let Some(body) = &resp.body {
                         text.push(Line::from(format!(
-                            "  Size: {} bytes, Encoding: {}",
+                            "Size: {} bytes, Encoding: {}",
                             body.size, body.encoding
                         )));
                         if body.size > 0 {
                             text.push(Line::from(""));
                             for line in render_body_lines(&body.content) {
-                                let mut spans = vec![Span::raw("  ")];
-                                spans.extend(line);
-                                text.push(Line::from(spans));
+                                text.push(line);
                             }
                         }
                     } else {
-                        text.push(Line::from("  (No Body)"));
+                        text.push(Line::from("(No Body)"));
                     }
 
                     let p = Paragraph::new(text)
@@ -1057,7 +1060,7 @@ impl TuiApp {
                 ))];
                 for header in &w.handshake_response.headers {
                     text.push(Line::from(vec![
-                        Span::styled(format!("  {}: ", header.0), Theme::header_key()),
+                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
                         Span::styled(&header.1, Theme::value()),
                     ]));
                 }
@@ -1072,7 +1075,7 @@ impl TuiApp {
     }
 
     fn render_messages(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = inner_panel_block(detail_panel_title("Messages", self.detail_scroll));
+        let block = panel_body_block(self.detail_scroll);
 
         match &flow.layer {
             Layer::WebSocket(w) => {
@@ -1123,26 +1126,31 @@ impl TuiApp {
         let title = format!("Rules ({count})");
 
         if self.rules.is_empty() {
-            let block = outer_panel_block(&title, rules_focused);
-            let inner = block.inner(area);
-            f.render_widget(block, area);
-            let p = Paragraph::new("(no rules loaded)")
-                .style(Theme::muted())
-                .alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(p, inner);
+            let row = Row::new(vec![
+                Cell::from(""),
+                Cell::from(Line::from(Span::styled(
+                    "(no rules loaded)",
+                    Theme::muted(),
+                ))),
+            ]);
+            let table = Table::new(
+                vec![row],
+                [Constraint::Length(RULES_TABLE_MARKER_COL), Constraint::Min(0)],
+            )
+            .block(outer_panel_block(&title, rules_focused));
+            f.render_widget(table, area);
             return;
         }
 
         let widths = [
-            Constraint::Length(3),
+            Constraint::Length(RULES_TABLE_MARKER_COL),
             Constraint::Length(16),
             Constraint::Length(14),
             Constraint::Min(10),
         ];
 
         let header = Row::new(vec!["On", "Stage", "Termination", "Name"])
-            .style(Theme::table_header())
-            .bottom_margin(1);
+            .style(Theme::table_header());
 
         let selected = self.rules_table_state.selected();
         let rows: Vec<Row> = self
@@ -1210,7 +1218,7 @@ impl TuiApp {
                 ),
                 Span::styled(format!(" · {} ", rule.id), Theme::accent_dim()),
             ]);
-            f.render_widget(Paragraph::new(summary), layout[1]);
+            f.render_widget(Paragraph::new(summary).block(panel_body_block(0)), layout[1]);
         }
     }
 
@@ -1266,6 +1274,7 @@ impl TuiApp {
                     ActiveArea::FlowList => "LIST",
                     ActiveArea::FlowDetail => "DETAIL",
                     ActiveArea::RulesPanel => "RULES",
+                    ActiveArea::InterceptsPanel => "INTERCEPTS",
                 };
 
                 // Left section
@@ -1327,10 +1336,7 @@ impl TuiApp {
                 main_spans.push(Span::raw(" ".repeat(spacer2 as usize)));
                 main_spans.extend(right);
 
-                let bar_block = Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Theme::status_bar_border())
-                    .style(Style::default().bg(Theme::bg_elevated()));
+                let bar_block = status_bar_block();
                 let bar_area = bar_block.inner(area);
                 f.render_widget(bar_block, area);
 
@@ -1346,11 +1352,7 @@ impl TuiApp {
                     ]);
                     f.render_widget(Paragraph::new(toast_line), status_chunks[1]);
                 } else {
-                    let content = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(1), Constraint::Min(0)])
-                        .split(bar_area);
-                    f.render_widget(Paragraph::new(Line::from(main_spans)), content[0]);
+                    f.render_widget(Paragraph::new(Line::from(main_spans)), bar_area);
                 }
                 return;
             }
@@ -1385,14 +1387,22 @@ impl TuiApp {
         };
 
         let text = Text::from(Line::from(bar_text));
-        let paragraph = Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Theme::status_bar_border())
-                .style(Style::default().bg(Theme::bg_elevated())),
-        );
+        let paragraph = Paragraph::new(text).block(status_bar_block());
         f.render_widget(paragraph, area);
     }
+}
+
+fn status_bar_block() -> Block<'static> {
+    Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Theme::status_bar_border())
+        .style(Theme::surface())
+        .padding(Padding {
+            left: 1,
+            right: 0,
+            top: 0,
+            bottom: 0,
+        })
 }
 
 fn flow_table_row(
@@ -1402,7 +1412,6 @@ fn flow_table_row(
     filter: &str,
     filtering: bool,
     selected: bool,
-    zebra: bool,
 ) -> Row<'static> {
     let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
         Layer::Http(h) => {
@@ -1447,19 +1456,16 @@ fn flow_table_row(
     let dur_ms = flow_duration_ms(flow);
     let dur_label = format_duration_ms(dur_ms);
 
-    let method_key = method_label.trim_end_matches('+');
-    let method_cell = if selected {
-        Cell::from(Line::from(vec![
-            Span::styled("▸", Theme::row_marker()),
-            Span::raw(" "),
-            Span::styled(method_label.clone(), Theme::method_badge(method_key)),
-        ]))
+    let marker_cell = if selected {
+        Cell::from(Span::styled("▸", Theme::row_marker()))
     } else {
-        Cell::from(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(method_label.clone(), Theme::method_badge(method_key)),
-        ]))
+        Cell::from(Span::raw(""))
     };
+    let method_key = method_label.trim_end_matches('+');
+    let method_cell = Cell::from(Span::styled(
+        method_label.clone(),
+        Theme::method_text(method_key),
+    ));
     let (status_text, status_style) = if status == "---" {
         ("…".to_string(), Theme::pending_status())
     } else {
@@ -1468,7 +1474,7 @@ fn flow_table_row(
     let status_cell = Cell::from(Span::styled(status_text, status_style));
     let dur_cell = Cell::from(Span::styled(
         format!("{:>6}", dur_label),
-        Theme::on_zebra_row(Theme::duration_style(dur_ms), zebra),
+        Theme::duration_style(dur_ms),
     ));
 
     let tags_str = tags_list_suffix(&flow.tags);
@@ -1483,23 +1489,13 @@ fn flow_table_row(
             format!("{}{}", path, tags_str)
         };
         Row::new(vec![
+            marker_cell,
             method_cell,
             status_cell,
             dur_cell,
-            Cell::from(Span::styled(
-                format!("{:>7}", size_str),
-                Theme::on_zebra_row(Theme::text(), zebra),
-            )),
-            Cell::from(Span::styled(
-                host,
-                Theme::on_zebra_row(Style::default().fg(host_color), zebra),
-            )),
-            styled_text_cell(
-                &path_with_tags,
-                filter,
-                filtering,
-                Theme::on_zebra_row(Theme::text(), zebra),
-            ),
+            Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
+            Cell::from(Span::styled(host, Style::default().fg(host_color))),
+            styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
         ])
     } else {
         let url_text = smart_truncate(url.as_str(), path_budget);
@@ -1509,15 +1505,11 @@ fn flow_table_row(
             format!("{}{}", url_text, tags_str)
         };
         Row::new(vec![
+            marker_cell,
             method_cell,
             status_cell,
             dur_cell,
-            styled_text_cell(
-                &url_with_tags,
-                filter,
-                filtering,
-                Theme::on_zebra_row(Theme::text(), zebra),
-            ),
+            styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
         ])
     }
 }
@@ -1552,14 +1544,6 @@ fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'st
         spans.push(Span::styled(text.to_string(), base));
     }
     spans
-}
-
-/// Format a timing label+value pair, showing "—" when value is None.
-fn timing_label_val(label: &'static str, ms: Option<u64>) -> Span<'static> {
-    match ms {
-        Some(v) => Span::styled(format!("{}{}ms", label, v), Theme::text()),
-        None => Span::styled(format!("{}—", label), Theme::muted()),
-    }
 }
 
 /// Maximum body bytes to render before truncating.
@@ -1699,25 +1683,52 @@ fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
 }
 
 fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
-    let title_str = if focused {
-        format!("▎ {title} ")
-    } else {
-        format!(" {title} ")
-    };
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Theme::border(focused))
-        .title(Span::styled(title_str, Theme::panel_title()))
+        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
+        .style(Theme::surface())
 }
 
-fn inner_panel_block(title: impl Into<String>) -> Block<'static> {
+fn inner_panel_block(title: impl Into<String>, focused: bool) -> Block<'static> {
     let title = title.into();
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Theme::border_inner())
+        .border_style(if focused {
+            Theme::border(true)
+        } else {
+            Theme::border_inner()
+        })
         .title(Span::styled(format!(" {title} "), Theme::panel_title()))
+        .style(Theme::surface())
+}
+
+/// Selection caret column in the flow list (must match empty-state table layout).
+const FLOW_TABLE_MARKER_COL: u16 = 2;
+/// Selection caret column in the rules table (must match empty-state table layout).
+const RULES_TABLE_MARKER_COL: u16 = 3;
+
+/// Left inset for panel body text (tabs, tables, key-value lines) under border titles.
+fn panel_body_padding() -> Padding {
+    Padding {
+        left: 1,
+        right: 0,
+        top: 0,
+        bottom: 0,
+    }
+}
+
+/// Panel body — optional scroll hint for detail tabs.
+fn panel_body_block(scroll: u16) -> Block<'static> {
+    let mut block = Block::default()
+        .style(Theme::surface())
+        .padding(panel_body_padding());
+    if scroll > 0 {
+        block = block.title(Span::styled(format!(" ↓{scroll} "), Theme::muted()));
+    }
+    block
 }
 
 fn render_detail_tab_bar(f: &mut Frame, area: Rect, selected: DetailTab) {
@@ -1726,15 +1737,64 @@ fn render_detail_tab_bar(f: &mut Frame, area: Rect, selected: DetailTab) {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
-        let label = format!(" {} ", tab.label());
         let style = if tab == selected {
             Theme::tab_active()
         } else {
             Theme::tab_inactive()
         };
-        spans.push(Span::styled(label, style));
+        spans.push(Span::styled(tab.label(), style));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    let block = Block::default().padding(panel_body_padding());
+    f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+}
+
+/// Fixed label column so key-value rows align across panels.
+const PANEL_KV_LABEL_WIDTH: usize = 12;
+const PANEL_SECTION_INDENT: &str = "  ";
+
+fn panel_kv_label_column(label: &str) -> String {
+    format!("{label:<PANEL_KV_LABEL_WIDTH$}")
+}
+
+fn panel_kv_line(label: &str, value: impl AsRef<str>, value_style: Style) -> Line<'static> {
+    panel_kv_line_indented("", label, value, value_style)
+}
+
+fn panel_kv_line_indented(
+    indent: &str,
+    label: &str,
+    value: impl AsRef<str>,
+    value_style: Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(indent.to_string()),
+        Span::styled(panel_kv_label_column(label), Theme::label()),
+        Span::styled(value.as_ref().to_string(), value_style),
+    ])
+}
+
+fn panel_section_gap() -> Line<'static> {
+    Line::from("")
+}
+
+fn push_panel_section(lines: &mut Vec<Line>, title: &'static str) {
+    lines.push(panel_section_gap());
+    lines.push(subsection_line(title));
+}
+
+fn format_timing_ms(ms: Option<u64>) -> String {
+    match ms {
+        Some(v) => format!("{v}ms"),
+        None => "—".to_string(),
+    }
+}
+
+fn timing_value_style(ms: Option<u64>) -> Style {
+    if ms.is_some() {
+        Theme::text()
+    } else {
+        Theme::muted()
+    }
 }
 
 fn subsection_line(title: &'static str) -> Line<'static> {
@@ -1791,14 +1851,6 @@ fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
     }
 }
 
-fn detail_panel_title(label: &str, scroll: u16) -> String {
-    if scroll > 0 {
-        format!("{label} ↓{scroll}")
-    } else {
-        label.to_string()
-    }
-}
-
 fn help_section(title: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
@@ -1837,6 +1889,14 @@ fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    #[test]
+    fn panel_kv_label_column_is_fixed_width() {
+        assert_eq!(panel_kv_label_column("ID:").len(), PANEL_KV_LABEL_WIDTH);
+        assert_eq!(panel_kv_label_column("Host:").len(), PANEL_KV_LABEL_WIDTH);
+        assert_eq!(panel_kv_label_column("WS Pending:").len(), PANEL_KV_LABEL_WIDTH);
+    }
     use relay_core_api::flow::{
         Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
     };
@@ -2072,7 +2132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_end_and_G_jump_to_oldest_at_bottom() {
+    fn test_end_and_g_jump_to_oldest_at_bottom() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
         for i in 0..3 {
             app.on_flow(make_http_flow(
@@ -2088,6 +2148,24 @@ mod tests {
         app.table_state.select(Some(0));
         app.on_key(key(KeyCode::Char('G')));
         assert_eq!(app.table_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_ui_paints_opaque_background() {
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://api.example.com/v1/users?limit=10",
+            "GET",
+        ));
+
+        terminal.draw(|f| app.ui(f)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_ne!(buffer[(119, 31)].bg, Color::Reset);
+        assert_eq!(buffer[(119, 31)].bg, Theme::bg_elevated());
     }
 
     #[test]

@@ -80,8 +80,6 @@ static ACTIVE: OnceLock<ThemePalette> = OnceLock::new();
 #[derive(Debug, Clone, Copy)]
 pub struct ThemePalette {
     pub bg_elevated: Color,
-    /// Zebra stripe (odd rows).
-    pub row_alt: Color,
     pub row_selected: Color,
     pub text: Color,
     pub muted: Color,
@@ -118,7 +116,6 @@ pub struct ThemePalette {
 // relaycore.dev tokens (--accent-primary #00d4ff, --bg-elevated #141414, etc.)
 const RELAY: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(20, 20, 20),
-    row_alt: Color::Rgb(24, 26, 30),
     row_selected: Color::Rgb(30, 34, 40),
     text: Color::Rgb(224, 224, 224),
     muted: Color::Rgb(102, 102, 102),
@@ -163,7 +160,6 @@ const RELAY: ThemePalette = ThemePalette {
 /// Previous default (Tokyo Night–style slate + amber).
 const SLATE: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(30, 33, 46),
-    row_alt: Color::Rgb(34, 38, 52),
     row_selected: Color::Rgb(51, 65, 85),
     text: Color::Rgb(226, 232, 240),
     muted: Color::Rgb(148, 163, 184),
@@ -207,7 +203,6 @@ const SLATE: ThemePalette = ThemePalette {
 
 const HIGH_CONTRAST: ThemePalette = ThemePalette {
     bg_elevated: Color::Rgb(10, 10, 10),
-    row_alt: Color::Rgb(18, 18, 18),
     row_selected: Color::Rgb(55, 55, 55),
     text: Color::Rgb(255, 255, 255),
     muted: Color::Rgb(180, 180, 180),
@@ -286,6 +281,10 @@ impl Theme {
         palette().bg_elevated
     }
 
+    pub fn surface() -> Style {
+        Style::default().bg(palette().bg_elevated)
+    }
+
     pub fn label() -> Style {
         Style::default().fg(palette().label)
     }
@@ -351,15 +350,6 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    /// Apply zebra stripe background without clobbering badge cell backgrounds.
-    pub fn on_zebra_row(base: Style, zebra: bool) -> Style {
-        if zebra {
-            base.bg(palette().row_alt)
-        } else {
-            base
-        }
-    }
-
     pub fn row_highlight() -> Style {
         Style::default()
             .bg(palette().row_selected)
@@ -405,7 +395,11 @@ impl Theme {
         let Some(ms) = ms else {
             return Self::muted();
         };
-        let mut style = Style::default().fg(Self::duration_color(ms));
+        let mut style = if ms < 100 {
+            Self::muted()
+        } else {
+            Style::default().fg(Self::duration_color(ms))
+        };
         if ms >= 2000 {
             style = style.add_modifier(Modifier::BOLD);
         }
@@ -435,7 +429,16 @@ impl Theme {
             return Self::pending_status();
         }
         let fg = Self::status(code);
+        if code.starts_with('2') {
+            return Style::default().fg(fg);
+        }
         Style::default().fg(fg).bg(Self::tint_bg(fg))
+    }
+
+    pub fn method_text(method: &str) -> Style {
+        Style::default()
+            .fg(Self::method(method))
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn method(method: &str) -> Color {
@@ -470,10 +473,6 @@ impl Theme {
         Style::default()
             .fg(palette().accent_dim)
             .add_modifier(Modifier::BOLD)
-    }
-
-    pub fn muted_color() -> Color {
-        palette().muted
     }
 
     pub fn muted() -> Style {
