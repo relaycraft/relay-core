@@ -29,6 +29,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             npm_platform: linux-arm64
             os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            npm_platform: linux-x64-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            npm_platform: linux-arm64-musl
+            os: ubuntu-latest
           - target: x86_64-apple-darwin
             npm_platform: darwin-x64
             os: macos-latest
@@ -48,16 +54,35 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Setup cross-compilation (linux arm64)
+      - name: Setup cross-compilation (linux arm64 gnu)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
+      - name: Setup musl (x86_64 native)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Setup cross-compilation (aarch64 musl via cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cargo install cross
+
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build binaries
+      - name: Build binaries (cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cross build --release --package relay-core-cli --target ${{ matrix.target }}
+          cross build --release --package relay-core-probe --target ${{ matrix.target }}
+
+      - name: Build binaries (native)
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         run: |
           set -euo pipefail
