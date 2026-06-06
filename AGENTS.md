@@ -54,15 +54,19 @@ GitHub Actions runs the same script on **ubuntu-latest** (`.github/workflows/ci.
 
 ### Release discipline (avoid mid-release fixes and noisy notes)
 
-1. **Land feat/fix on `main`**, push, **wait for CI green**.
-2. **Version bump** (`chore: bump version to X.Y.Z`) as the last commit → push → **wait for CI green again**.
-3. **Preflight, then tag once** (requires `gh` CLI):
+Full release process documented in **[RELEASE.md](./RELEASE.md)**. Quick reference:
+
+1. **Quality gate**: `./scripts/ci-check.sh` must pass
+2. **Performance baseline**: `./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30`
+3. **Version bump** (`chore: bump version to X.Y.Z`) as the last commit → push → **wait for CI green again**.
+4. **Preflight, then tag once** (requires `gh` CLI):
    ```bash
    ./scripts/release-preflight.sh X.Y.Z
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
-4. **If tag CI fails** — do **not** delete/retag; fix on `main`, bump **next patch**, repeat from step 2.
-5. **Release Notes** — workflow uses `feat`/`fix` subjects only; `chore`/`ci` are not expanded in the LLM prompt.
+5. **If tag CI fails** — do **not** delete/retag; fix on `main`, bump **next patch**, repeat from step 3.
+6. **Release Notes** — workflow uses `feat`/`fix` subjects only; `chore`/`ci` are not expanded in the LLM prompt.
+   Manually add the Performance section from the baseline report.
 
 *   **Run Offline Tests**:
     ```bash

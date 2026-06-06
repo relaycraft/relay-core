@@ -10,12 +10,14 @@
 # Modes:
 #   - single (default): S1 only (1KB)
 #   - matrix: S1/S2/S3 payload matrix (1KB/64KB/1024KB)
+#   - release: multi-round with stats, environment capture, reproducible report
 #
 # Usage examples:
 #   ./benchmarks/bench_minimal.sh
 #   ./benchmarks/bench_minimal.sh quick
 #   ./benchmarks/bench_minimal.sh matrix --duration 15
 #   ./benchmarks/bench_minimal.sh --baseline benchmarks/results/bench_xxx.json
+#   ./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30
 
 set -euo pipefail
 
@@ -34,6 +36,8 @@ CA_KEY="$REPO_ROOT/benchmarks/.bench_ca_key.pem"
 
 MODE="single"
 DURATION=60
+RUNS=5
+WARMUP_RUNS=3
 BASELINE_JSON=""
 STRICT=0
 
@@ -50,10 +54,12 @@ info() { echo -e "  ${YELLOW}->${NC} $*"; }
 
 usage() {
   cat <<EOF
-Usage: ./benchmarks/bench_minimal.sh [quick|matrix] [options]
+Usage: ./benchmarks/bench_minimal.sh [quick|matrix|release] [options]
 
 Options:
-  --duration <seconds>   Load duration per scenario (default: 60, quick: 10)
+  --duration <seconds>   Load duration per round (default: 60, quick: 10)
+  --runs <n>             Measurement rounds for release mode (default: 5)
+  --warmup-runs <n>      Warmup rounds before measurement (default: 3)
   --baseline <json>      Compare S1 against a previous JSON report (warn only)
   --strict               Exit non-zero on DoD failure or >10% regression
   -h, --help             Show this help
@@ -70,8 +76,21 @@ while [[ $# -gt 0 ]]; do
       MODE="matrix"
       shift
       ;;
+    release)
+      MODE="release"
+      DURATION="${DURATION:-30}"
+      shift
+      ;;
     --duration)
       DURATION="${2:-}"
+      shift 2
+      ;;
+    --runs)
+      RUNS="${2:-5}"
+      shift 2
+      ;;
+    --warmup-runs)
+      WARMUP_RUNS="${2:-3}"
       shift 2
       ;;
     --baseline)
@@ -300,12 +319,397 @@ except Exception:
 PY
 }
 
+# ── environment detection ────────────────────────────────────────────────────
+
+detect_environment() {
+  local os_name os_ver cpu cpu_cores ram_gb rustc_ver crate_ver tool_ver
+
+  if [[ "$(uname)" == "Darwin" ]]; then
+    os_name="$(sw_vers -productName 2>/dev/null || echo 'macOS')"
+    os_ver="$(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
+    cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown')"
+    cpu_cores="$(sysctl -n hw.ncpu 2>/dev/null || echo 'unknown')"
+    ram_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+  else
+    os_name="$(uname -s)"
+    os_ver="$(uname -r)"
+    cpu="$(lscpu 2>/dev/null | grep 'Model name' | sed 's/.*:[[:space:]]*//' || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*:[[:space:]]*//' || echo 'unknown')"
+    cpu_cores="$(nproc 2>/dev/null || echo 'unknown')"
+    ram_gb="$(( $(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0) / 1024 / 1024 ))"
+  fi
+
+  rustc_ver="$(rustc --version 2>/dev/null | awk '{print $2}' || echo 'unknown')"
+  crate_ver="$(grep -E '^version[[:space:]]*=' "$REPO_ROOT/Cargo.toml" 2>/dev/null | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo 'unknown')"
+
+  case "$TOOL" in
+    oha) tool_ver="$(oha --version 2>/dev/null | head -1 || echo 'unknown')" ;;
+    ab)  tool_ver="$(ab -V 2>&1 | head -1 || echo 'unknown')" ;;
+    *)   tool_ver="unknown" ;;
+  esac
+
+  echo "${os_name} ${os_ver}|${cpu}|${cpu_cores}|${ram_gb}|${rustc_ver}|${crate_ver}|${tool_ver}"
+}
+
+# ── statistics helper ────────────────────────────────────────────────────────
+
+calc_stats() {
+  local label="$1"
+  python3 -c "
+import json, sys, statistics
+data = [float(line.strip()) for line in sys.stdin if line.strip()]
+if len(data) < 2:
+    std = 0.0
+else:
+    std = statistics.stdev(data)
+m = statistics.mean(data)
+print(json.dumps({
+    'label': '${label}',
+    'mean': round(m, 2),
+    'stddev': round(std, 2),
+    'min': round(min(data), 2),
+    'max': round(max(data), 2),
+    'values': [round(x, 2) for x in data],
+    'n': len(data)
+}))
+"
+}
+
+# ── release mode runner ──────────────────────────────────────────────────────
+
+run_release_mode() {
+  local DURATION="${1:-30}"
+  local RUNS="${2:-5}"
+  local WARMUP_RUNS="${3:-3}"
+  local COLD_START_VALS RSS_VALS cs rss
+  local cs_mean rss_mean round ready
+  local TPUT_VALS P99_VALS tput p99 tput_mean p99_mean
+
+  echo "=== relay-core Release Benchmark (${TIMESTAMP}) ==="
+  echo ""
+
+  TOOL="$(detect_tool)"
+  if [[ "$TOOL" == "curl" ]]; then
+    fail "Release mode requires oha or ab for accurate concurrent load testing."
+    fail "Install oha: brew install oha (macOS) / cargo install oha"
+    exit 1
+  fi
+  ENV_INFO="$(detect_environment)"
+  IFS='|' read -r OS_FULL CPU CPU_CORES RAM_GB RUSTC_VER CRATE_VER TOOL_VER <<< "$ENV_INFO"
+
+  info "Version:      ${CRATE_VER}"
+  info "Environment:  ${OS_FULL} | ${CPU} (${CPU_CORES} cores) | ${RAM_GB}GB RAM"
+  info "Rust:         ${RUSTC_VER}"
+  info "Load tool:    ${TOOL_VER} (${TOOL})"
+  info "Methodology:  ${WARMUP_RUNS} warmup + ${RUNS} measurement rounds, ${DURATION}s each, ${CONNECTIONS} connections"
+  echo ""
+
+  # Build
+  info "Building release binary..."
+  cd "$REPO_ROOT"
+  local build_start build_end build_time
+  build_start=$(now_ms)
+  cargo build --release --package relay-core-cli --quiet
+  build_end=$(now_ms)
+  build_time=$((build_end - build_start))
+  pass "Build completed in ${build_time}ms"
+  echo ""
+
+  if [[ ! -f "$CA_CERT" ]]; then
+    info "Generating benchmark CA..."
+    "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
+  fi
+
+  start_target
+
+  # ── Phase 1: Cold start + idle RSS (N rounds, fresh proxy each time) ──
+  echo "### Phase 1/3: Cold start + Idle RSS (${RUNS} rounds)"
+  echo ""
+
+  for round in $(seq 1 "$RUNS"); do
+    local start_ms end_ms
+    start_ms=$(now_ms)
+    start_proxy
+    ready="$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")"
+    end_ms=$(now_ms)
+    cs=$((end_ms - start_ms))
+    rss="$(measure_idle_rss_mb)"
+    stop_proxy
+    sleep 0.3
+
+    COLD_START_VALS+="${cs}"$'\n'
+    RSS_VALS+="${rss}"$'\n'
+    info "  Round ${round}/${RUNS}: cold_start=${cs}ms, idle_rss=${rss}MB"
+  done
+
+  CS_STATS="$(echo "$COLD_START_VALS" | calc_stats "cold_start_ms")"
+  RSS_STATS="$(echo "$RSS_VALS" | calc_stats "idle_rss_mb")"
+  cs_mean="$(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
+  rss_mean="$(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
+
+  echo ""
+  if (( $(python3 -c "print(1 if ${cs_mean} < ${DOD_STARTUP} else 0)") )); then
+    pass "Cold start: mean=${cs_mean}ms (DoD: <${DOD_STARTUP}ms)  PASS"
+    CS_STATUS="PASS"
+  else
+    fail "Cold start: mean=${cs_mean}ms (DoD: <${DOD_STARTUP}ms)  FAIL"
+    CS_STATUS="FAIL"
+  fi
+  if (( $(python3 -c "print(1 if ${rss_mean} < ${DOD_IDLE_MB} else 0)") )); then
+    pass "Idle RSS:   mean=${rss_mean}MB (DoD: <${DOD_IDLE_MB}MB)  PASS"
+    RSS_STATUS="PASS"
+  else
+    fail "Idle RSS:   mean=${rss_mean}MB (DoD: <${DOD_IDLE_MB}MB)  FAIL"
+    RSS_STATUS="FAIL"
+  fi
+  echo ""
+
+  # ── Phase 2: Throughput & latency ──────────────────────────────────────
+  echo "### Phase 2/3: Throughput & Latency"
+  echo ""
+
+  info "Starting proxy for load testing..."
+  start_proxy
+  ready=$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")
+  if [[ "$ready" -ne 1 ]]; then
+    fail "Proxy not ready for load testing"
+    return 1
+  fi
+
+  QPS_STATUS="PASS"
+  LAT_STATUS="PASS"
+  LOAD_MD_ROWS=""
+  LOAD_JSON_ITEMS=""
+  SCENARIOS=("S1:1")
+
+  for pair in "${SCENARIOS[@]}"; do
+    local scenario payload_kb
+    scenario="${pair%%:*}"
+    payload_kb="${pair##*:}"
+    echo "  --- ${scenario} (${payload_kb}KB) ---"
+
+    if [[ "$WARMUP_RUNS" -gt 0 ]]; then
+      info "    Warmup: ${WARMUP_RUNS} round(s) (discarded)"
+      for _ in $(seq 1 "$WARMUP_RUNS"); do
+        run_load "$scenario" "$payload_kb" > /dev/null
+      done
+    fi
+
+    TPUT_VALS=""
+    P99_VALS=""
+    info "    Measurement: ${RUNS} round(s)"
+    for round in $(seq 1 "$RUNS"); do
+      local metrics
+      metrics="$(run_load "$scenario" "$payload_kb")"
+      tput="${metrics%%|*}"
+      p99="${metrics##*|}"
+      TPUT_VALS+="${tput}"$'\n'
+      P99_VALS+="${p99}"$'\n'
+      info "      Round ${round}/${RUNS}: ${tput} req/s, P99=${p99}ms"
+    done
+
+    local tput_stats p99_stats
+    tput_stats="$(echo "$TPUT_VALS" | calc_stats "throughput_${scenario}")"
+    p99_stats="$(echo "$P99_VALS" | calc_stats "p99_${scenario}")"
+    tput_mean="$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
+    p99_mean="$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
+
+    local row_qps_status="INFO" row_lat_status="INFO"
+
+    if [[ "$scenario" == "S1" ]]; then
+      if (( $(python3 -c "print(1 if ${tput_mean} >= ${DOD_QPS} else 0)") )); then
+        pass "    Throughput: mean=${tput_mean} req/s (DoD: >${DOD_QPS})"
+        row_qps_status="PASS"
+      else
+        fail "    Throughput: mean=${tput_mean} req/s (DoD: >${DOD_QPS})"
+        row_qps_status="FAIL"
+        QPS_STATUS="FAIL"
+      fi
+      local p99_int="${p99_mean%%.*}"
+      if [[ -n "$p99_int" && "$p99_int" -le "$DOD_P99" ]] 2>/dev/null; then
+        pass "    P99 Latency: mean=${p99_mean}ms (DoD: <${DOD_P99})"
+        row_lat_status="PASS"
+      else
+        fail "    P99 Latency: mean=${p99_mean}ms (DoD: <${DOD_P99})"
+        row_lat_status="FAIL"
+        LAT_STATUS="FAIL"
+      fi
+    else
+      info "    Throughput: mean=${tput_mean} req/s, P99: mean=${p99_mean}ms"
+    fi
+
+    LOAD_MD_ROWS+=$'\n'"| ${scenario} | ${payload_kb}KB | ${tput_mean} ±$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | ${p99_mean} ±$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | ${row_qps_status} | ${row_lat_status} |"
+    LOAD_JSON_ITEMS+="{\"id\":\"${scenario}\",\"payload_kb\":${payload_kb},\"throughput\":$(echo "$tput_stats" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ['mean','stddev','min','max','values']}))"),\"latency_p99\":$(echo "$p99_stats" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ['mean','stddev','min','max','values']}))")},"
+  done
+  LOAD_JSON_ITEMS="[${LOAD_JSON_ITEMS%,}]"
+
+  echo ""
+
+  # ── Phase 3: API path latencies ───────────────────────────────────────
+  echo "### Phase 3/3: HTTP API paths"
+  echo ""
+
+  local flows_query_ms flow_detail_ms sse_first_ms flow_detail_status sse_status flow_id
+
+  flows_query_ms="$(measure_http_ms "http://127.0.0.1:${API_PORT}/api/v1/flows?limit=50&offset=0")"
+  flow_id="$(extract_first_flow_id "http://127.0.0.1:${API_PORT}/api/v1/flows?limit=50&offset=0")"
+  flow_detail_ms="0"
+  flow_detail_status="SKIP"
+  if [[ -n "$flow_id" ]]; then
+    flow_detail_ms="$(measure_http_ms "http://127.0.0.1:${API_PORT}/api/v1/flows/${flow_id}")"
+    flow_detail_status="OK"
+  fi
+
+  sse_first_ms="$(measure_sse_first_event_ms "http://127.0.0.1:${API_PORT}/api/v1/events")"
+  if [[ "${sse_first_ms%%.*}" -gt 0 ]] 2>/dev/null; then
+    sse_status="OK"
+  else
+    sse_status="WARN"
+  fi
+
+  info "GET /api/v1/flows:            ${flows_query_ms}ms"
+  info "GET /api/v1/flows/{id}:       ${flow_detail_ms}ms [${flow_detail_status}]"
+  info "GET /api/v1/events (SSE):     ${sse_first_ms}ms [${sse_status}]"
+
+  stop_proxy
+
+  echo ""
+
+  # ── Summary ───────────────────────────────────────────────────────────
+  echo "=== Summary ==="
+  cat <<EOF
+  Cold start:       ${cs_mean}ms ±$(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])")   [${CS_STATUS}]
+  Idle RSS:         ${rss_mean}MB ±$(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])")   [${RSS_STATUS}]
+  Throughput (S1):  ${tput_mean} req/s    [${QPS_STATUS}]
+  Latency P99 (S1): ${p99_mean}ms        [${LAT_STATUS}]
+  API flows query:  ${flows_query_ms}ms
+  API flow detail:  ${flow_detail_ms}ms [${flow_detail_status}]
+  API SSE first:    ${sse_first_ms}ms [${sse_status}]
+EOF
+  echo ""
+
+  local COMMIT DATE_UTC
+  COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+  DATE_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  # ── Reports ───────────────────────────────────────────────────────────
+  local report_prefix="release_${TIMESTAMP}"
+  local OUT_MD="$RESULTS_DIR/${report_prefix}.md"
+  local OUT_JSON="$RESULTS_DIR/${report_prefix}.json"
+
+  cat >"$OUT_MD" <<REPORT
+# RelayCore v${CRATE_VER} — Release Performance Report
+
+- **Date**: ${DATE_UTC}
+- **Commit**: \`${COMMIT}\`
+- **Mode**: release (${WARMUP_RUNS} warmup + ${RUNS} measurement rounds, ${DURATION}s each)
+
+## Environment
+
+| Item | Detail |
+|------|--------|
+| OS | ${OS_FULL} |
+| CPU | ${CPU} (${CPU_CORES} cores) |
+| RAM | ${RAM_GB} GB |
+| Rust | ${RUSTC_VER} |
+| Load tool | ${TOOL_VER} |
+| Connections | ${CONNECTIONS} |
+
+## Results (S1: 1KB payload)
+
+| Metric | Mean | StdDev | Min | Max | DoD Target | Status |
+|--------|------|--------|-----|-----|------------|--------|
+| Cold start | ${cs_mean}ms | ±$(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")ms | $(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")ms | <${DOD_STARTUP}ms | ${CS_STATUS} |
+| Idle RSS | ${rss_mean}MB | ±$(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")MB | $(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")MB | <${DOD_IDLE_MB}MB | ${RSS_STATUS} |
+| Throughput | ${tput_mean} req/s | ±$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])") | >${DOD_QPS} req/s | ${QPS_STATUS} |
+| P99 Latency | ${p99_mean}ms | ±$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")ms | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")ms | <${DOD_P99}ms | ${LAT_STATUS} |
+
+## Scenario Results
+
+| Scenario | Payload | Throughput (req/s) | P99 (ms) | QPS | Lat |
+|----------|---------|--------------------|----------|-----|-----|${LOAD_MD_ROWS}
+
+## API Path Latency
+
+| Path | Result | Status |
+|------|--------|--------|
+| GET /api/v1/flows | ${flows_query_ms}ms | OK |
+| GET /api/v1/flows/{id} | ${flow_detail_ms}ms | ${flow_detail_status} |
+| GET /api/v1/events (SSE first event) | ${sse_first_ms}ms | ${sse_status} |
+
+## Reproduce
+
+\`\`\`bash
+git checkout ${COMMIT}
+./benchmarks/bench_minimal.sh release --runs ${RUNS} --warmup-runs ${WARMUP_RUNS} --duration ${DURATION}
+\`\`\`
+
+> **Note**: Results depend on hardware and system load. For comparable results, use a
+> quiet machine (no other heavy processes), plug in power (laptop), and match the
+> environment specs above as closely as possible.
+REPORT
+
+  cat >"$OUT_JSON" <<JSON
+{
+  "report_type": "release",
+  "version": "${CRATE_VER}",
+  "commit": "${COMMIT}",
+  "timestamp": "${DATE_UTC}",
+  "environment": {
+    "os": "${OS_FULL}",
+    "cpu": "${CPU}",
+    "cpu_cores": ${CPU_CORES},
+    "ram_gb": ${RAM_GB},
+    "rustc": "${RUSTC_VER}",
+    "load_tool": "${TOOL_VER}"
+  },
+  "methodology": {
+    "warmup_rounds": ${WARMUP_RUNS},
+    "measurement_rounds": ${RUNS},
+    "duration_per_round_s": ${DURATION},
+    "connections": ${CONNECTIONS}
+  },
+  "results": {
+    "cold_start_ms": $(echo "$CS_STATS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ['mean','stddev','min','max','values','n']}))"),
+    "idle_rss_mb": $(echo "$RSS_STATS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ['mean','stddev','min','max','values','n']}))"),
+    "api_flows_query_ms": ${flows_query_ms},
+    "api_flow_detail_ms": ${flow_detail_ms},
+    "api_sse_first_event_ms": ${sse_first_ms}
+  },
+  "scenarios": ${LOAD_JSON_ITEMS},
+  "dod": {
+    "cold_start": "${CS_STATUS}",
+    "idle_rss": "${RSS_STATUS}",
+    "throughput_s1": "${QPS_STATUS}",
+    "latency_p99_s1": "${LAT_STATUS}",
+    "api_flow_detail": "${flow_detail_status}",
+    "api_sse": "${sse_status}"
+  }
+}
+JSON
+
+  pass "Markdown report: $OUT_MD"
+  pass "JSON report:    $OUT_JSON"
+  echo ""
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
 echo "=== relay-core benchmark (${TIMESTAMP}) ==="
 echo ""
 
 TOOL="$(detect_tool)"
 info "Load generator: ${TOOL}"
 info "Mode: ${MODE}, duration=${DURATION}s"
+
+if [[ "$MODE" == "release" ]]; then
+  run_release_mode "$DURATION" "$RUNS" "$WARMUP_RUNS"
+  exit 0
+fi
+
+SCENARIOS=("S1:1")
+if [[ "$MODE" == "matrix" ]]; then
+  SCENARIOS=("S1:1" "S2:64" "S3:1024")
+fi
 
 info "Building release binary..."
 cd "$REPO_ROOT"
@@ -354,11 +758,6 @@ fi
 
 echo ""
 echo "### Benchmark 3/4: Throughput & latency"
-
-SCENARIOS=("S1:1")
-if [[ "$MODE" == "matrix" ]]; then
-  SCENARIOS=("S1:1" "S2:64" "S3:1024")
-fi
 
 SCENARIO_ROWS_MD=""
 SCENARIO_ROWS_JSON=""

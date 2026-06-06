@@ -79,9 +79,9 @@ ca_cert.json
 
 # Benchmarks artifacts
 benchmarks/__pycache__/
-benchmarks/*.json
+benchmarks/bench_*.json
+benchmarks/bench_*.md
 benchmarks/*.csv
-benchmarks/reports/
 relay-core-cli-*.tgz
 relay-core-mcp-*.tgz
 npm/packages/*/bin/*
