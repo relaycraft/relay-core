@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stability_test.sh - relay-core long-stability validation (M7 B4)
+# stability_test.sh - relay-core long-stability validation
 #
 # Runs the proxy under sustained load for the configured duration,
 # monitoring RSS growth and checking for panics/errors.

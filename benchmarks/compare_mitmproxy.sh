@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# compare_mitmproxy.sh - relay-core vs mitmproxy baseline comparison (M7 B2)
+# compare_mitmproxy.sh - relay-core vs mitmproxy baseline comparison
 #
 # Runs the same HTTP throughput benchmark against both relay-core and mitmproxy,
 # producing a comparison report with `vs_mitmproxy` fields.

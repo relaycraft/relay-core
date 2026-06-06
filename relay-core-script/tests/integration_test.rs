@@ -568,7 +568,7 @@ async fn test_relay_json_stringify_pretty() {
 }
 
 // ── S7a: relay.fetch tests (M5: validation layer) ──────────────
-// Actual HTTP execution deferred to M6 (S7b).
+    // TODO: HTTP execution deferred to a future milestone.
 
 #[tokio::test]
 async fn test_relay_fetch_default_disabled() {

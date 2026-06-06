@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harness.sh - relay-core comprehensive benchmark suite (M7 B1)
+# harness.sh - relay-core comprehensive benchmark suite
 # Runs micro-benchmarks (Criterion) and end-to-end throughput.
 set -euo pipefail
 

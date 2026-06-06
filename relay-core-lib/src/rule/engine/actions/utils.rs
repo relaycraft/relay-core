@@ -401,7 +401,7 @@ mod tests {
     }
 
     /// RE3: Verify MapLocal without sandbox_root is rejected.
-    /// M5 DoD: sandbox_root must be explicitly configured; no CWD fallback.
+    /// sandbox_root must be explicitly configured; no CWD fallback.
     #[tokio::test]
     async fn test_resolve_body_source_no_sandbox_rejects() {
         // Create a file in CWD that would have been accessible via CWD fallback

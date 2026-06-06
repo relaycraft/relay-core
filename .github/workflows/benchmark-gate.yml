@@ -1,4 +1,4 @@
-name: Benchmark Gate (M7 B3)
+name: Benchmark Gate
 
 on:
   pull_request:
