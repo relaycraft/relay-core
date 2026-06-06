@@ -4,7 +4,7 @@
 
 Capture, inspect, and modify HTTP/HTTPS/WebSocket traffic locally. Built for developers who want programmatic control (rules, scripts, breakpoints) and for AI agents via native MCP — not just a GUI proxy.
 
-[![Website](https://img.shields.io/badge/website-relaycore.dev-00d4ff?style=flat-square)](https://relaycore.dev) [![crates.io](https://img.shields.io/crates/v/relay-core-runtime?style=flat-square)](https://crates.io/crates/relay-core-runtime) [![docs.rs](https://img.shields.io/docsrs/relay-core-runtime?style=flat-square)](https://docs.rs/relay-core-runtime) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Website](https://img.shields.io/badge/website-relaycore.dev-00d4ff?style=flat-square)](https://relaycore.dev) [![crates.io](https://img.shields.io/crates/v/relay-core-runtime?style=flat-square)](https://crates.io/crates/relay-core-runtime) [![docs.rs](https://img.shields.io/docsrs/relay-core-runtime?style=flat-square)](https://docs.rs/relay-core-runtime) [![CodSpeed Badge](https://img.shields.io/endpoint?url=https://app.codspeed.io//badge.json)](https://app.codspeed.io//relaycraft/relay-core?utm_source=badge) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 [中文](README.zh.md) · [Documentation](https://relaycore.dev/en/docs/getting-started) · [Releases](https://github.com/relaycraft/relay-core/releases) · [RelayCraft Desktop](https://github.com/relaycraft/relaycraft) (Tauri)
 

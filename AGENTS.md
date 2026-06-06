@@ -22,10 +22,6 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 *   This ensures the core logic is decoupled from the UI shell and can be tested in isolation (CI/CD friendly).
 
 ## 3. Documentation Standards
-*   **Architecture**: See `.ai/full-roadmap-2026.md` (primary roadmap) and `.ai/044-m6-execution-plan.md`.
-*   **Specifications**: Before implementing any major module, creating a detailed design document in `.ai/` is **MANDATORY**.
-    *   Format: `.ai/NNN-module-name.md` (e.g., `001-traffic-modification.md`).
-    *   Content: Goals, Data Structures, API Design, Edge Cases.
 *   **Bilingual**: All major documentation should be in English and Chinese (where possible/practical).
 
 ## 4. Architecture Overview
