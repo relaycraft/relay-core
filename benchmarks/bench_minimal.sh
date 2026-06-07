@@ -243,7 +243,8 @@ run_load() {
   case "$TOOL" in
     oha)
       info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB" >&2
-      tool_raw=$(oha \
+      # oha 1.14 rejects NO_COLOR=1 (expects true/false); unset before invoking.
+      tool_raw=$(env -u NO_COLOR oha \
         -z "${DURATION}s" \
         -c "$CONNECTIONS" \
         --no-tui \

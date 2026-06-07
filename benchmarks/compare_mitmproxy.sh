@@ -69,7 +69,7 @@ fi
 run_oha() {
   local proxy_port="$1"
   local target="http://127.0.0.1:${TARGET_PORT}/payload/1"
-  oha -z "${DURATION}s" -c "$CONNECTIONS" --no-tui --output-format json \
+  env -u NO_COLOR oha -z "${DURATION}s" -c "$CONNECTIONS" --no-tui --output-format json \
     -x "http://127.0.0.1:${proxy_port}" "$target" 2>/dev/null || echo "{}"
 }
 
