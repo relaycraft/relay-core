@@ -62,19 +62,73 @@ Run with `--ui` for an interactive terminal interface:
 relay-core-cli run --ui
 ```
 
-Keyboard shortcuts:
-- `j/k` or `↑/↓` — navigate flow list
-- `g` — jump to newest flow
-- `Enter` / `l` — focus detail panel
-- `Esc` / `h` — focus flow list
-- `Tab` — switch detail tab (Overview / Request / Response / Messages)
-- `1-4` — jump to specific tab
-- `/` — filter flows (`host:api method:POST status:>=400 err ws`, or plain text)
-- `y` — copy selected flow as cURL (clipboard on macOS/Linux when available)
-- `?` — show help overlay
-- `q` — quit
+Minimum terminal size: 60×12. The layout adapts automatically to your terminal width.
 
-Wide terminals (≥120 columns) show **Method**, **Code**, **Dur**, **Size**, **Host**, and **Path** columns. Narrow terminals (&lt;80 columns) use single-pane mode: list or detail full screen (`Enter` / `Esc` to switch).
+### Keyboard Shortcuts
+
+**Flow List**
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `g` / `Home` | Jump to newest (top) |
+| `G` / `End` | Jump to oldest (bottom) |
+| `Tab` | Focus detail panel |
+| `Enter` / `→` | Focus detail panel |
+| `A`–`Z` | Mark selected flow |
+| `a`–`z` | Unmark selected flow |
+| `` ` `` | Jump to next marked flow |
+| `/` | Filter flows (`host:api method:POST status:>=400`) |
+| `y` | Copy selected flow as cURL |
+| `d` | Delete selected flow |
+| `p` | Pause / resume capture |
+| `c` | Clear flow list |
+
+**Detail Panel**
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `←` | Back to flow list |
+| `Tab` | Cycle tabs: Overview → Request → Response → Messages |
+| `1`–`4` | Jump to tab by number |
+| `j` / `↓` / `k` / `↑` | Scroll content |
+| `Ctrl+u` / `Ctrl+d` | Scroll 10 lines |
+| `v` | Cycle body view: Auto → Pretty → Raw → Hex → JSON Path |
+
+**Command Palette** (`:`)
+
+| Command | Action |
+|---------|--------|
+| `:q`, `:quit` | Quit |
+| `:c`, `:clear` | Clear flow list |
+| `:p`, `:pause` | Pause capture |
+| `:r`, `:resume` | Resume capture |
+| `:f <expr>`, `:filter <expr>` | Set filter |
+| `:uf`, `:unfilter` | Clear filter |
+| `:t <name>`, `:theme <name>` | Switch theme (`relay`, `slate`, `high-contrast`) |
+| `:cp`, `:copy` | Copy selected flow as cURL |
+| `:v <mode>`, `:view <mode>` | Switch body view (`auto`, `pretty`, `raw`, `hex`, `json`) |
+| `:h`, `:help` | Show command list |
+
+**General**
+
+| Key | Action |
+|-----|--------|
+| `:` | Open command palette |
+| `?` | Toggle help overlay |
+| `q` | Quit |
+
+### Responsive Layout
+
+| Terminal Width | Layout |
+|----------------|--------|
+| < 60 | Too narrow — refuses to start |
+| 60–79 | Single-pane: list or detail full-screen |
+| 80–99 | Two-pane compact (Method, Code, Dur, URL) |
+| 100–119 | Two-pane standard (longer URL) |
+| 120–179 | Two-pane wide (Size, Host, Path columns) |
+| ≥ 180 | Two-pane extra wide (extended Path budget) |
 
 ## HTTPS Interception
 

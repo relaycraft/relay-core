@@ -12,8 +12,8 @@ use ratatui::{
 use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
-use std::collections::VecDeque;
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::time::Instant;
 use url::Url;
 use uuid::Uuid;
@@ -158,10 +158,10 @@ impl TuiApp {
                 return;
             }
             self.flows.push_front(flow);
-            if self.flows.len() > 1000 {
-                if let Some(evicted) = self.flows.pop_back() {
-                    self.marks.remove(&evicted.id);
-                }
+            if self.flows.len() > 1000
+                && let Some(evicted) = self.flows.pop_back()
+            {
+                self.marks.remove(&evicted.id);
             }
             if self.auto_scroll {
                 self.table_state.select(Some(0));
@@ -287,7 +287,9 @@ impl TuiApp {
                         }
                         KeyCode::Char(c @ 'a'..='z') => {
                             let flow_id = self.selected_flow().map(|f| f.id);
-                            let removed = flow_id.map(|id| self.marks.remove(&id).is_some()).unwrap_or(false);
+                            let removed = flow_id
+                                .map(|id| self.marks.remove(&id).is_some())
+                                .unwrap_or(false);
                             if removed {
                                 self.toast = Some(format!("Unmarked '{}'", c.to_ascii_uppercase()));
                             }
@@ -409,22 +411,30 @@ impl TuiApp {
         let mut marked: Vec<(char, Uuid)> = self.marks.iter().map(|(id, c)| (*c, *id)).collect();
         marked.sort_by_key(|(c, _)| *c);
         // Find first mark after cursor
-        if let Some(selected_id) = self.selected_flow().map(|f| f.id) {
-            if let Some(pos) = marked.iter().position(|(_, id)| *id == selected_id) {
-                let next = (pos + 1) % marked.len();
-                let target_id = marked[next].1;
-                if let Some(idx) = self.get_filtered_flows().iter().position(|f| f.id == target_id) {
-                    self.table_state.select(Some(idx));
-                    self.auto_scroll = false;
-                    self.detail_scroll = 0;
-                    self.toast = Some(format!("Jumped to mark '{}'", marked[next].0));
-                }
-                return;
+        if let Some(selected_id) = self.selected_flow().map(|f| f.id)
+            && let Some(pos) = marked.iter().position(|(_, id)| *id == selected_id)
+        {
+            let next = (pos + 1) % marked.len();
+            let target_id = marked[next].1;
+            if let Some(idx) = self
+                .get_filtered_flows()
+                .iter()
+                .position(|f| f.id == target_id)
+            {
+                self.table_state.select(Some(idx));
+                self.auto_scroll = false;
+                self.detail_scroll = 0;
+                self.toast = Some(format!("Jumped to mark '{}'", marked[next].0));
             }
+            return;
         }
         // No selection or not in marked — jump to first mark
         let target_id = marked[0].1;
-        if let Some(idx) = self.get_filtered_flows().iter().position(|f| f.id == target_id) {
+        if let Some(idx) = self
+            .get_filtered_flows()
+            .iter()
+            .position(|f| f.id == target_id)
+        {
             self.table_state.select(Some(idx));
             self.auto_scroll = false;
             self.detail_scroll = 0;
@@ -504,10 +514,7 @@ impl TuiApp {
                     Span::raw("  "),
                     Span::styled("Mode: ", Theme::label()),
                     Span::styled("API Connected ", Theme::stat_ok()),
-                    Span::styled(
-                        "(2-panel: flows + detail)",
-                        Theme::muted(),
-                    ),
+                    Span::styled("(2-panel: flows + detail)", Theme::muted()),
                 ]));
             }
             ApiMode::Offline => {
@@ -551,7 +558,10 @@ impl TuiApp {
             help_binding("1 – 4", "Jump to tab by number"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
-            help_binding("v", "Cycle body view: Auto → Pretty → Raw → Hex → JSON Path"),
+            help_binding(
+                "v",
+                "Cycle body view: Auto → Pretty → Raw → Hex → JSON Path",
+            ),
         ]);
 
         lines.push(Line::from(""));
@@ -622,8 +632,8 @@ impl TuiApp {
                 })
                 .collect();
             let row = Row::new(cells);
-            let table = Table::new(vec![row], widths)
-                .block(outer_panel_block(&title, list_focused));
+            let table =
+                Table::new(vec![row], widths).block(outer_panel_block(&title, list_focused));
             f.render_widget(table, area);
             return;
         }
@@ -1082,7 +1092,14 @@ impl TuiApp {
         }
         if !self.marks.is_empty() {
             let marked: Vec<char> = self.marks.values().copied().collect();
-            let label = format!("marks: {}", marked.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","));
+            let label = format!(
+                "marks: {}",
+                marked
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             hints.push((10, label));
         }
         hints
@@ -1115,15 +1132,13 @@ impl TuiApp {
                 self.filter_input.clear();
                 self.toast = Some("Filter cleared".into());
             }
-            Command::Theme(name) => {
-                match crate::ui::theme::ThemeId::parse(&name) {
-                    Ok(id) => {
-                        crate::ui::theme::init(id);
-                        self.toast = Some(format!("Theme: {}", id.description()));
-                    }
-                    Err(e) => self.toast = Some(format!("{e}")),
+            Command::Theme(name) => match crate::ui::theme::ThemeId::parse(&name) {
+                Ok(id) => {
+                    crate::ui::theme::init(id);
+                    self.toast = Some(format!("Theme: {}", id.description()));
                 }
-            }
+                Err(e) => self.toast = Some(e.to_string()),
+            },
             Command::Copy(_) => self.copy_curl_selection(),
             Command::View(name) => {
                 let view = match name.as_str() {
@@ -1142,7 +1157,8 @@ impl TuiApp {
             }
             Command::Help => {
                 self.toast = Some(
-                    "Commands: :q :clear :pause :resume :filter :unfilter :theme :copy :help".into(),
+                    "Commands: :q :clear :pause :resume :filter :unfilter :theme :copy :help"
+                        .into(),
                 );
             }
             Command::Unknown(msg) => {
@@ -1531,7 +1547,10 @@ fn render_body_for_view(body_content: &str, view: BodyView) -> Vec<Line<'static>
 fn render_body_auto(body_content: &str) -> Vec<Line<'static>> {
     if serde_json::from_str::<Value>(body_content).is_ok() {
         render_body_pretty(body_content)
-    } else if body_content.bytes().any(|b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t') {
+    } else if body_content
+        .bytes()
+        .any(|b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+    {
         render_body_hex(body_content.as_bytes())
     } else {
         render_body_raw(body_content)
@@ -1540,10 +1559,10 @@ fn render_body_auto(body_content: &str) -> Vec<Line<'static>> {
 
 /// JSON pretty-printed with syntax highlighting.
 fn render_body_pretty(body_content: &str) -> Vec<Line<'static>> {
-    if let Ok(value) = serde_json::from_str::<Value>(body_content) {
-        if let Ok(formatted) = serde_json::to_string_pretty(&value) {
-            return render_json_highlighted(&formatted, BODY_RENDER_LIMIT);
-        }
+    if let Ok(value) = serde_json::from_str::<Value>(body_content)
+        && let Ok(formatted) = serde_json::to_string_pretty(&value)
+    {
+        return render_json_highlighted(&formatted, BODY_RENDER_LIMIT);
     }
     render_body_raw(body_content)
 }
@@ -1578,7 +1597,7 @@ fn render_body_raw(body_content: &str) -> Vec<Line<'static>> {
 fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
     let limit = BODY_RENDER_LIMIT.min(data.len());
     let mut lines: Vec<Line> = Vec::new();
-    for row in 0..((limit + 15) / 16) {
+    for row in 0..limit.div_ceil(16) {
         let offset = row * 16;
         let row_end = (offset + 16).min(limit);
         let hex_part: String = data[offset..row_end]
@@ -1589,7 +1608,13 @@ fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
         let hex_part = format!("{hex_part:<48}");
         let ascii_part: String = data[offset..row_end]
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         lines.push(Line::from(vec![
             Span::styled(format!("{offset:08x}  "), Theme::label()),
@@ -1615,10 +1640,13 @@ fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
 fn render_body_json_path(body_content: &str) -> Vec<Line<'static>> {
     // Show pretty-printed JSON with a note; actual JSON Path input is done via key `J`.
     let mut lines = render_body_pretty(body_content);
-    lines.insert(0, Line::from(Span::styled(
-        "JSON Path mode — press J to enter a query (e.g. $.store.book[0].title)",
-        Theme::accent_dim(),
-    )));
+    lines.insert(
+        0,
+        Line::from(Span::styled(
+            "JSON Path mode — press J to enter a query (e.g. $.store.book[0].title)",
+            Theme::accent_dim(),
+        )),
+    );
     lines.insert(1, Line::from(""));
     lines
 }
@@ -2390,6 +2418,10 @@ mod tests {
         let id2 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
         app.marks.insert(id2, 'B');
         let hints = app.status_hints();
-        assert!(hints.iter().any(|(_, s)| s.contains("marks:") && s.contains("A") && s.contains("B")));
+        assert!(
+            hints
+                .iter()
+                .any(|(_, s)| s.contains("marks:") && s.contains("A") && s.contains("B"))
+        );
     }
 }

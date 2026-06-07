@@ -37,7 +37,10 @@ impl LayoutProfile {
     pub fn is_two_pane(self) -> bool {
         matches!(
             self,
-            Self::TwoPaneCompact | Self::TwoPaneStandard | Self::TwoPaneWide | Self::TwoPaneExtraWide
+            Self::TwoPaneCompact
+                | Self::TwoPaneStandard
+                | Self::TwoPaneWide
+                | Self::TwoPaneExtraWide
         )
     }
 }
@@ -59,38 +62,98 @@ pub enum ColumnWidth {
 /// Return column definitions for a given layout profile.
 pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
     use ColumnWidth::*;
-    const MK_COL: ColumnPlan = ColumnPlan { header: "Mk", width: Fixed(1) };
+    const MK_COL: ColumnPlan = ColumnPlan {
+        header: "Mk",
+        width: Fixed(1),
+    };
     match profile {
         LayoutProfile::TooNarrow | LayoutProfile::SinglePane => &[
-            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan {
+                header: "",
+                width: Fixed(2),
+            },
             MK_COL,
-            ColumnPlan { header: "Flow", width: Rest },
+            ColumnPlan {
+                header: "Flow",
+                width: Rest,
+            },
         ],
         LayoutProfile::TwoPaneCompact => &[
-            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan {
+                header: "",
+                width: Fixed(2),
+            },
             MK_COL,
-            ColumnPlan { header: "Method", width: Fixed(6) },
-            ColumnPlan { header: "Code", width: Fixed(5) },
-            ColumnPlan { header: "Dur", width: Fixed(7) },
-            ColumnPlan { header: "URL", width: Rest },
+            ColumnPlan {
+                header: "Method",
+                width: Fixed(6),
+            },
+            ColumnPlan {
+                header: "Code",
+                width: Fixed(5),
+            },
+            ColumnPlan {
+                header: "Dur",
+                width: Fixed(7),
+            },
+            ColumnPlan {
+                header: "URL",
+                width: Rest,
+            },
         ],
         LayoutProfile::TwoPaneStandard => &[
-            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan {
+                header: "",
+                width: Fixed(2),
+            },
             MK_COL,
-            ColumnPlan { header: "Method", width: Fixed(6) },
-            ColumnPlan { header: "Code", width: Fixed(5) },
-            ColumnPlan { header: "Dur", width: Fixed(7) },
-            ColumnPlan { header: "URL", width: Rest },
+            ColumnPlan {
+                header: "Method",
+                width: Fixed(6),
+            },
+            ColumnPlan {
+                header: "Code",
+                width: Fixed(5),
+            },
+            ColumnPlan {
+                header: "Dur",
+                width: Fixed(7),
+            },
+            ColumnPlan {
+                header: "URL",
+                width: Rest,
+            },
         ],
         LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => &[
-            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan {
+                header: "",
+                width: Fixed(2),
+            },
             MK_COL,
-            ColumnPlan { header: "Method", width: Fixed(6) },
-            ColumnPlan { header: "Code", width: Fixed(5) },
-            ColumnPlan { header: "Dur", width: Fixed(7) },
-            ColumnPlan { header: "Size", width: Fixed(9) },
-            ColumnPlan { header: "Host", width: Fixed(18) },
-            ColumnPlan { header: "Path", width: Rest },
+            ColumnPlan {
+                header: "Method",
+                width: Fixed(6),
+            },
+            ColumnPlan {
+                header: "Code",
+                width: Fixed(5),
+            },
+            ColumnPlan {
+                header: "Dur",
+                width: Fixed(7),
+            },
+            ColumnPlan {
+                header: "Size",
+                width: Fixed(9),
+            },
+            ColumnPlan {
+                header: "Host",
+                width: Fixed(18),
+            },
+            ColumnPlan {
+                header: "Path",
+                width: Rest,
+            },
         ],
     }
 }
@@ -155,7 +218,6 @@ impl BodyView {
         }
     }
 }
-
 
 /// Middle-ellipsis truncation keeping both ends visible (paths).
 pub fn smart_truncate(s: &str, max_width: usize) -> String {
@@ -521,12 +583,24 @@ mod tests {
         assert_eq!(LayoutProfile::for_width(70), LayoutProfile::SinglePane);
         assert_eq!(LayoutProfile::for_width(80), LayoutProfile::TwoPaneCompact);
         assert_eq!(LayoutProfile::for_width(90), LayoutProfile::TwoPaneCompact);
-        assert_eq!(LayoutProfile::for_width(100), LayoutProfile::TwoPaneStandard);
-        assert_eq!(LayoutProfile::for_width(110), LayoutProfile::TwoPaneStandard);
+        assert_eq!(
+            LayoutProfile::for_width(100),
+            LayoutProfile::TwoPaneStandard
+        );
+        assert_eq!(
+            LayoutProfile::for_width(110),
+            LayoutProfile::TwoPaneStandard
+        );
         assert_eq!(LayoutProfile::for_width(120), LayoutProfile::TwoPaneWide);
         assert_eq!(LayoutProfile::for_width(150), LayoutProfile::TwoPaneWide);
-        assert_eq!(LayoutProfile::for_width(180), LayoutProfile::TwoPaneExtraWide);
-        assert_eq!(LayoutProfile::for_width(200), LayoutProfile::TwoPaneExtraWide);
+        assert_eq!(
+            LayoutProfile::for_width(180),
+            LayoutProfile::TwoPaneExtraWide
+        );
+        assert_eq!(
+            LayoutProfile::for_width(200),
+            LayoutProfile::TwoPaneExtraWide
+        );
     }
 
     #[test]

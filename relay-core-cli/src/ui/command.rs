@@ -134,17 +134,17 @@ mod tests {
     #[test]
     fn parse_theme() {
         assert_eq!(parse_command("theme slate"), Command::Theme("slate".into()));
-        assert_eq!(
-            parse_command("t relay"),
-            Command::Theme("relay".into())
-        );
+        assert_eq!(parse_command("t relay"), Command::Theme("relay".into()));
     }
 
     #[test]
     fn parse_copy() {
         assert_eq!(parse_command("copy"), Command::Copy("curl".into()));
         assert_eq!(parse_command("cp"), Command::Copy("curl".into()));
-        assert_eq!(parse_command("cp selected"), Command::Copy("selected".into()));
+        assert_eq!(
+            parse_command("cp selected"),
+            Command::Copy("selected".into())
+        );
     }
 
     #[test]
@@ -179,19 +179,34 @@ mod tests {
 
     #[test]
     fn parse_case_insensitive() {
-        assert_eq!(parse_command("QUIT"), Command::Unknown("unknown command: QUIT".into()));
-        assert_eq!(parse_command("CLEAR"), Command::Unknown("unknown command: CLEAR".into()));
+        assert_eq!(
+            parse_command("QUIT"),
+            Command::Unknown("unknown command: QUIT".into())
+        );
+        assert_eq!(
+            parse_command("CLEAR"),
+            Command::Unknown("unknown command: CLEAR".into())
+        );
     }
 
     #[test]
     fn parse_extra_whitespace() {
         assert_eq!(parse_command("  q  "), Command::Quit);
-        assert_eq!(parse_command(" filter  host:x  "), Command::Filter("host:x".into()));
+        assert_eq!(
+            parse_command(" filter  host:x  "),
+            Command::Filter("host:x".into())
+        );
     }
 
     #[test]
     fn parse_missing_args() {
-        assert_eq!(parse_command("theme"), Command::Unknown("theme: missing theme name".into()));
-        assert_eq!(parse_command("mark"), Command::Unknown("mark: missing label".into()));
+        assert_eq!(
+            parse_command("theme"),
+            Command::Unknown("theme: missing theme name".into())
+        );
+        assert_eq!(
+            parse_command("mark"),
+            Command::Unknown("mark: missing label".into())
+        );
     }
 }
