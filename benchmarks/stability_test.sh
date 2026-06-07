@@ -125,8 +125,8 @@ LAST_SAMPLE=0
   while true; do
     case "$LOAD_TOOL" in
       oha)
-        oha --duration 60 --connections "$CONNECTIONS" --no-tui \
-          --proxy "http://127.0.0.1:$PROXY_PORT" \
+        oha -z 60 -c "$CONNECTIONS" --no-tui \
+          -x "http://127.0.0.1:$PROXY_PORT" \
           "http://127.0.0.1:$TARGET_PORT/payload/1" \
           >/dev/null 2>&1 || true
         ;;

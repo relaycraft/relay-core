@@ -1,7 +1,7 @@
-# RelayCore v0.7.4 — Release Performance Report
+# RelayCore v0.8.1 — Release Performance Report
 
-- **Date**: 2026-06-07T15:51:59Z
-- **Commit**: `24646fa`
+- **Date**: 2026-06-07T18:24:42Z
+- **Commit**: `79e3346`
 - **Mode**: release (3 warmup + 5 measurement rounds, 30s each)
 
 ## Environment
@@ -12,36 +12,36 @@
 | CPU | Apple M4 Max (16 cores) |
 | RAM | 64 GB |
 | Rust | 1.95.0 |
-| Load tool | This is ApacheBench, Version 2.3 <$Revision: 1923142 $> |
+| Load tool | oha 1.14.0 |
 | Connections | 100 |
 
 ## Results (S1: 1KB payload)
 
 | Metric | Mean | StdDev | Min | Max | DoD Target | Status |
 |--------|------|--------|-----|-----|------------|--------|
-| Cold start | 137.0ms | ±2.55 | 133.0ms | 140.0ms | <200ms | PASS |
-| Idle RSS | 71.4MB | ±0.55 | 71.0MB | 72.0MB | <50MB | FAIL |
-| Throughput | 1213.4 req/s | ±16.82 | 1198.0 | 1233.0 | >10000 req/s | FAIL |
-| P99 Latency | 1829.0ms | ±417.03 | 1083.0ms | 2018.0ms | <5ms | FAIL |
+| Cold start | 370.6ms | ±541.92 | 125.0ms | 1340.0ms | <200ms | FAIL |
+| Idle RSS | 70.8MB | ±0.84 | 70.0MB | 72.0MB | <50MB | FAIL |
+| Throughput | 35212.2 req/s | ±21940.92 | 9175.0 | 63947.0 | >10000 req/s | PASS |
+| P99 Latency | 28.27ms | ±32.75 | 2.91ms | 83.32ms | <5ms | FAIL |
 
 ## Scenario Results
 
 | Scenario | Payload | Throughput (req/s) | P99 (ms) | QPS | Lat |
 |----------|---------|--------------------|----------|-----|-----|
-| S1 | 1KB | 1213.4 ±16.82 | 1829.0 ±417.03 | FAIL | FAIL |
+| S1 | 1KB | 35212.2 ±21940.92 | 28.27 ±32.75 | PASS | FAIL |
 
 ## API Path Latency
 
 | Path | Result | Status |
 |------|--------|--------|
-| GET /api/v1/flows | 1.12ms | OK |
-| GET /api/v1/flows/{id} | 0.51ms | OK |
-| GET /api/v1/events (SSE first event) | 12.07ms | OK |
+| GET /api/v1/flows | 0.71ms | OK |
+| GET /api/v1/flows/{id} | 0.47ms | OK |
+| GET /api/v1/events (SSE first event) | 16.01ms | OK |
 
 ## Reproduce
 
 ```bash
-git checkout 24646fa
+git checkout 79e3346
 ./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30
 ```
 
