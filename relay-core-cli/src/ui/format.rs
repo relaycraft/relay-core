@@ -3,11 +3,114 @@
 use relay_core_api::flow::{Flow, HttpRequest, Layer};
 use url::Url;
 
-/// Terminal width below which the UI uses single-pane list/detail mode.
-pub const LAYOUT_NARROW_MAX: u16 = 80;
+/// Responsive layout profile, chosen from `Frame::area().width`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LayoutProfile {
+    /// < 60 — terminal too narrow, refuse to start.
+    TooNarrow,
+    /// 60-79 — single-pane, full-screen list/detail toggle.
+    SinglePane,
+    /// 80-99 — two-pane compact (no Host column).
+    TwoPaneCompact,
+    /// 100-119 — two-pane standard (no Host, longer Path).
+    TwoPaneStandard,
+    /// 120-179 — two-pane with Host + Path columns.
+    TwoPaneWide,
+    /// >= 180 — two-pane wide + extra Path budget.
+    TwoPaneExtraWide,
+}
 
-/// Minimum width for Host + Path + Duration columns.
-pub const TABLE_WIDE_MIN: u16 = 120;
+impl LayoutProfile {
+    /// Determine the layout profile for a given terminal width.
+    pub fn for_width(width: u16) -> Self {
+        match width {
+            0..=59 => Self::TooNarrow,
+            60..=79 => Self::SinglePane,
+            80..=99 => Self::TwoPaneCompact,
+            100..=119 => Self::TwoPaneStandard,
+            120..=179 => Self::TwoPaneWide,
+            _ => Self::TwoPaneExtraWide,
+        }
+    }
+
+    /// Whether this profile supports a two-pane layout.
+    pub fn is_two_pane(self) -> bool {
+        matches!(
+            self,
+            Self::TwoPaneCompact | Self::TwoPaneStandard | Self::TwoPaneWide | Self::TwoPaneExtraWide
+        )
+    }
+}
+
+/// Column budget for the flow list table.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ColumnPlan {
+    pub header: &'static str,
+    pub width: ColumnWidth,
+}
+
+/// Width specifier for a table column.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ColumnWidth {
+    Fixed(u16),
+    Rest,
+}
+
+/// Return column definitions for a given layout profile.
+pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
+    use ColumnWidth::*;
+    match profile {
+        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => &[
+            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan { header: "Flow", width: Rest },
+        ],
+        LayoutProfile::TwoPaneCompact => &[
+            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan { header: "Method", width: Fixed(6) },
+            ColumnPlan { header: "Code", width: Fixed(5) },
+            ColumnPlan { header: "Dur", width: Fixed(7) },
+            ColumnPlan { header: "URL", width: Rest },
+        ],
+        LayoutProfile::TwoPaneStandard => &[
+            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan { header: "Method", width: Fixed(6) },
+            ColumnPlan { header: "Code", width: Fixed(5) },
+            ColumnPlan { header: "Dur", width: Fixed(7) },
+            ColumnPlan { header: "URL", width: Rest },
+        ],
+        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => &[
+            ColumnPlan { header: "", width: Fixed(2) },
+            ColumnPlan { header: "Method", width: Fixed(6) },
+            ColumnPlan { header: "Code", width: Fixed(5) },
+            ColumnPlan { header: "Dur", width: Fixed(7) },
+            ColumnPlan { header: "Size", width: Fixed(9) },
+            ColumnPlan { header: "Host", width: Fixed(18) },
+            ColumnPlan { header: "Path", width: Rest },
+        ],
+    }
+}
+
+/// Calculate the path budget for wide profiles (Host + Path columns).
+pub fn path_budget_for(profile: LayoutProfile, area_width: u16) -> usize {
+    let overhead: u16 = match profile {
+        LayoutProfile::TwoPaneWide => 50,
+        LayoutProfile::TwoPaneExtraWide => {
+            50u16.saturating_sub((area_width.saturating_sub(180)) / 2)
+        }
+        _ => 26,
+    };
+    usize::from(area_width.saturating_sub(overhead))
+}
+
+/// Main split percentages (list%, detail%) for two-pane profiles.
+pub fn main_split(profile: LayoutProfile) -> Option<(u16, u16)> {
+    match profile {
+        LayoutProfile::TwoPaneCompact => Some((50, 50)),
+        LayoutProfile::TwoPaneStandard => Some((45, 55)),
+        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => Some((40, 60)),
+        _ => None,
+    }
+}
 
 /// Middle-ellipsis truncation keeping both ends visible (paths).
 pub fn smart_truncate(s: &str, max_width: usize) -> String {
@@ -366,8 +469,38 @@ mod tests {
     }
 
     #[test]
-    fn layout_constants_match_spec() {
-        assert_eq!(LAYOUT_NARROW_MAX, 80);
-        assert_eq!(TABLE_WIDE_MIN, 120);
+    fn layout_profile_for_width() {
+        assert_eq!(LayoutProfile::for_width(40), LayoutProfile::TooNarrow);
+        assert_eq!(LayoutProfile::for_width(59), LayoutProfile::TooNarrow);
+        assert_eq!(LayoutProfile::for_width(60), LayoutProfile::SinglePane);
+        assert_eq!(LayoutProfile::for_width(70), LayoutProfile::SinglePane);
+        assert_eq!(LayoutProfile::for_width(80), LayoutProfile::TwoPaneCompact);
+        assert_eq!(LayoutProfile::for_width(90), LayoutProfile::TwoPaneCompact);
+        assert_eq!(LayoutProfile::for_width(100), LayoutProfile::TwoPaneStandard);
+        assert_eq!(LayoutProfile::for_width(110), LayoutProfile::TwoPaneStandard);
+        assert_eq!(LayoutProfile::for_width(120), LayoutProfile::TwoPaneWide);
+        assert_eq!(LayoutProfile::for_width(150), LayoutProfile::TwoPaneWide);
+        assert_eq!(LayoutProfile::for_width(180), LayoutProfile::TwoPaneExtraWide);
+        assert_eq!(LayoutProfile::for_width(200), LayoutProfile::TwoPaneExtraWide);
+    }
+
+    #[test]
+    fn main_split_percentages() {
+        assert_eq!(main_split(LayoutProfile::TwoPaneCompact), Some((50, 50)));
+        assert_eq!(main_split(LayoutProfile::TwoPaneStandard), Some((45, 55)));
+        assert_eq!(main_split(LayoutProfile::TwoPaneWide), Some((40, 60)));
+        assert_eq!(main_split(LayoutProfile::TwoPaneExtraWide), Some((40, 60)));
+        assert_eq!(main_split(LayoutProfile::SinglePane), None);
+        assert_eq!(main_split(LayoutProfile::TooNarrow), None);
+    }
+
+    #[test]
+    fn profile_is_two_pane() {
+        assert!(LayoutProfile::TwoPaneCompact.is_two_pane());
+        assert!(LayoutProfile::TwoPaneStandard.is_two_pane());
+        assert!(LayoutProfile::TwoPaneWide.is_two_pane());
+        assert!(LayoutProfile::TwoPaneExtraWide.is_two_pane());
+        assert!(!LayoutProfile::SinglePane.is_two_pane());
+        assert!(!LayoutProfile::TooNarrow.is_two_pane());
     }
 }

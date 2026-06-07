@@ -17,9 +17,10 @@ use std::time::Instant;
 use url::Url;
 
 use super::format::{
-    LAYOUT_NARROW_MAX, TABLE_WIDE_MIN, copy_to_clipboard, display_method, display_path,
+    ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
     empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms, format_size,
-    host_from_url, http_flow_to_curl, smart_truncate, tags_list_suffix,
+    host_from_url, http_flow_to_curl, main_split, path_budget_for, plan_columns, smart_truncate,
+    tags_list_suffix,
 };
 use super::theme::Theme;
 
@@ -384,32 +385,25 @@ impl TuiApp {
             .constraints([Constraint::Min(0), Constraint::Length(status_height)].as_ref())
             .split(area);
 
-        let narrow = area.width < LAYOUT_NARROW_MAX;
+        let profile = LayoutProfile::for_width(area.width);
 
-        if narrow {
+        if profile.is_two_pane() {
+            let (list_pct, detail_pct) =
+                main_split(profile).expect("two-pane profile must have split");
+            let main_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(list_pct),
+                    Constraint::Percentage(detail_pct),
+                ])
+                .split(chunks[0]);
+            self.render_flow_list(f, main_chunks[0]);
+            self.render_flow_detail(f, main_chunks[1]);
+        } else {
             match self.active_area {
                 ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
                 ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
             }
-        } else {
-            let (list_width, detail_width) = if area.width < 100 {
-                (50, 50)
-            } else if area.width < 140 {
-                (40, 60)
-            } else {
-                (35, 65)
-            };
-
-            let main_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(list_width),
-                    Constraint::Percentage(detail_width),
-                ])
-                .split(chunks[0]);
-
-            self.render_flow_list(f, main_chunks[0]);
-            self.render_flow_detail(f, main_chunks[1]);
         }
         self.render_status_bar(f, chunks[1]);
 
@@ -511,31 +505,40 @@ impl TuiApp {
 
     fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
         let filtered_flows = self.get_filtered_flows();
-        let table_wide = area.width >= TABLE_WIDE_MIN;
+        let profile = LayoutProfile::for_width(area.width);
+        let columns = plan_columns(profile);
         let filter = &self.filter_input;
         let filtering = !filter.is_empty();
-        let path_budget = usize::from(area.width.saturating_sub(if table_wide { 50 } else { 26 }));
+        let path_budget = path_budget_for(profile, area.width);
 
         let list_focused = self.active_area == ActiveArea::FlowList;
         let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
 
+        let widths: Vec<Constraint> = columns
+            .iter()
+            .map(|c| match c.width {
+                ColumnWidth::Fixed(w) => Constraint::Length(w),
+                ColumnWidth::Rest => Constraint::Min(10),
+            })
+            .collect();
+
         if filtered_flows.is_empty() {
-            // Same [marker | body] columns as the populated table so the hint aligns with rows.
-            let row = Row::new(vec![
-                Cell::from(""),
-                Cell::from(Line::from(Span::styled(
-                    empty_flow_list_message(filtering),
-                    Theme::muted(),
-                ))),
-            ]);
-            let table = Table::new(
-                vec![row],
-                [
-                    Constraint::Length(FLOW_TABLE_MARKER_COL),
-                    Constraint::Min(0),
-                ],
-            )
-            .block(outer_panel_block(&title, list_focused));
+            let cells: Vec<Cell> = columns
+                .iter()
+                .map(|c| {
+                    if matches!(c.width, ColumnWidth::Rest) {
+                        Cell::from(Line::from(Span::styled(
+                            empty_flow_list_message(filtering),
+                            Theme::muted(),
+                        )))
+                    } else {
+                        Cell::from("")
+                    }
+                })
+                .collect();
+            let row = Row::new(cells);
+            let table = Table::new(vec![row], widths)
+                .block(outer_panel_block(&title, list_focused));
             f.render_widget(table, area);
             return;
         }
@@ -547,7 +550,7 @@ impl TuiApp {
             .map(|(i, flow)| {
                 flow_table_row(
                     flow,
-                    table_wide,
+                    profile,
                     path_budget,
                     filter,
                     filtering,
@@ -556,32 +559,7 @@ impl TuiApp {
             })
             .collect();
 
-        let (header, widths): (Vec<&str>, Vec<Constraint>) = if table_wide {
-            (
-                vec!["", "M", "Code", "Dur", "Size", "Host", "Path"],
-                vec![
-                    Constraint::Length(FLOW_TABLE_MARKER_COL),
-                    Constraint::Length(6),
-                    Constraint::Length(5),
-                    Constraint::Length(7),
-                    Constraint::Length(9),
-                    Constraint::Length(18),
-                    Constraint::Min(10),
-                ],
-            )
-        } else {
-            (
-                vec!["", "M", "Code", "Dur", "URL"],
-                vec![
-                    Constraint::Length(FLOW_TABLE_MARKER_COL),
-                    Constraint::Length(6),
-                    Constraint::Length(5),
-                    Constraint::Length(7),
-                    Constraint::Min(10),
-                ],
-            )
-        };
-
+        let header: Vec<&str> = columns.iter().map(|c| c.header).collect();
         let header_row = Row::new(header).style(Theme::table_header());
 
         let table = Table::new(rows, widths)
@@ -1180,7 +1158,7 @@ fn status_bar_block() -> Block<'static> {
 
 fn flow_table_row(
     flow: &Flow,
-    table_wide: bool,
+    profile: LayoutProfile,
     path_budget: usize,
     filter: &str,
     filtering: bool,
@@ -1252,38 +1230,48 @@ fn flow_table_row(
 
     let tags_str = tags_list_suffix(&flow.tags);
 
-    if table_wide {
-        let host = host_from_url(&url);
-        let host_color = Theme::host_color(&host);
-        let path = display_path(&url, path_budget, has_query);
-        let path_with_tags = if tags_str.is_empty() {
-            path
-        } else {
-            format!("{}{}", path, tags_str)
-        };
-        Row::new(vec![
-            marker_cell,
-            method_cell,
-            status_cell,
-            dur_cell,
-            Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
-            Cell::from(Span::styled(host, Style::default().fg(host_color))),
-            styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
-        ])
-    } else {
-        let url_text = smart_truncate(url.as_str(), path_budget);
-        let url_with_tags = if tags_str.is_empty() {
-            url_text
-        } else {
-            format!("{}{}", url_text, tags_str)
-        };
-        Row::new(vec![
-            marker_cell,
-            method_cell,
-            status_cell,
-            dur_cell,
-            styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
-        ])
+    match profile {
+        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => {
+            let url_text = smart_truncate(url.as_str(), path_budget);
+            Row::new(vec![
+                marker_cell,
+                Cell::from(Span::styled(url_text, Theme::text())),
+            ])
+        }
+        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => {
+            let url_text = smart_truncate(url.as_str(), path_budget);
+            let url_with_tags = if tags_str.is_empty() {
+                url_text
+            } else {
+                format!("{}{}", url_text, tags_str)
+            };
+            Row::new(vec![
+                marker_cell,
+                method_cell,
+                status_cell,
+                dur_cell,
+                styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
+            ])
+        }
+        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => {
+            let host = host_from_url(&url);
+            let host_color = Theme::host_color(&host);
+            let path = display_path(&url, path_budget, has_query);
+            let path_with_tags = if tags_str.is_empty() {
+                path
+            } else {
+                format!("{}{}", path, tags_str)
+            };
+            Row::new(vec![
+                marker_cell,
+                method_cell,
+                status_cell,
+                dur_cell,
+                Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
+                Cell::from(Span::styled(host, Style::default().fg(host_color))),
+                styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
+            ])
+        }
     }
 }
 
@@ -1463,9 +1451,6 @@ fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
         .title(Span::styled(format!(" {title} "), Theme::panel_title()))
         .style(Theme::surface())
 }
-
-/// Selection caret column in the flow list (must match empty-state table layout).
-const FLOW_TABLE_MARKER_COL: u16 = 2;
 
 /// Left inset for panel body text (tabs, tables, key-value lines) under border titles.
 fn panel_body_padding() -> Padding {
