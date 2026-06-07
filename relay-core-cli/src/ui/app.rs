@@ -77,12 +77,12 @@ pub enum ActiveArea {
     FlowDetail,
 }
 
-/// Whether the TUI is connected to the HTTP API for richer features.
+/// Whether `--api-port` was enabled at startup (help text only; TUI behavior is the same).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ApiMode {
-    /// API available: SSE feed (rules/intercepts via `:` command in future)
+    /// `--api-port` set: REST/SSE HTTP API is listening for external clients.
     Connected,
-    /// No API: broadcast-channel-only, 2-panel layout (legacy)
+    /// No `--api-port`: proxy runs without the REST/SSE HTTP API.
     Offline,
 }
 
@@ -542,21 +542,39 @@ impl TuiApp {
             ApiMode::Connected => {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("Mode: ", Theme::label()),
-                    Span::styled("API Connected ", Theme::stat_ok()),
-                    Span::styled("(2-panel: flows + detail)", Theme::muted()),
+                    Span::styled("HTTP API: ", Theme::label()),
+                    Span::styled("on", Theme::stat_ok()),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "REST + SSE on localhost (/api/v1/flows, rules, events) for ",
+                        Theme::muted(),
+                    ),
+                    Span::styled("relay flows", Theme::accent_dim()),
+                    Span::styled(", MCP, and other clients. ", Theme::muted()),
+                    Span::styled("This TUI is unchanged.", Theme::muted()),
                 ]));
             }
             ApiMode::Offline => {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("Mode: ", Theme::label()),
-                    Span::styled("Offline ", Theme::muted()),
-                    Span::styled("(2-panel: flows + detail)", Theme::muted()),
+                    Span::styled("HTTP API: ", Theme::label()),
+                    Span::styled("off", Theme::muted()),
                 ]));
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("Enable API mode: ", Theme::label()),
+                    Span::styled(
+                        "--api-port PORT starts REST + SSE on localhost for ",
+                        Theme::muted(),
+                    ),
+                    Span::styled("relay flows", Theme::accent_dim()),
+                    Span::styled(", MCP, and integrations. ", Theme::muted()),
+                    Span::styled("Does not change this TUI.", Theme::muted()),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("Example: ", Theme::label()),
                     Span::styled("relay run --ui --api-port 8082", Theme::accent_dim()),
                 ]));
             }
@@ -577,14 +595,14 @@ impl TuiApp {
         ]);
 
         lines.push(Line::from(""));
-        lines.push(help_section("Detail Panel"));
+        lines.push(help_section("Detail Tabs"));
         lines.extend([
             help_binding("Esc  ←", "Back to flow list"),
             help_binding(
                 "Tab",
-                "Cycle tabs: Overview → Request → Response → Messages",
+                "Cycle Overview → Request → Response → Messages",
             ),
-            help_binding("1 – 4", "Jump to tab by number"),
+            help_binding("1 / 2 / 3 / 4", "Jump to tab (not a four-panel layout)"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
             help_binding("v", "Cycle body view: Auto → Pretty → Raw → Hex"),
@@ -1254,11 +1272,10 @@ impl TuiApp {
                 for (min_width, hint) in &hints {
                     let hint_w = (hint.len() as u16).max(*min_width) + 1;
                     if used + hint_w <= right_budget || right_spans.is_empty() {
-                        right_spans.push(Span::styled(
-                            if right_spans.is_empty() { "" } else { " " },
-                            Theme::muted(),
-                        ));
-                        right_spans.push(Span::styled(hint.as_str(), Theme::hotkey()));
+                        if !right_spans.is_empty() {
+                            right_spans.push(Span::raw(" "));
+                        }
+                        right_spans.extend(status_hint_spans(hint));
                         used += hint_w;
                     }
                 }
@@ -1937,8 +1954,29 @@ fn help_binding(keys: &'static str, description: &'static str) -> Line<'static> 
     Line::from(vec![
         Span::raw("  "),
         Span::styled(format!("{keys:<16}"), Theme::hotkey()),
-        Span::styled(description, Theme::text()),
+        Span::styled(description, Theme::muted()),
     ])
+}
+
+/// Render `[key]label` hints with accent keys and muted labels (status bar).
+fn status_hint_spans(hint: &str) -> Vec<Span<'_>> {
+    if let Some(rest) = hint.strip_prefix('[')
+        && let Some((key, tail)) = rest.split_once(']')
+    {
+        return vec![
+            Span::styled("[", Theme::muted()),
+            Span::styled(key, Theme::hotkey()),
+            Span::styled("]", Theme::muted()),
+            Span::styled(tail, Theme::muted()),
+        ];
+    }
+    if hint.starts_with('↓') {
+        vec![Span::styled(hint, Theme::accent_bold())]
+    } else if hint.starts_with("marks:") {
+        vec![Span::styled(hint, Theme::accent_dim())]
+    } else {
+        vec![Span::styled(hint, Theme::muted())]
+    }
 }
 
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {

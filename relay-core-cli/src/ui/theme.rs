@@ -484,7 +484,7 @@ impl Theme {
 
     pub fn hotkey() -> Style {
         Style::default()
-            .fg(palette().text)
+            .fg(palette().accent_dim)
             .add_modifier(Modifier::BOLD)
     }
 

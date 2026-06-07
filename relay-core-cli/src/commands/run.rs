@@ -568,7 +568,7 @@ pub async fn execute(
             Err(e) => error!("Failed to start proxy: {}", e),
         }
 
-        // Determine API mode: SSE + rules panel if --api-port is set
+        // `--api-port` only toggles help copy; TUI flow feed uses the broadcast channel either way.
         let api_mode = if api_port.is_some() {
             ApiMode::Connected
         } else {
