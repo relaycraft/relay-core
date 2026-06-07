@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/cli",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "RelayCore CLI — high-performance Rust traffic interception proxy with TUI",
   "license": "MIT",
   "homepage": "https://relaycore.dev",
@@ -15,11 +15,11 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "@relay-core/binaries-darwin-arm64": "0.8.0",
-    "@relay-core/binaries-darwin-x64": "0.8.0",
-    "@relay-core/binaries-linux-x64": "0.8.0",
-    "@relay-core/binaries-linux-arm64": "0.8.0",
-    "@relay-core/binaries-win32-x64": "0.8.0"
+    "@relay-core/binaries-darwin-arm64": "0.8.1",
+    "@relay-core/binaries-darwin-x64": "0.8.1",
+    "@relay-core/binaries-linux-x64": "0.8.1",
+    "@relay-core/binaries-linux-arm64": "0.8.1",
+    "@relay-core/binaries-win32-x64": "0.8.1"
   },
   "engines": {
     "node": ">=18"
