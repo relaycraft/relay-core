@@ -23,8 +23,7 @@ use super::format::{
     BodyView, ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
     empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
     format_host_port, format_size, http_flow_to_curl, main_split, path_budget_for, plan_columns,
-    visible_flow_tags,
-    smart_truncate, tags_list_suffix,
+    smart_truncate, tags_list_suffix, visible_flow_tags,
 };
 use super::theme::Theme;
 
@@ -599,10 +598,7 @@ impl TuiApp {
         lines.push(help_section("Detail Tabs"));
         lines.extend([
             help_binding("Esc  ←", "Back to flow list"),
-            help_binding(
-                "Tab",
-                "Cycle Overview → Request → Response → Messages",
-            ),
+            help_binding("Tab", "Cycle Overview → Request → Response → Messages"),
             help_binding("1 / 2 / 3 / 4", "Jump to tab (not a four-panel layout)"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
@@ -666,7 +662,9 @@ impl TuiApp {
         if filtered_flows.is_empty() {
             let block = outer_panel_block(&title, list_focused).padding(panel_body_padding());
             f.render_widget(
-                Paragraph::new(empty_flow_list_message(filtering)).style(Theme::muted()).block(block),
+                Paragraph::new(empty_flow_list_message(filtering))
+                    .style(Theme::muted())
+                    .block(block),
                 area,
             );
             return;
