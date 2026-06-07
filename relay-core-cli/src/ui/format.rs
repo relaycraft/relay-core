@@ -119,6 +119,44 @@ pub fn main_split(profile: LayoutProfile) -> Option<(u16, u16)> {
     }
 }
 
+/// Body rendering mode for request/response detail views.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BodyView {
+    /// Detect: JSON → pretty, binary → hex, other → raw.
+    Auto,
+    /// Force JSON pretty-printing.
+    Pretty,
+    /// Raw text.
+    Raw,
+    /// Hex dump (16 bytes per line).
+    Hex,
+    /// JSON path query mode.
+    JsonPath,
+}
+
+impl BodyView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Pretty,
+            Self::Pretty => Self::Raw,
+            Self::Raw => Self::Hex,
+            Self::Hex => Self::JsonPath,
+            Self::JsonPath => Self::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Pretty => "Pretty",
+            Self::Raw => "Raw",
+            Self::Hex => "Hex",
+            Self::JsonPath => "JSON Path",
+        }
+    }
+}
+
+
 /// Middle-ellipsis truncation keeping both ends visible (paths).
 pub fn smart_truncate(s: &str, max_width: usize) -> String {
     if max_width == 0 {
@@ -509,5 +547,15 @@ mod tests {
         assert!(LayoutProfile::TwoPaneExtraWide.is_two_pane());
         assert!(!LayoutProfile::SinglePane.is_two_pane());
         assert!(!LayoutProfile::TooNarrow.is_two_pane());
+    }
+
+    #[test]
+    fn body_view_next_cycles() {
+        use BodyView::*;
+        assert_eq!(Auto.next(), Pretty);
+        assert_eq!(Pretty.next(), Raw);
+        assert_eq!(Raw.next(), Hex);
+        assert_eq!(Hex.next(), JsonPath);
+        assert_eq!(JsonPath.next(), Auto);
     }
 }

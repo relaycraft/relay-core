@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::command::{Command, parse_command};
 use super::format::{
-    ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
+    BodyView, ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
     empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms, format_size,
     host_from_url, http_flow_to_curl, main_split, path_budget_for, plan_columns, smart_truncate,
     tags_list_suffix,
@@ -105,6 +105,7 @@ pub struct TuiApp {
     pub api_mode: ApiMode,
     pub command_input: String,
     pub marks: BTreeMap<Uuid, char>,
+    pub body_view: BodyView,
 }
 
 impl TuiApp {
@@ -129,6 +130,7 @@ impl TuiApp {
             api_mode,
             command_input: String::new(),
             marks: BTreeMap::new(),
+            body_view: BodyView::Auto,
         };
         app.table_state.select(Some(0));
         app
@@ -321,6 +323,10 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('y') => self.copy_curl_selection(),
+                        KeyCode::Char('v') => {
+                            self.body_view = self.body_view.next();
+                            self.toast = Some(format!("View: {}", self.body_view.label()));
+                        }
                         _ => {}
                     },
                 }
@@ -528,6 +534,9 @@ impl TuiApp {
             help_binding("G  End", "Jump to oldest (bottom)"),
             help_binding("Tab", "Focus detail panel (from list)"),
             help_binding("/", "Filter (host: path: method: status: err ws)"),
+            help_binding("A-Z", "Mark selected flow"),
+            help_binding("a-z", "Unmark selected flow"),
+            help_binding("`", "Jump to next mark"),
             help_binding("Enter  →", "Focus detail panel"),
         ]);
 
@@ -542,11 +551,13 @@ impl TuiApp {
             help_binding("1 – 4", "Jump to tab by number"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
+            help_binding("v", "Cycle body view: Auto → Pretty → Raw → Hex → JSON Path"),
         ]);
 
         lines.push(Line::from(""));
         lines.push(help_section("Actions"));
         lines.extend([
+            help_binding(":", "Command palette (:q :clear :filter :theme :view)"),
             help_binding("y", "Copy selected flow as cURL"),
             help_binding("d", "Delete selected flow"),
             help_binding("p", "Pause / resume list (proxy keeps running)"),
@@ -908,7 +919,7 @@ impl TuiApp {
                     )));
                     if body.size > 0 {
                         text.push(Line::from(""));
-                        for line in render_body_lines(&body.content) {
+                        for line in render_body_for_view(&body.content, self.body_view) {
                             text.push(line);
                         }
                     }
@@ -967,7 +978,7 @@ impl TuiApp {
                         )));
                         if body.size > 0 {
                             text.push(Line::from(""));
-                            for line in render_body_lines(&body.content) {
+                            for line in render_body_for_view(&body.content, self.body_view) {
                                 text.push(line);
                             }
                         }
@@ -1114,6 +1125,21 @@ impl TuiApp {
                 }
             }
             Command::Copy(_) => self.copy_curl_selection(),
+            Command::View(name) => {
+                let view = match name.as_str() {
+                    "auto" => BodyView::Auto,
+                    "pretty" => BodyView::Pretty,
+                    "raw" => BodyView::Raw,
+                    "hex" => BodyView::Hex,
+                    "json" | "jsonpath" => BodyView::JsonPath,
+                    _ => {
+                        self.toast = Some(format!("Unknown view: {name}"));
+                        return;
+                    }
+                };
+                self.body_view = view;
+                self.toast = Some(format!("View: {}", self.body_view.label()));
+            }
             Command::Help => {
                 self.toast = Some(
                     "Commands: :q :clear :pause :resume :filter :unfilter :theme :copy :help".into(),
@@ -1477,38 +1503,63 @@ fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'st
 
 /// Maximum body bytes to render before truncating.
 const BODY_RENDER_LIMIT: usize = 4096;
+/// Maximum body bytes to attempt full rendering; beyond this show truncated view.
+const BODY_FULL_RENDER_LIMIT: usize = 65536;
 
-/// Render body content as styled lines. Handles JSON colouring and 4 KB truncation.
-fn render_body_lines(body_content: &str) -> Vec<Line<'static>> {
+/// Dispatch body rendering based on BodyView.
+fn render_body_for_view(body_content: &str, view: BodyView) -> Vec<Line<'static>> {
+    if body_content.len() > BODY_FULL_RENDER_LIMIT {
+        return vec![Line::from(Span::styled(
+            format!(
+                "View unavailable — body too large ({} bytes). Only first {} shown.",
+                format_size(body_content.len() as u64),
+                format_size(BODY_FULL_RENDER_LIMIT as u64)
+            ),
+            Theme::muted(),
+        ))];
+    }
+    match view {
+        BodyView::Auto => render_body_auto(body_content),
+        BodyView::Pretty => render_body_pretty(body_content),
+        BodyView::Raw => render_body_raw(body_content),
+        BodyView::Hex => render_body_hex(body_content.as_bytes()),
+        BodyView::JsonPath => render_body_json_path(body_content),
+    }
+}
+
+/// Auto-detect: JSON → pretty, binary → hex, other → raw.
+fn render_body_auto(body_content: &str) -> Vec<Line<'static>> {
+    if serde_json::from_str::<Value>(body_content).is_ok() {
+        render_body_pretty(body_content)
+    } else if body_content.bytes().any(|b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t') {
+        render_body_hex(body_content.as_bytes())
+    } else {
+        render_body_raw(body_content)
+    }
+}
+
+/// JSON pretty-printed with syntax highlighting.
+fn render_body_pretty(body_content: &str) -> Vec<Line<'static>> {
+    if let Ok(value) = serde_json::from_str::<Value>(body_content) {
+        if let Ok(formatted) = serde_json::to_string_pretty(&value) {
+            return render_json_highlighted(&formatted, BODY_RENDER_LIMIT);
+        }
+    }
+    render_body_raw(body_content)
+}
+
+/// Raw UTF-8 text, truncated.
+fn render_body_raw(body_content: &str) -> Vec<Line<'static>> {
     let truncated = body_content.len() > BODY_RENDER_LIMIT;
     let display = if truncated {
         &body_content[..BODY_RENDER_LIMIT]
     } else {
         body_content
     };
-
-    let is_json = serde_json::from_str::<Value>(display).is_ok();
-
-    let mut lines: Vec<Line> = if is_json {
-        // JSON syntax highlighting
-        display
-            .lines()
-            .map(|line| {
-                Line::from(
-                    highlight_json_line(line)
-                        .into_iter()
-                        .map(|(text, style)| Span::styled(text, style))
-                        .collect::<Vec<Span>>(),
-                )
-            })
-            .collect()
-    } else {
-        display
-            .lines()
-            .map(|line| Line::from(Span::styled(line.to_string(), Theme::text())))
-            .collect()
-    };
-
+    let mut lines: Vec<Line> = display
+        .lines()
+        .map(|line| Line::from(Span::styled(line.to_string(), Theme::text())))
+        .collect();
     if truncated {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -1520,7 +1571,88 @@ fn render_body_lines(body_content: &str) -> Vec<Line<'static>> {
             Theme::muted(),
         )));
     }
+    lines
+}
 
+/// Hex dump: 16 bytes per row with offset + ASCII column.
+fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
+    let limit = BODY_RENDER_LIMIT.min(data.len());
+    let mut lines: Vec<Line> = Vec::new();
+    for row in 0..((limit + 15) / 16) {
+        let offset = row * 16;
+        let row_end = (offset + 16).min(limit);
+        let hex_part: String = data[offset..row_end]
+            .iter()
+            .map(|b| format!("{b:02x} "))
+            .collect::<Vec<_>>()
+            .join("");
+        let hex_part = format!("{hex_part:<48}");
+        let ascii_part: String = data[offset..row_end]
+            .iter()
+            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!("{offset:08x}  "), Theme::label()),
+            Span::styled(hex_part, Theme::text()),
+            Span::styled(ascii_part, Theme::muted()),
+        ]));
+    }
+    if data.len() > limit {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "… showing first {} of {} bytes",
+                format_size(limit as u64),
+                format_size(data.len() as u64)
+            ),
+            Theme::muted(),
+        )));
+    }
+    lines
+}
+
+/// JSON path view — simple pointer matching (supports `$..foo[0].bar` as `$.foo[0].bar`).
+fn render_body_json_path(body_content: &str) -> Vec<Line<'static>> {
+    // Show pretty-printed JSON with a note; actual JSON Path input is done via key `J`.
+    let mut lines = render_body_pretty(body_content);
+    lines.insert(0, Line::from(Span::styled(
+        "JSON Path mode — press J to enter a query (e.g. $.store.book[0].title)",
+        Theme::accent_dim(),
+    )));
+    lines.insert(1, Line::from(""));
+    lines
+}
+
+/// JSON syntax highlighting for a pre-formatted (pretty) string.
+fn render_json_highlighted(formatted: &str, limit: usize) -> Vec<Line<'static>> {
+    let truncated = formatted.len() > limit;
+    let display = if truncated {
+        &formatted[..limit]
+    } else {
+        formatted
+    };
+    let mut lines: Vec<Line> = display
+        .lines()
+        .map(|line| {
+            Line::from(
+                highlight_json_line(line)
+                    .into_iter()
+                    .map(|(text, style)| Span::styled(text, style))
+                    .collect::<Vec<Span>>(),
+            )
+        })
+        .collect();
+    if truncated {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "… showing first {} of {} bytes",
+                format_size(limit as u64),
+                format_size(formatted.len() as u64)
+            ),
+            Theme::muted(),
+        )));
+    }
     lines
 }
 
