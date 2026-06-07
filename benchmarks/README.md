@@ -71,8 +71,14 @@ PROXY_PORT=18080 TARGET_PORT=19000 API_PORT=18082 CONNECTIONS=100 \
 ## Output
 
 每次运行输出到 `benchmarks/results/`：
-- `bench_<timestamp>.md`
-- `bench_<timestamp>.json`
+
+| 模式 | Markdown | JSON |
+|------|----------|------|
+| single / quick / matrix（默认） | `bench_<timestamp>.md` | `bench_<timestamp>.json` |
+| `release` | `release_<timestamp>.md` | `release_<timestamp>.json` |
+
+发版前用 `--version X.Y.Z` 标注目标版本，再用 `./scripts/commit-baseline.sh X.Y.Z`
+生成 `baseline_vX.Y.Z.md` 与 `baseline_vX.Y.Z.json`（见 `RELEASE.md`）。
 
 JSON 可作为后续 CI 趋势分析与回归比较输入。
 

@@ -39,6 +39,7 @@ DURATION=60
 RUNS=5
 WARMUP_RUNS=3
 BASELINE_JSON=""
+REPORT_VERSION=""
 STRICT=0
 
 DOD_STARTUP=200
@@ -61,6 +62,7 @@ Options:
   --runs <n>             Measurement rounds for release mode (default: 5)
   --warmup-runs <n>      Warmup rounds before measurement (default: 3)
   --baseline <json>      Compare S1 against a previous JSON report (warn only)
+  --version <semver>     Label release reports (use target release, e.g. 0.8.2)
   --strict               Exit non-zero on DoD failure or >10% regression
   -h, --help             Show this help
 EOF
@@ -95,6 +97,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --baseline)
       BASELINE_JSON="${2:-}"
+      shift 2
+      ;;
+    --version)
+      REPORT_VERSION="${2#v}"
       shift 2
       ;;
     --strict)
@@ -395,6 +401,9 @@ run_release_mode() {
   fi
   ENV_INFO="$(detect_environment)"
   IFS='|' read -r OS_FULL CPU CPU_CORES RAM_GB RUSTC_VER CRATE_VER TOOL_VER <<< "$ENV_INFO"
+  if [[ -n "$REPORT_VERSION" ]]; then
+    CRATE_VER="$REPORT_VERSION"
+  fi
 
   info "Version:      ${CRATE_VER}"
   info "Environment:  ${OS_FULL} | ${CPU} (${CPU_CORES} cores) | ${RAM_GB}GB RAM"

@@ -53,16 +53,15 @@ GitHub Actions runs the same script on **ubuntu-latest** (`.github/workflows/ci.
 Full release process documented in **[RELEASE.md](./RELEASE.md)**. Quick reference:
 
 1. **Quality gate**: `./scripts/ci-check.sh` must pass
-2. **Performance baseline**: `./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30`
-3. **Version bump** (`chore: bump version to X.Y.Z`) as the last commit → push → **wait for CI green again**.
+2. **Performance baseline**: `./benchmarks/bench_minimal.sh release --version X.Y.Z --runs 5 --warmup-runs 3 --duration 30`, then `./scripts/commit-baseline.sh X.Y.Z` and commit `baseline_vX.Y.Z.{json,md}`.
+3. **Version bump** (`chore: bump version to X.Y.Z`) → push → **wait for CI green again**.
 4. **Preflight, then tag once** (requires `gh` CLI):
    ```bash
    ./scripts/release-preflight.sh X.Y.Z
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
 5. **If tag CI fails** — do **not** delete/retag; fix on `main`, bump **next patch**, repeat from step 3.
-6. **Release Notes** — workflow uses `feat`/`fix` subjects only; `chore`/`ci` are not expanded in the LLM prompt.
-   Manually add the Performance section from the baseline report.
+6. **Release Notes** — workflow uses `feat`/`fix` subjects only; `chore`/`ci` are not expanded in the LLM prompt. `release.yml` appends `benchmarks/results/baseline_vX.Y.Z.md` when present.
 
 *   **Run Offline Tests**:
     ```bash

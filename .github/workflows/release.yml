@@ -127,16 +127,38 @@ jobs:
   finalize:
     needs: [notes, build]
     runs-on: ubuntu-latest
-    if: needs.notes.outputs.has-notes == 'true'
+    if: needs.build.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: release-notes
 
-      - name: Update release body
+      - name: Assemble and update release body
         run: |
-          gh release edit "${{ github.ref_name }}" --notes-file notes.md
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          OUT="assembled-notes.md"
+
+          if [ -f notes.md ]; then
+            cat notes.md > "$OUT"
+          else
+            echo "# RelayCore v${VERSION}" > "$OUT"
+          fi
+
+          BASELINE="benchmarks/results/baseline_v${VERSION}.md"
+          if [ -f "$BASELINE" ]; then
+            echo "" >> "$OUT"
+            echo "---" >> "$OUT"
+            echo "" >> "$OUT"
+            cat "$BASELINE" >> "$OUT"
+          else
+            echo "" >> "$OUT"
+            echo "_No benchmarks/results/baseline_v${VERSION}.md at this tag._" >> "$OUT"
+          fi
+
+          gh release edit "${GITHUB_REF_NAME}" --notes-file "$OUT"
         env:
           GH_TOKEN: ${{ github.token }}
