@@ -13,8 +13,10 @@ use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::time::Instant;
 use url::Url;
+use uuid::Uuid;
 
 use super::command::{Command, parse_command};
 use super::format::{
@@ -102,6 +104,7 @@ pub struct TuiApp {
     pub req_timestamps: VecDeque<Instant>,
     pub api_mode: ApiMode,
     pub command_input: String,
+    pub marks: BTreeMap<Uuid, char>,
 }
 
 impl TuiApp {
@@ -125,6 +128,7 @@ impl TuiApp {
             req_timestamps: VecDeque::with_capacity(64),
             api_mode,
             command_input: String::new(),
+            marks: BTreeMap::new(),
         };
         app.table_state.select(Some(0));
         app
@@ -153,7 +157,9 @@ impl TuiApp {
             }
             self.flows.push_front(flow);
             if self.flows.len() > 1000 {
-                self.flows.pop_back();
+                if let Some(evicted) = self.flows.pop_back() {
+                    self.marks.remove(&evicted.id);
+                }
             }
             if self.auto_scroll {
                 self.table_state.select(Some(0));
@@ -271,6 +277,20 @@ impl TuiApp {
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                             self.active_area = ActiveArea::FlowDetail
                         }
+                        KeyCode::Char(c @ 'A'..='Z') => {
+                            if let Some(f) = self.selected_flow() {
+                                self.marks.insert(f.id, c);
+                                self.toast = Some(format!("Marked '{}'", c));
+                            }
+                        }
+                        KeyCode::Char(c @ 'a'..='z') => {
+                            let flow_id = self.selected_flow().map(|f| f.id);
+                            let removed = flow_id.map(|id| self.marks.remove(&id).is_some()).unwrap_or(false);
+                            if removed {
+                                self.toast = Some(format!("Unmarked '{}'", c.to_ascii_uppercase()));
+                            }
+                        }
+                        KeyCode::Char('`') => self.next_mark(),
                         _ => {}
                     },
                     ActiveArea::FlowDetail => match key {
@@ -375,6 +395,37 @@ impl TuiApp {
         self.table_state.select(Some(i));
     }
 
+    fn next_mark(&mut self) {
+        if self.marks.is_empty() {
+            return;
+        }
+        // Get all marked flow IDs sorted by mark char
+        let mut marked: Vec<(char, Uuid)> = self.marks.iter().map(|(id, c)| (*c, *id)).collect();
+        marked.sort_by_key(|(c, _)| *c);
+        // Find first mark after cursor
+        if let Some(selected_id) = self.selected_flow().map(|f| f.id) {
+            if let Some(pos) = marked.iter().position(|(_, id)| *id == selected_id) {
+                let next = (pos + 1) % marked.len();
+                let target_id = marked[next].1;
+                if let Some(idx) = self.get_filtered_flows().iter().position(|f| f.id == target_id) {
+                    self.table_state.select(Some(idx));
+                    self.auto_scroll = false;
+                    self.detail_scroll = 0;
+                    self.toast = Some(format!("Jumped to mark '{}'", marked[next].0));
+                }
+                return;
+            }
+        }
+        // No selection or not in marked — jump to first mark
+        let target_id = marked[0].1;
+        if let Some(idx) = self.get_filtered_flows().iter().position(|f| f.id == target_id) {
+            self.table_state.select(Some(idx));
+            self.auto_scroll = false;
+            self.detail_scroll = 0;
+            self.toast = Some(format!("Jumped to mark '{}'", marked[0].0));
+        }
+    }
+
     fn delete_selected(&mut self) {
         let id = self
             .table_state
@@ -382,6 +433,7 @@ impl TuiApp {
             .and_then(|i| self.get_filtered_flows().get(i).map(|f| f.id));
         if let Some(id) = id {
             self.flows.retain(|f| f.id != id);
+            self.marks.remove(&id);
             let new_len = self.get_filtered_flows().len();
             if new_len == 0 {
                 self.table_state.select(None);
@@ -570,6 +622,7 @@ impl TuiApp {
             .iter()
             .enumerate()
             .map(|(i, flow)| {
+                let mark = self.marks.get(&flow.id).copied();
                 flow_table_row(
                     flow,
                     profile,
@@ -577,6 +630,7 @@ impl TuiApp {
                     filter,
                     filtering,
                     selected == Some(i),
+                    mark,
                 )
             })
             .collect();
@@ -1015,6 +1069,11 @@ impl TuiApp {
         if self.pending_count > 0 {
             hints.insert(0, (12, format!("↓{} new", self.pending_count)));
         }
+        if !self.marks.is_empty() {
+            let marked: Vec<char> = self.marks.values().copied().collect();
+            let label = format!("marks: {}", marked.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","));
+            hints.push((10, label));
+        }
         hints
     }
 
@@ -1264,6 +1323,7 @@ fn flow_table_row(
     filter: &str,
     filtering: bool,
     selected: bool,
+    mark: Option<char>,
 ) -> Row<'static> {
     let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
         Layer::Http(h) => {
@@ -1313,6 +1373,10 @@ fn flow_table_row(
     } else {
         Cell::from(Span::raw(""))
     };
+    let mark_cell = Cell::from(Span::styled(
+        mark.map(|c| c.to_string()).unwrap_or_default(),
+        Theme::host_color(""),
+    ));
     let method_key = method_label.trim_end_matches('+');
     let method_cell = Cell::from(Span::styled(
         method_label.clone(),
@@ -1336,6 +1400,7 @@ fn flow_table_row(
             let url_text = smart_truncate(url.as_str(), path_budget);
             Row::new(vec![
                 marker_cell,
+                mark_cell,
                 Cell::from(Span::styled(url_text, Theme::text())),
             ])
         }
@@ -1348,6 +1413,7 @@ fn flow_table_row(
             };
             Row::new(vec![
                 marker_cell,
+                mark_cell,
                 method_cell,
                 status_cell,
                 dur_cell,
@@ -1365,6 +1431,7 @@ fn flow_table_row(
             };
             Row::new(vec![
                 marker_cell,
+                mark_cell,
                 method_cell,
                 status_cell,
                 dur_cell,
@@ -2112,5 +2179,85 @@ mod tests {
             ));
             terminal.draw(|f| app.ui(f)).unwrap();
         }
+    }
+
+    #[test]
+    fn test_mark_flow_with_uppercase_letter() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://example.com/test",
+            "GET",
+        ));
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::Char('A')));
+        assert_eq!(app.marks.get(&id), Some(&'A'));
+        assert!(app.toast.as_deref() == Some("Marked 'A'"));
+    }
+
+    #[test]
+    fn test_unmark_flow_with_lowercase_letter() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://example.com/test",
+            "GET",
+        ));
+        app.marks.insert(id, 'A');
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::Char('a')));
+        assert!(!app.marks.contains_key(&id));
+        assert!(app.toast.as_deref() == Some("Unmarked 'A'"));
+    }
+
+    #[test]
+    fn test_next_mark_jumps_to_next_marked_flow() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let id1 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let id2 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://example.com/a",
+            "GET",
+        ));
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000002",
+            "http://example.com/b",
+            "GET",
+        ));
+        app.marks.insert(id1, 'A');
+        app.marks.insert(id2, 'B');
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::Char('`')));
+        // Should jump to flow b (next mark after A)
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_delete_selected_removes_mark() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        app.flows.push_back(make_http_flow(
+            "00000000-0000-0000-0000-000000000001",
+            "http://example.com/test",
+            "GET",
+        ));
+        app.marks.insert(id, 'Z');
+        app.table_state.select(Some(0));
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(!app.marks.contains_key(&id));
+    }
+
+    #[test]
+    fn test_status_hints_shows_marks() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        app.marks.insert(id, 'A');
+        let id2 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        app.marks.insert(id2, 'B');
+        let hints = app.status_hints();
+        assert!(hints.iter().any(|(_, s)| s.contains("marks:") && s.contains("A") && s.contains("B")));
     }
 }

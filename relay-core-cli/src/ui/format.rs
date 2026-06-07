@@ -59,13 +59,16 @@ pub enum ColumnWidth {
 /// Return column definitions for a given layout profile.
 pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
     use ColumnWidth::*;
+    const MK_COL: ColumnPlan = ColumnPlan { header: "Mk", width: Fixed(1) };
     match profile {
         LayoutProfile::TooNarrow | LayoutProfile::SinglePane => &[
             ColumnPlan { header: "", width: Fixed(2) },
+            MK_COL,
             ColumnPlan { header: "Flow", width: Rest },
         ],
         LayoutProfile::TwoPaneCompact => &[
             ColumnPlan { header: "", width: Fixed(2) },
+            MK_COL,
             ColumnPlan { header: "Method", width: Fixed(6) },
             ColumnPlan { header: "Code", width: Fixed(5) },
             ColumnPlan { header: "Dur", width: Fixed(7) },
@@ -73,6 +76,7 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
         ],
         LayoutProfile::TwoPaneStandard => &[
             ColumnPlan { header: "", width: Fixed(2) },
+            MK_COL,
             ColumnPlan { header: "Method", width: Fixed(6) },
             ColumnPlan { header: "Code", width: Fixed(5) },
             ColumnPlan { header: "Dur", width: Fixed(7) },
@@ -80,6 +84,7 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
         ],
         LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => &[
             ColumnPlan { header: "", width: Fixed(2) },
+            MK_COL,
             ColumnPlan { header: "Method", width: Fixed(6) },
             ColumnPlan { header: "Code", width: Fixed(5) },
             ColumnPlan { header: "Dur", width: Fixed(7) },
@@ -91,13 +96,15 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
 }
 
 /// Calculate the path budget for wide profiles (Host + Path columns).
+/// Overhead includes marker(2) + Mk(1) + method(6) + status(5) + dur(7) + size(9) + host(18) = 48.
+/// For compact/standard: marker(2) + Mk(1) + method(6) + status(5) + dur(7) = 21.
 pub fn path_budget_for(profile: LayoutProfile, area_width: u16) -> usize {
     let overhead: u16 = match profile {
-        LayoutProfile::TwoPaneWide => 50,
+        LayoutProfile::TwoPaneWide => 48,
         LayoutProfile::TwoPaneExtraWide => {
-            50u16.saturating_sub((area_width.saturating_sub(180)) / 2)
+            48u16.saturating_sub((area_width.saturating_sub(180)) / 2)
         }
-        _ => 26,
+        _ => 21,
     };
     usize::from(area_width.saturating_sub(overhead))
 }
