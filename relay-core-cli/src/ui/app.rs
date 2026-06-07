@@ -23,6 +23,7 @@ use super::format::{
     BodyView, ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
     empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
     format_host_port, format_size, http_flow_to_curl, main_split, path_budget_for, plan_columns,
+    visible_flow_tags,
     smart_truncate, tags_list_suffix,
 };
 use super::theme::Theme;
@@ -644,11 +645,12 @@ impl TuiApp {
 
     fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
         let filtered_flows = self.get_filtered_flows();
-        let profile = LayoutProfile::for_width(area.width);
-        let columns = plan_columns(profile);
+        let show_mark = !self.marks.is_empty();
+        let profile = LayoutProfile::for_flow_list_width(area.width);
+        let columns = plan_columns(profile, show_mark);
         let filter = &self.filter_input;
         let filtering = !filter.is_empty();
-        let path_budget = path_budget_for(profile, area.width);
+        let path_budget = path_budget_for(profile, area.width, show_mark);
 
         let list_focused = self.active_area == ActiveArea::FlowList;
         let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
@@ -662,23 +664,11 @@ impl TuiApp {
             .collect();
 
         if filtered_flows.is_empty() {
-            let cells: Vec<Cell> = columns
-                .iter()
-                .map(|c| {
-                    if matches!(c.width, ColumnWidth::Rest) {
-                        Cell::from(Line::from(Span::styled(
-                            empty_flow_list_message(filtering),
-                            Theme::muted(),
-                        )))
-                    } else {
-                        Cell::from("")
-                    }
-                })
-                .collect();
-            let row = Row::new(cells);
-            let table =
-                Table::new(vec![row], widths).block(outer_panel_block(&title, list_focused));
-            f.render_widget(table, area);
+            let block = outer_panel_block(&title, list_focused).padding(panel_body_padding());
+            f.render_widget(
+                Paragraph::new(empty_flow_list_message(filtering)).style(Theme::muted()).block(block),
+                area,
+            );
             return;
         }
 
@@ -693,8 +683,8 @@ impl TuiApp {
                     profile,
                     path_budget,
                     filter,
-                    filtering,
                     selected == Some(i),
+                    show_mark,
                     mark,
                 )
             })
@@ -838,11 +828,14 @@ impl TuiApp {
         }
 
         if !flow.tags.is_empty() {
-            push_panel_section(&mut lines, "Tags");
-            lines.push(Line::from(vec![
-                Span::raw(PANEL_SECTION_INDENT),
-                Span::styled(flow.tags.join("  "), Theme::accent_dim()),
-            ]));
+            let visible = visible_flow_tags(&flow.tags);
+            if !visible.is_empty() {
+                push_panel_section(&mut lines, "Tags");
+                lines.push(Line::from(vec![
+                    Span::raw(PANEL_SECTION_INDENT),
+                    Span::styled(visible.join("  "), Theme::accent_dim()),
+                ]));
+            }
         }
 
         let timing_present = match &flow.layer {
@@ -1097,22 +1090,14 @@ impl TuiApp {
 
     fn status_hints(&self) -> Vec<(u16, String)> {
         let p_action = if self.paused { "resume" } else { "pause" };
-        let active = match self.active_area {
-            ActiveArea::FlowList => "LIST",
-            ActiveArea::FlowDetail => "DETAIL",
-        };
         let mut hints = vec![
             (10, "[?]help".into()),
-            (12, format!("[{active}]")),
             (8, "[q]quit".into()),
             (8, "[/]filter".into()),
             (8, "[y]curl".into()),
             (12, format!("[p]{p_action}")),
             (8, "[c]clear".into()),
         ];
-        if self.pending_count > 0 {
-            hints.insert(0, (12, format!("↓{} new", self.pending_count)));
-        }
         if !self.marks.is_empty() {
             let mut marked: Vec<char> = self.marks.values().copied().collect();
             marked.sort();
@@ -1241,10 +1226,16 @@ impl TuiApp {
                     Span::raw("")
                 };
 
+                let focus = match self.active_area {
+                    ActiveArea::FlowList => Span::styled("· LIST · ", Theme::muted()),
+                    ActiveArea::FlowDetail => Span::styled("· DETAIL · ", Theme::muted()),
+                };
+
                 // Left section
                 let left = vec![
                     rec,
                     pending,
+                    focus,
                     Span::styled("Flows: ", Theme::label()),
                     Span::styled(format!("{} ", count_str), Theme::stat_ok()),
                     Span::styled(format!("{}req/s ", req_per_sec), Theme::stat_info()),
@@ -1255,10 +1246,10 @@ impl TuiApp {
 
                 // Middle section
                 let middle = vec![
-                    Span::styled(" :{} ", Theme::uptime()),
-                    Span::styled(format!("{}", self.proxy_port), Theme::uptime()),
-                    Span::styled(" ", Theme::muted()),
-                    Span::styled(format!("up {}", uptime), Theme::uptime()),
+                    Span::styled("proxy ", Theme::label()),
+                    Span::styled(format!(":{}", self.proxy_port), Theme::uptime()),
+                    Span::styled("  up ", Theme::muted()),
+                    Span::styled(uptime, Theme::uptime()),
                 ];
 
                 // Right section — priority-based hints that truncate on narrow terminals.
@@ -1398,10 +1389,11 @@ fn flow_table_row(
     profile: LayoutProfile,
     path_budget: usize,
     filter: &str,
-    filtering: bool,
     selected: bool,
+    show_mark: bool,
     mark: Option<char>,
 ) -> Row<'static> {
+    let filtering = !filter.is_empty();
     let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
         Layer::Http(h) => {
             let size = h
@@ -1475,14 +1467,17 @@ fn flow_table_row(
 
     let tags_str = tags_list_suffix(&flow.tags);
 
+    let mut prefix = vec![marker_cell];
+    if show_mark {
+        prefix.push(mark_cell);
+    }
+
     match profile {
         LayoutProfile::TooNarrow | LayoutProfile::SinglePane => {
             let url_text = smart_truncate(url.as_str(), path_budget);
-            Row::new(vec![
-                marker_cell,
-                mark_cell,
-                Cell::from(Span::styled(url_text, Theme::text())),
-            ])
+            let mut cells = prefix;
+            cells.push(Cell::from(Span::styled(url_text, Theme::text())));
+            Row::new(cells)
         }
         LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => {
             let url_text = smart_truncate(url.as_str(), path_budget);
@@ -1491,14 +1486,14 @@ fn flow_table_row(
             } else {
                 format!("{}{}", url_text, tags_str)
             };
-            Row::new(vec![
-                marker_cell,
-                mark_cell,
+            let mut cells = prefix;
+            cells.extend([
                 method_cell,
                 status_cell,
                 dur_cell,
                 styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
-            ])
+            ]);
+            Row::new(cells)
         }
         LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => {
             let host = format_host_port(&url);
@@ -1509,16 +1504,16 @@ fn flow_table_row(
             } else {
                 format!("{}{}", path, tags_str)
             };
-            Row::new(vec![
-                marker_cell,
-                mark_cell,
+            let mut cells = prefix;
+            cells.extend([
                 method_cell,
                 status_cell,
                 dur_cell,
                 Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
                 Cell::from(Span::styled(host, Style::default().fg(host_color))),
                 styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
-            ])
+            ]);
+            Row::new(cells)
         }
     }
 }
@@ -2370,15 +2365,11 @@ mod tests {
     }
 
     #[test]
-    fn test_status_hints_includes_pending_count() {
+    fn test_status_hints_omits_pending_count() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
-        let hints = app.status_hints();
-        // No pending hint when count is 0
-        assert!(!hints.iter().any(|(_, s)| s.contains("new")));
-
         app.pending_count = 5;
         let hints = app.status_hints();
-        assert_eq!(hints[0].1, "↓5 new");
+        assert!(!hints.iter().any(|(_, s)| s.contains("new")));
     }
 
     #[test]

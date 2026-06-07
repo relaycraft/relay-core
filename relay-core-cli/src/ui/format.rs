@@ -33,6 +33,17 @@ impl LayoutProfile {
         }
     }
 
+    /// Column layout for the flow-list panel (often narrower than the full terminal).
+    pub fn for_flow_list_width(width: u16) -> Self {
+        match width {
+            0..=59 => Self::TooNarrow,
+            60..=69 => Self::SinglePane,
+            70..=84 => Self::TwoPaneCompact,
+            85..=159 => Self::TwoPaneWide,
+            _ => Self::TwoPaneExtraWide,
+        }
+    }
+
     /// Whether this profile supports a two-pane layout.
     pub fn is_two_pane(self) -> bool {
         matches!(
@@ -59,54 +70,29 @@ pub enum ColumnWidth {
     Rest,
 }
 
-/// Return column definitions for a given layout profile.
-pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
+/// Return column definitions for a flow-list table.
+pub fn plan_columns(profile: LayoutProfile, show_mark: bool) -> Vec<ColumnPlan> {
     use ColumnWidth::*;
+    const MARKER_COL: ColumnPlan = ColumnPlan {
+        header: "",
+        width: Fixed(2),
+    };
     const MK_COL: ColumnPlan = ColumnPlan {
         header: "Mk",
         width: Fixed(1),
     };
-    match profile {
-        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => &[
-            ColumnPlan {
-                header: "",
-                width: Fixed(2),
-            },
-            MK_COL,
-            ColumnPlan {
-                header: "Flow",
-                width: Rest,
-            },
-        ],
-        LayoutProfile::TwoPaneCompact => &[
-            ColumnPlan {
-                header: "",
-                width: Fixed(2),
-            },
-            MK_COL,
-            ColumnPlan {
-                header: "Method",
-                width: Fixed(6),
-            },
-            ColumnPlan {
-                header: "Code",
-                width: Fixed(5),
-            },
-            ColumnPlan {
-                header: "Dur",
-                width: Fixed(7),
-            },
-            ColumnPlan {
-                header: "URL",
-                width: Rest,
-            },
-        ],
-        LayoutProfile::TwoPaneStandard => &[
-            ColumnPlan {
-                header: "",
-                width: Fixed(2),
-            },
-            MK_COL,
+
+    let mut cols = vec![MARKER_COL];
+    if show_mark {
+        cols.push(MK_COL);
+    }
+
+    let rest: &[ColumnPlan] = match profile {
+        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => &[ColumnPlan {
+            header: "Flow",
+            width: Rest,
+        }],
+        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => &[
             ColumnPlan {
                 header: "Method",
                 width: Fixed(6),
@@ -125,11 +111,6 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
             },
         ],
         LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => &[
-            ColumnPlan {
-                header: "",
-                width: Fixed(2),
-            },
-            MK_COL,
             ColumnPlan {
                 header: "Method",
                 width: Fixed(6),
@@ -155,18 +136,18 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
                 width: Rest,
             },
         ],
-    }
+    };
+    cols.extend_from_slice(rest);
+    cols
 }
 
 /// Calculate the path budget for wide profiles (Host + Path columns).
-/// Overhead includes marker(2) + Mk(1) + method(6) + status(5) + dur(7) + size(9) + host(18) = 48.
-/// For compact/standard: marker(2) + Mk(1) + method(6) + status(5) + dur(7) = 21.
-/// For single-pane: marker(2) + Mk(1) = 3.
-pub fn path_budget_for(profile: LayoutProfile, area_width: u16) -> usize {
+pub fn path_budget_for(profile: LayoutProfile, area_width: u16, show_mark: bool) -> usize {
+    let mk = u16::from(show_mark);
     let overhead: u16 = match profile {
-        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => 3,
-        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => 21,
-        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => 48,
+        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => 2 + mk,
+        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => 2 + mk + 6 + 5 + 7,
+        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => 2 + mk + 6 + 5 + 7 + 9 + 18,
     };
     usize::from(area_width.saturating_sub(overhead))
 }
@@ -338,17 +319,21 @@ pub fn flow_list_title(filter: &str, filtered_count: usize, total_in_list: usize
 
 /// Suffix for flow-list URL/path cells. Omits universal `proxy`/`mitm` tags (shown in detail).
 pub fn tags_list_suffix(tags: &[String]) -> String {
-    const HIDDEN: &[&str] = &["proxy", "mitm"];
-    let visible: Vec<&str> = tags
-        .iter()
-        .map(String::as_str)
-        .filter(|t| !HIDDEN.contains(t))
-        .collect();
+    let visible = visible_flow_tags(tags);
     if visible.is_empty() {
         String::new()
     } else {
         format!("  {}", visible.join(" "))
     }
+}
+
+/// Tags worth showing in the UI (hides universal proxy/mitm markers).
+pub fn visible_flow_tags(tags: &[String]) -> Vec<&str> {
+    const HIDDEN: &[&str] = &["proxy", "mitm"];
+    tags.iter()
+        .map(String::as_str)
+        .filter(|t| !HIDDEN.contains(t))
+        .collect()
 }
 
 fn shell_escape_single(s: &str) -> String {
@@ -578,6 +563,35 @@ mod tests {
         assert!(curl.contains("curl -X GET"));
         assert!(curl.contains("http://example.com/path"));
         assert!(curl.contains("Accept"));
+    }
+
+    #[test]
+    fn flow_list_column_profile_uses_host_path_earlier() {
+        assert_eq!(
+            LayoutProfile::for_flow_list_width(84),
+            LayoutProfile::TwoPaneCompact
+        );
+        assert_eq!(
+            LayoutProfile::for_flow_list_width(85),
+            LayoutProfile::TwoPaneWide
+        );
+    }
+
+    #[test]
+    fn plan_columns_hides_mark_when_empty() {
+        let with_mark = plan_columns(LayoutProfile::TwoPaneCompact, true);
+        assert_eq!(with_mark.len(), 6);
+        assert_eq!(with_mark[1].header, "Mk");
+
+        let without_mark = plan_columns(LayoutProfile::TwoPaneCompact, false);
+        assert_eq!(without_mark.len(), 5);
+        assert_eq!(without_mark[1].header, "Method");
+    }
+
+    #[test]
+    fn visible_flow_tags_hides_universal() {
+        let tags = vec!["proxy".into(), "api".into(), "mitm".into()];
+        assert_eq!(visible_flow_tags(&tags), vec!["api"]);
     }
 
     #[test]
