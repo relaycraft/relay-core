@@ -1,5 +1,4 @@
 use crate::server;
-use crate::sse_client::ApiClient;
 use crate::ui::app::{ApiMode, TuiApp};
 use crate::ui::theme;
 use crate::utils::load_rules;
@@ -246,86 +245,6 @@ fn log_startup_endpoints(
         startup_row("TUI", "run with --ui for interactive mode")
     );
     info!("──────────────────────────────────────────────");
-}
-
-async fn run_tui_with_polling(
-    mut app: TuiApp,
-    mut flow_rx: tokio::sync::broadcast::Receiver<FlowUpdate>,
-    mut rules_rx: mpsc::Receiver<Vec<relay_core_api::rule::Rule>>,
-    mut intercept_rx: mpsc::Receiver<serde_json::Value>,
-) -> Result<()> {
-    use std::sync::atomic::AtomicBool;
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_tui = shutdown.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        shutdown_tui.store(true, Ordering::Relaxed);
-    });
-
-    struct TerminalGuard;
-    impl Drop for TerminalGuard {
-        fn drop(&mut self) {
-            let _ = disable_raw_mode();
-            let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
-        }
-    }
-
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let _guard = TerminalGuard;
-
-    let tick_rate = std::time::Duration::from_millis(250);
-    let mut last_tick = std::time::Instant::now();
-
-    loop {
-        terminal.draw(|f| app.ui(f))?;
-
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_default();
-
-        if crossterm::event::poll(timeout)?
-            && let Event::Key(event) = event::read()?
-        {
-            app.on_key(event);
-        }
-
-        if shutdown.load(Ordering::Relaxed) {
-            app.should_quit = true;
-        }
-
-        if app.should_quit {
-            break;
-        }
-
-        while let Ok(update) = flow_rx.try_recv() {
-            if let FlowUpdate::Full(flow) = update {
-                app.on_flow(*flow);
-            }
-        }
-        if let Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) = flow_rx.try_recv() {
-            tracing::warn!("TUI lagged behind by {n} flow updates, resyncing");
-        }
-
-        while let Ok(rules) = rules_rx.try_recv() {
-            app.rules = rules;
-        }
-
-        while let Ok(summary) = intercept_rx.try_recv() {
-            app.intercept_summary = summary;
-        }
-
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = std::time::Instant::now();
-        }
-    }
-
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -640,61 +559,7 @@ pub async fn execute(
         let app = TuiApp::new(port, api_mode);
         debug!("Proxy listening on {} | Press ? for help, q to quit", addr);
 
-        if api_mode == ApiMode::Connected {
-            let api_port = api_port.unwrap();
-            let api_url = format!("http://{}:{}", api_bind, api_port);
-            let api_token = api_token.clone();
-
-            // Spawn rules fetch loop with a different channel
-            let (rules_tx, rules_rx) = mpsc::channel::<Vec<relay_core_api::rule::Rule>>(8);
-            {
-                let client = ApiClient::new(api_url.clone(), api_token.clone());
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-                    loop {
-                        interval.tick().await;
-                        match client.fetch_rules().await {
-                            Ok(rules) => {
-                                if rules_tx.send(rules).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to fetch rules: {e}");
-                            }
-                        }
-                    }
-                });
-            }
-
-            // Spawn intercept summary poller
-            let (intercept_tx, intercept_rx) = mpsc::channel::<serde_json::Value>(8);
-            {
-                let client = ApiClient::new(api_url.clone(), api_token.clone());
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
-                    loop {
-                        interval.tick().await;
-                        match client.fetch_intercept_summary().await {
-                            Ok(summary) => {
-                                if intercept_tx.send(summary).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to fetch intercepts: {e}");
-                            }
-                        }
-                    }
-                });
-            }
-
-            // Same process as the proxy: use the local broadcast feed for flows.
-            // HTTP polling covers rules/intercepts; SSE is for external clients only.
-            if let Some(rx) = tui_rx {
-                run_tui_with_polling(app, rx, rules_rx, intercept_rx).await?;
-            }
-        } else if let Some(rx) = tui_rx
+        if let Some(rx) = tui_rx
             && let Err(e) = run_tui_broadcast(app, rx).await
         {
             let _ = disable_raw_mode();

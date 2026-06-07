@@ -11,7 +11,6 @@ use ratatui::{
 };
 use relay_core_api::flow::{Flow, Layer};
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
-use relay_core_api::rule::Rule;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -70,14 +69,12 @@ pub enum InputMode {
 pub enum ActiveArea {
     FlowList,
     FlowDetail,
-    RulesPanel,
-    InterceptsPanel,
 }
 
 /// Whether the TUI is connected to the HTTP API for richer features.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ApiMode {
-    /// API available: SSE feed + rules panel + 4-panel layout
+    /// API available: SSE feed (rules/intercepts via `:` command in future)
     Connected,
     /// No API: broadcast-channel-only, 2-panel layout (legacy)
     Offline,
@@ -101,9 +98,6 @@ pub struct TuiApp {
     pub pending_count: u64,
     pub req_timestamps: VecDeque<Instant>,
     pub api_mode: ApiMode,
-    pub rules: Vec<Rule>,
-    pub rules_table_state: TableState,
-    pub intercept_summary: serde_json::Value,
 }
 
 impl TuiApp {
@@ -126,9 +120,6 @@ impl TuiApp {
             pending_count: 0,
             req_timestamps: VecDeque::with_capacity(64),
             api_mode,
-            rules: Vec::new(),
-            rules_table_state: TableState::default(),
-            intercept_summary: serde_json::Value::Null,
         };
         app.table_state.select(Some(0));
         app
@@ -231,12 +222,6 @@ impl TuiApp {
                             self.table_state.select(None);
                             self.detail_scroll = 0;
                         }
-                        KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
-                            self.active_area = ActiveArea::RulesPanel;
-                        }
-                        KeyCode::Char('i') if self.api_mode == ApiMode::Connected => {
-                            self.active_area = ActiveArea::InterceptsPanel;
-                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.next();
                             self.auto_scroll = false;
@@ -283,12 +268,6 @@ impl TuiApp {
                         KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                             self.active_area = ActiveArea::FlowList
                         }
-                        KeyCode::Char('r') if self.api_mode == ApiMode::Connected => {
-                            self.active_area = ActiveArea::RulesPanel;
-                        }
-                        KeyCode::Char('i') if self.api_mode == ApiMode::Connected => {
-                            self.active_area = ActiveArea::InterceptsPanel;
-                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             self.detail_scroll = self.detail_scroll.saturating_add(1)
                         }
@@ -312,42 +291,6 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('y') => self.copy_curl_selection(),
-                        _ => {}
-                    },
-                    ActiveArea::RulesPanel => match key {
-                        KeyCode::Char('q') => self.should_quit = true,
-                        KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                            self.active_area = ActiveArea::FlowList
-                        }
-                        KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('i') => {
-                            self.active_area = ActiveArea::InterceptsPanel;
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let len = self.rules.len();
-                            let i = self
-                                .rules_table_state
-                                .selected()
-                                .map(|i| if i + 1 < len { i + 1 } else { 0 })
-                                .unwrap_or(0);
-                            self.rules_table_state.select(Some(i));
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let len = self.rules.len();
-                            let i = self
-                                .rules_table_state
-                                .selected()
-                                .map(|i| if i > 0 { i - 1 } else { len.saturating_sub(1) })
-                                .unwrap_or(0);
-                            self.rules_table_state.select(Some(i));
-                        }
-                        _ => {}
-                    },
-                    ActiveArea::InterceptsPanel => match key {
-                        KeyCode::Char('q') => self.should_quit = true,
-                        KeyCode::Esc => self.active_area = ActiveArea::FlowList,
-                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('r') => {
-                            self.active_area = ActiveArea::RulesPanel;
-                        }
                         _ => {}
                     },
                 }
@@ -443,14 +386,10 @@ impl TuiApp {
 
         let narrow = area.width < LAYOUT_NARROW_MAX;
 
-        if self.api_mode == ApiMode::Connected && !narrow {
-            self.render_four_panel(f, chunks[0]);
-        } else if narrow {
+        if narrow {
             match self.active_area {
                 ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
                 ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
-                ActiveArea::RulesPanel => self.render_rules_panel(f, chunks[0]),
-                ActiveArea::InterceptsPanel => self.render_intercepts_panel(f, chunks[0]),
             }
         } else {
             let (list_width, detail_width) = if area.width < 100 {
@@ -479,56 +418,6 @@ impl TuiApp {
         }
     }
 
-    fn render_four_panel(&mut self, f: &mut Frame, area: Rect) {
-        let vert = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-            .split(area);
-
-        let top = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(vert[0]);
-
-        let bottom = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(vert[1]);
-
-        self.render_flow_list(f, top[0]);
-        self.render_flow_detail(f, top[1]);
-        self.render_rules_panel(f, bottom[0]);
-        self.render_intercepts_panel(f, bottom[1]);
-    }
-
-    fn render_intercepts_panel(&self, f: &mut Frame, area: Rect) {
-        let focused = self.active_area == ActiveArea::InterceptsPanel;
-        let block = inner_panel_block("Intercepts", focused);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let body = panel_body_block(0);
-        if self.intercept_summary.is_null() {
-            let p = Paragraph::new("(no intercepts)")
-                .style(Theme::muted())
-                .block(body);
-            f.render_widget(p, inner);
-        } else {
-            let pending = self.intercept_summary["pending_count"]
-                .as_u64()
-                .unwrap_or(0);
-            let ws = self.intercept_summary["ws_pending_count"]
-                .as_u64()
-                .unwrap_or(0);
-            let p = Paragraph::new(vec![
-                panel_kv_line("Pending:", pending.to_string(), Theme::value()),
-                panel_kv_line("WS Pending:", ws.to_string(), Theme::value()),
-            ])
-            .block(body);
-            f.render_widget(p, inner);
-        }
-    }
-
     fn render_help_overlay(&self, f: &mut Frame) {
         let mut lines: Vec<Line> = vec![
             Line::from(vec![Span::styled("RelayCore TUI", Theme::accent_bold())]),
@@ -542,7 +431,7 @@ impl TuiApp {
                     Span::styled("Mode: ", Theme::label()),
                     Span::styled("API Connected ", Theme::stat_ok()),
                     Span::styled(
-                        "(4-panel: flows, detail, rules, intercepts)",
+                        "(2-panel: flows + detail)",
                         Theme::muted(),
                     ),
                 ]));
@@ -595,14 +484,6 @@ impl TuiApp {
             help_binding("p", "Pause / resume list (proxy keeps running)"),
             help_binding("c", "Clear flow list"),
         ]);
-        if self.api_mode == ApiMode::Connected {
-            lines.extend([
-                help_binding("r", "Focus rules (bottom-left)"),
-                help_binding("i", "Focus intercepts (bottom-right)"),
-                help_binding("l", "Rules → intercepts (when on rules)"),
-            ]);
-        }
-
         lines.push(Line::from(""));
         lines.push(help_section("General"));
         lines.extend([
@@ -1116,114 +997,6 @@ impl TuiApp {
         }
     }
 
-    fn render_rules_panel(&mut self, f: &mut Frame, area: Rect) {
-        let rules_focused = self.active_area == ActiveArea::RulesPanel;
-        let count = self.rules.len();
-        let title = format!("Rules ({count})");
-
-        if self.rules.is_empty() {
-            let row = Row::new(vec![
-                Cell::from(""),
-                Cell::from(Line::from(Span::styled(
-                    "(no rules loaded)",
-                    Theme::muted(),
-                ))),
-            ]);
-            let table = Table::new(
-                vec![row],
-                [
-                    Constraint::Length(RULES_TABLE_MARKER_COL),
-                    Constraint::Min(0),
-                ],
-            )
-            .block(outer_panel_block(&title, rules_focused));
-            f.render_widget(table, area);
-            return;
-        }
-
-        let widths = [
-            Constraint::Length(RULES_TABLE_MARKER_COL),
-            Constraint::Length(16),
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ];
-
-        let header =
-            Row::new(vec!["On", "Stage", "Termination", "Name"]).style(Theme::table_header());
-
-        let selected = self.rules_table_state.selected();
-        let rows: Vec<Row> = self
-            .rules
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let on = if r.active { "✓" } else { "✗" };
-                let on_cell = if selected == Some(i) {
-                    Cell::from(Line::from(vec![
-                        Span::styled("▸", Theme::row_marker()),
-                        Span::styled(on, Theme::text()),
-                    ]))
-                } else {
-                    Cell::from(Span::styled(format!(" {on}"), Theme::text()))
-                };
-                let stage = format!("{:?}", r.stage);
-                let term = match r.termination {
-                    relay_core_api::rule::RuleTermination::Continue => "→",
-                    relay_core_api::rule::RuleTermination::Stop => "■",
-                };
-                Row::new(vec![
-                    on_cell,
-                    Cell::from(stage),
-                    Cell::from(term),
-                    Cell::from(r.name.clone()),
-                ])
-                .style(if r.active {
-                    Style::default()
-                } else {
-                    Theme::muted()
-                })
-            })
-            .collect();
-
-        let block = outer_panel_block(&title, rules_focused);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(2)])
-            .split(inner);
-
-        let table = Table::new(rows, widths)
-            .header(header)
-            .row_highlight_style(Theme::row_highlight())
-            .highlight_spacing(HighlightSpacing::Never);
-
-        f.render_stateful_widget(table, layout[0], &mut self.rules_table_state);
-
-        if let Some(idx) = self.rules_table_state.selected()
-            && let Some(rule) = self.rules.get(idx)
-        {
-            let summary = Line::from(vec![
-                Span::styled(format!("p{} ", rule.priority), Theme::label()),
-                Span::styled(format!("{:?} ", rule.stage), Theme::muted()),
-                Span::styled(
-                    if rule.active { "on" } else { "off" },
-                    if rule.active {
-                        Theme::stat_ok()
-                    } else {
-                        Theme::muted()
-                    },
-                ),
-                Span::styled(format!(" · {} ", rule.id), Theme::accent_dim()),
-            ]);
-            f.render_widget(
-                Paragraph::new(summary).block(panel_body_block(0)),
-                layout[1],
-            );
-        }
-    }
-
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let flow_count = self.flows.len();
         let filtered_count = self.get_filtered_flows().len();
@@ -1275,8 +1048,6 @@ impl TuiApp {
                 let active = match self.active_area {
                     ActiveArea::FlowList => "LIST",
                     ActiveArea::FlowDetail => "DETAIL",
-                    ActiveArea::RulesPanel => "RULES",
-                    ActiveArea::InterceptsPanel => "INTERCEPTS",
                 };
 
                 // Left section
@@ -1693,24 +1464,8 @@ fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
         .style(Theme::surface())
 }
 
-fn inner_panel_block(title: impl Into<String>, focused: bool) -> Block<'static> {
-    let title = title.into();
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            Theme::border(true)
-        } else {
-            Theme::border_inner()
-        })
-        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
-        .style(Theme::surface())
-}
-
 /// Selection caret column in the flow list (must match empty-state table layout).
 const FLOW_TABLE_MARKER_COL: u16 = 2;
-/// Selection caret column in the rules table (must match empty-state table layout).
-const RULES_TABLE_MARKER_COL: u16 = 3;
 
 /// Left inset for panel body text (tabs, tables, key-value lines) under border titles.
 fn panel_body_padding() -> Padding {

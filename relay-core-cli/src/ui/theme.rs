@@ -334,11 +334,6 @@ impl Theme {
         }
     }
 
-    /// Inner detail blocks — always low-contrast.
-    pub fn border_inner() -> Style {
-        Style::default().fg(palette().border_subtle)
-    }
-
     pub fn status_bar_border() -> Style {
         Style::default().fg(palette().border_subtle)
     }
