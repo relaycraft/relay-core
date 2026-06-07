@@ -975,6 +975,27 @@ impl TuiApp {
         }
     }
 
+    fn status_hints(&self) -> Vec<(u16, String)> {
+        let p_action = if self.paused { "resume" } else { "pause" };
+        let active = match self.active_area {
+            ActiveArea::FlowList => "LIST",
+            ActiveArea::FlowDetail => "DETAIL",
+        };
+        let mut hints = vec![
+            (10, "[?]help".into()),
+            (12, format!("[{active}]")),
+            (8, "[q]quit".into()),
+            (8, "[/]filter".into()),
+            (8, "[y]curl".into()),
+            (12, format!("[p]{p_action}")),
+            (8, "[c]clear".into()),
+        ];
+        if self.pending_count > 0 {
+            hints.insert(0, (12, format!("↓{} new", self.pending_count)));
+        }
+        hints
+    }
+
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let flow_count = self.flows.len();
         let filtered_count = self.get_filtered_flows().len();
@@ -1023,11 +1044,6 @@ impl TuiApp {
                     Span::raw("")
                 };
 
-                let active = match self.active_area {
-                    ActiveArea::FlowList => "LIST",
-                    ActiveArea::FlowDetail => "DETAIL",
-                };
-
                 // Left section
                 let left = vec![
                     rec,
@@ -1048,44 +1064,41 @@ impl TuiApp {
                     Span::styled(format!("up {}", uptime), Theme::uptime()),
                 ];
 
-                let p_action = if self.paused { "resume" } else { "pause" };
+                // Right section — priority-based hints that truncate on narrow terminals.
+                let hints = self.status_hints();
+                let left_width = Text::from(Line::from(left.clone())).width() as u16;
+                let middle_width = Text::from(Line::from(middle.clone())).width() as u16;
+                let right_budget = area.width.saturating_sub(left_width + middle_width);
 
-                let right = vec![
-                    Span::styled(format!("[{active}] "), Theme::accent_bold()),
-                    Span::styled("q", Theme::hotkey()),
-                    Span::styled("·", Theme::muted()),
-                    Span::styled("/", Theme::hotkey()),
-                    Span::styled("·", Theme::muted()),
-                    Span::styled("p", Theme::hotkey()),
-                    Span::styled(format!(" {p_action} "), Theme::muted()),
-                    Span::styled("·", Theme::muted()),
-                    Span::styled("c", Theme::hotkey()),
-                    Span::styled(" clear", Theme::muted()),
-                ];
+                let mut right_spans: Vec<Span> = Vec::new();
+                let mut used = 0u16;
+                for (_min_width, hint) in &hints {
+                    let hint_w = hint.len() as u16 + 1; // +1 for separator
+                    if used + hint_w <= right_budget || right_spans.is_empty() {
+                        right_spans.push(Span::styled(
+                            if right_spans.is_empty() { "" } else { " " },
+                            Theme::muted(),
+                        ));
+                        right_spans.push(Span::styled(hint.as_str(), Theme::hotkey()));
+                        used += hint_w;
+                    }
+                }
 
-                let left_text = Text::from(Line::from(left.clone()));
-                let middle_text = Text::from(Line::from(middle.clone()));
-                let right_text = Text::from(Line::from(right.clone()));
-
-                let left_width = left_text.width() as u16;
-                let middle_width = middle_text.width() as u16;
-                let right_width = right_text.width() as u16;
-                let total_width = area.width;
-
-                let spacer1 = if left_width + middle_width + right_width < total_width {
-                    (total_width - left_width - middle_width - right_width) / 2
+                let spacer1 = if left_width + middle_width + used < area.width {
+                    (area.width - left_width - middle_width - used) / 2
                 } else {
-                    1
+                    1u16
                 };
-                let spacer2 =
-                    total_width.saturating_sub(left_width + spacer1 + middle_width + right_width);
+                let spacer2 = area
+                    .width
+                    .saturating_sub(left_width + spacer1 + middle_width + used);
 
                 let mut main_spans: Vec<Span> = Vec::new();
                 main_spans.extend(left);
                 main_spans.push(Span::raw(" ".repeat(spacer1 as usize)));
                 main_spans.extend(middle);
                 main_spans.push(Span::raw(" ".repeat(spacer2 as usize)));
-                main_spans.extend(right);
+                main_spans.extend(right_spans);
 
                 let bar_block = status_bar_block();
                 let bar_area = bar_block.inner(area);
@@ -1973,5 +1986,43 @@ mod tests {
 
         app.on_key(key(KeyCode::Char('k')));
         assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_status_hints_includes_pending_count() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let hints = app.status_hints();
+        // No pending hint when count is 0
+        assert!(!hints.iter().any(|(_, s)| s.contains("new")));
+
+        app.pending_count = 5;
+        let hints = app.status_hints();
+        assert_eq!(hints[0].1, "↓5 new");
+    }
+
+    #[test]
+    fn test_status_hints_changes_pause_label() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let hints = app.status_hints();
+        assert!(hints.iter().any(|(_, s)| s.contains("[p]pause")));
+
+        app.paused = true;
+        let hints = app.status_hints();
+        assert!(hints.iter().any(|(_, s)| s.contains("[p]resume")));
+    }
+
+    #[test]
+    fn test_render_six_widths_no_panic() {
+        for width in [60, 80, 100, 120, 150, 200] {
+            let backend = TestBackend::new(width, 32);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = TuiApp::new(8080, ApiMode::Offline);
+            app.flows.push_back(make_http_flow(
+                "00000000-0000-0000-0000-000000000001",
+                "http://api.example.com/v1/users",
+                "GET",
+            ));
+            terminal.draw(|f| app.ui(f)).unwrap();
+        }
     }
 }

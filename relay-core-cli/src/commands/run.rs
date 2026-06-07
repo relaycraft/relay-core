@@ -176,6 +176,17 @@ async fn run_tui_broadcast(
 
     let _guard = TerminalGuard;
 
+    let initial_size = terminal.size()?;
+    if initial_size.width < 60 || initial_size.height < 12 {
+        drop(_guard);
+        eprintln!(
+            "Terminal too small: need >= 60x12, got {}x{}.\n\
+             Please resize the window and try again.",
+            initial_size.width, initial_size.height
+        );
+        return Ok(());
+    }
+
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 
@@ -186,10 +197,14 @@ async fn run_tui_broadcast(
             .checked_sub(last_tick.elapsed())
             .unwrap_or_default();
 
-        if crossterm::event::poll(timeout)?
-            && let Event::Key(event) = event::read()?
-        {
-            app.on_key(event);
+        if crossterm::event::poll(timeout)? {
+            match event::read()? {
+                Event::Key(event) => app.on_key(event),
+                Event::Resize(_, _) => {
+                    terminal.draw(|f| app.ui(f))?;
+                }
+                _ => {}
+            }
         }
 
         if shutdown.load(Ordering::Relaxed) {
