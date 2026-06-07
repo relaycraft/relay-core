@@ -9,10 +9,7 @@ pub enum Command {
     Filter(String),
     Unfilter,
     Theme(String),
-    Copy(String),
-    Mark(char),
-    Unmark(char),
-    NextMark,
+    CopyCurl,
     View(String),
     Help,
     Unknown(String),
@@ -26,6 +23,8 @@ pub fn parse_command(input: &str) -> Command {
     }
 
     let (cmd, args) = split_first(trimmed);
+    let cmd = cmd.to_ascii_lowercase();
+    let cmd: &str = &cmd;
 
     match cmd {
         "q" | "quit" => Command::Quit,
@@ -47,28 +46,7 @@ pub fn parse_command(input: &str) -> Command {
                 Command::Theme(args.to_string())
             }
         }
-        "cp" | "copy" => {
-            if args.is_empty() {
-                Command::Copy("curl".into())
-            } else {
-                Command::Copy(args.to_string())
-            }
-        }
-        "m" | "mark" => {
-            if let Some(ch) = args.chars().next() {
-                Command::Mark(ch)
-            } else {
-                Command::Unknown("mark: missing label".into())
-            }
-        }
-        "um" | "unmark" => {
-            if let Some(ch) = args.chars().next() {
-                Command::Unmark(ch)
-            } else {
-                Command::Unknown("unmark: missing label".into())
-            }
-        }
-        "nm" | "nextmark" => Command::NextMark,
+        "cp" | "copy" => Command::CopyCurl,
         "v" | "view" => {
             if args.is_empty() {
                 Command::View("auto".into())
@@ -77,17 +55,16 @@ pub fn parse_command(input: &str) -> Command {
             }
         }
         "h" | "help" | "?" => Command::Help,
-        other => Command::Unknown(format!("unknown command: {other}")),
+        other => Command::Unknown(format!("unknown command: '{other}'")),
     }
 }
 
 /// Split input into command word and remaining args.
 fn split_first(input: &str) -> (&str, &str) {
-    let trimmed = input.trim();
-    if let Some(idx) = trimmed.find(char::is_whitespace) {
-        (&trimmed[..idx], trimmed[idx..].trim_start())
+    if let Some(idx) = input.find(char::is_whitespace) {
+        (&input[..idx], input[idx..].trim_start())
     } else {
-        (trimmed, "")
+        (input, "")
     }
 }
 
@@ -139,22 +116,8 @@ mod tests {
 
     #[test]
     fn parse_copy() {
-        assert_eq!(parse_command("copy"), Command::Copy("curl".into()));
-        assert_eq!(parse_command("cp"), Command::Copy("curl".into()));
-        assert_eq!(
-            parse_command("cp selected"),
-            Command::Copy("selected".into())
-        );
-    }
-
-    #[test]
-    fn parse_mark_unmark() {
-        assert_eq!(parse_command("m A"), Command::Mark('A'));
-        assert_eq!(parse_command("mark Z"), Command::Mark('Z'));
-        assert_eq!(parse_command("um A"), Command::Unmark('A'));
-        assert_eq!(parse_command("unmark Z"), Command::Unmark('Z'));
-        assert_eq!(parse_command("nextmark"), Command::NextMark);
-        assert_eq!(parse_command("nm"), Command::NextMark);
+        assert_eq!(parse_command("copy"), Command::CopyCurl);
+        assert_eq!(parse_command("cp"), Command::CopyCurl);
     }
 
     #[test]
@@ -174,19 +137,16 @@ mod tests {
 
     #[test]
     fn parse_unknown() {
-        assert!(matches!(parse_command("nopenopenope"), Command::Unknown(_)));
+        assert!(matches!(
+            parse_command("nopenopenope"),
+            Command::Unknown(m) if m.contains("nopenopenope")
+        ));
     }
 
     #[test]
     fn parse_case_insensitive() {
-        assert_eq!(
-            parse_command("QUIT"),
-            Command::Unknown("unknown command: QUIT".into())
-        );
-        assert_eq!(
-            parse_command("CLEAR"),
-            Command::Unknown("unknown command: CLEAR".into())
-        );
+        assert_eq!(parse_command("QUIT"), Command::Quit);
+        assert_eq!(parse_command("CLEAR"), Command::Clear);
     }
 
     #[test]
@@ -203,10 +163,6 @@ mod tests {
         assert_eq!(
             parse_command("theme"),
             Command::Unknown("theme: missing theme name".into())
-        );
-        assert_eq!(
-            parse_command("mark"),
-            Command::Unknown("mark: missing label".into())
         );
     }
 }

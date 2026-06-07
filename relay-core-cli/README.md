@@ -76,9 +76,8 @@ Minimum terminal size: 60×12. The layout adapts automatically to your terminal 
 | `G` / `End` | Jump to oldest (bottom) |
 | `Tab` | Focus detail panel |
 | `Enter` / `→` | Focus detail panel |
-| `A`–`Z` | Mark selected flow |
-| `a`–`z` | Unmark selected flow |
-| `` ` `` | Jump to next marked flow |
+| `m` | Toggle mark on selected flow (A-Z; same key removes) |
+| `'` | Jump to next marked flow |
 | `/` | Filter flows (`host:api method:POST status:>=400`) |
 | `y` | Copy selected flow as cURL |
 | `d` | Delete selected flow |
@@ -94,7 +93,7 @@ Minimum terminal size: 60×12. The layout adapts automatically to your terminal 
 | `1`–`4` | Jump to tab by number |
 | `j` / `↓` / `k` / `↑` | Scroll content |
 | `Ctrl+u` / `Ctrl+d` | Scroll 10 lines |
-| `v` | Cycle body view: Auto → Pretty → Raw → Hex → JSON Path |
+| `v` | Cycle body view: Auto → Pretty → Raw → Hex |
 
 **Command Palette** (`:`)
 
@@ -108,7 +107,7 @@ Minimum terminal size: 60×12. The layout adapts automatically to your terminal 
 | `:uf`, `:unfilter` | Clear filter |
 | `:t <name>`, `:theme <name>` | Switch theme (`relay`, `slate`, `high-contrast`) |
 | `:cp`, `:copy` | Copy selected flow as cURL |
-| `:v <mode>`, `:view <mode>` | Switch body view (`auto`, `pretty`, `raw`, `hex`, `json`) |
+| `:v <mode>`, `:view <mode>` | Switch body view (`auto`, `pretty`, `raw`, `hex`) |
 | `:h`, `:help` | Show command list |
 
 **General**

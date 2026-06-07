@@ -178,7 +178,6 @@ async fn run_tui_broadcast(
 
     let initial_size = terminal.size()?;
     if initial_size.width < 60 || initial_size.height < 12 {
-        drop(_guard);
         eprintln!(
             "Terminal too small: need >= 60x12, got {}x{}.\n\
              Please resize the window and try again.",
@@ -200,8 +199,12 @@ async fn run_tui_broadcast(
         if crossterm::event::poll(timeout)? {
             match event::read()? {
                 Event::Key(event) => app.on_key(event),
-                Event::Resize(_, _) => {
-                    terminal.draw(|f| app.ui(f))?;
+                Event::Resize(w, h) => {
+                    if w < 60 || h < 12 {
+                        app.toast = Some("Terminal too small — resize to ≥ 60×12".into());
+                    } else {
+                        terminal.draw(|f| app.ui(f))?;
+                    }
                 }
                 _ => {}
             }

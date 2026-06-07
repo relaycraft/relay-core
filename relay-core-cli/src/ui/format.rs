@@ -161,13 +161,12 @@ pub fn plan_columns(profile: LayoutProfile) -> &'static [ColumnPlan] {
 /// Calculate the path budget for wide profiles (Host + Path columns).
 /// Overhead includes marker(2) + Mk(1) + method(6) + status(5) + dur(7) + size(9) + host(18) = 48.
 /// For compact/standard: marker(2) + Mk(1) + method(6) + status(5) + dur(7) = 21.
+/// For single-pane: marker(2) + Mk(1) = 3.
 pub fn path_budget_for(profile: LayoutProfile, area_width: u16) -> usize {
     let overhead: u16 = match profile {
-        LayoutProfile::TwoPaneWide => 48,
-        LayoutProfile::TwoPaneExtraWide => {
-            48u16.saturating_sub((area_width.saturating_sub(180)) / 2)
-        }
-        _ => 21,
+        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => 3,
+        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => 21,
+        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => 48,
     };
     usize::from(area_width.saturating_sub(overhead))
 }
@@ -193,8 +192,6 @@ pub enum BodyView {
     Raw,
     /// Hex dump (16 bytes per line).
     Hex,
-    /// JSON path query mode.
-    JsonPath,
 }
 
 impl BodyView {
@@ -203,8 +200,7 @@ impl BodyView {
             Self::Auto => Self::Pretty,
             Self::Pretty => Self::Raw,
             Self::Raw => Self::Hex,
-            Self::Hex => Self::JsonPath,
-            Self::JsonPath => Self::Auto,
+            Self::Hex => Self::Auto,
         }
     }
 
@@ -214,7 +210,6 @@ impl BodyView {
             Self::Pretty => "Pretty",
             Self::Raw => "Raw",
             Self::Hex => "Hex",
-            Self::JsonPath => "JSON Path",
         }
     }
 }
@@ -313,6 +308,16 @@ pub fn display_path(url: &Url, max_width: usize, append_query_hint: bool) -> Str
 
 pub fn host_from_url(url: &Url) -> String {
     url.host_str().unwrap_or("-").to_string()
+}
+
+/// Host with non-default port appended (e.g. "api.example.com:8080").
+/// Returns just host for ports 80/443 and unknown schemes without explicit port.
+pub fn format_host_port(url: &Url) -> String {
+    let host = host_from_url(url);
+    match url.port_or_known_default() {
+        Some(p) if p != 80 && p != 443 => format!("{host}:{p}"),
+        _ => host,
+    }
 }
 
 pub fn empty_flow_list_message(filtering: bool) -> &'static str {
@@ -629,7 +634,6 @@ mod tests {
         assert_eq!(Auto.next(), Pretty);
         assert_eq!(Pretty.next(), Raw);
         assert_eq!(Raw.next(), Hex);
-        assert_eq!(Hex.next(), JsonPath);
-        assert_eq!(JsonPath.next(), Auto);
+        assert_eq!(Hex.next(), Auto);
     }
 }

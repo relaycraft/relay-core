@@ -21,9 +21,9 @@ use uuid::Uuid;
 use super::command::{Command, parse_command};
 use super::format::{
     BodyView, ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
-    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms, format_size,
-    host_from_url, http_flow_to_curl, main_split, path_budget_for, plan_columns, smart_truncate,
-    tags_list_suffix,
+    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
+    format_host_port, format_size, http_flow_to_curl, main_split, path_budget_for, plan_columns,
+    smart_truncate, tags_list_suffix,
 };
 use super::theme::Theme;
 
@@ -68,6 +68,7 @@ pub enum InputMode {
     Filtering,
     Help,
     Command,
+    Marking,
 }
 
 #[derive(PartialEq, Debug)]
@@ -99,6 +100,7 @@ pub struct TuiApp {
     pub flow_count_total: u64,
     pub proxy_port: u16,
     pub toast: Option<String>,
+    pub toast_at: Option<Instant>,
     pub paused: bool,
     pub pending_count: u64,
     pub req_timestamps: VecDeque<Instant>,
@@ -124,6 +126,7 @@ impl TuiApp {
             flow_count_total: 0,
             proxy_port: port,
             toast: None,
+            toast_at: None,
             paused: false,
             pending_count: 0,
             req_timestamps: VecDeque::with_capacity(64),
@@ -134,6 +137,18 @@ impl TuiApp {
         };
         app.table_state.select(Some(0));
         app
+    }
+
+    fn set_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some(msg.into());
+        self.toast_at = Some(Instant::now());
+    }
+
+    fn prune_expired_toast(&mut self) {
+        if self.toast_at.is_some_and(|at| at.elapsed().as_secs() >= 5) {
+            self.toast = None;
+            self.toast_at = None;
+        }
     }
 
     pub fn on_flow(&mut self, flow: Flow) {
@@ -190,17 +205,17 @@ impl TuiApp {
 
     fn copy_curl_selection(&mut self) {
         let Some(flow) = self.selected_flow() else {
-            self.toast = Some("No flow selected".into());
+            self.set_toast("No flow selected");
             return;
         };
         let Some(curl) = http_flow_to_curl(flow) else {
-            self.toast = Some("cURL: not an HTTP/WebSocket flow".into());
+            self.set_toast("cURL: not an HTTP/WebSocket flow");
             return;
         };
         if copy_to_clipboard(&curl) {
-            self.toast = Some("cURL copied to clipboard".into());
+            self.set_toast("cURL copied to clipboard");
         } else {
-            self.toast = Some("cURL built (install pbcopy/xclip for clipboard)".into());
+            self.set_toast("cURL built (install pbcopy/xclip for clipboard)");
         }
     }
 
@@ -209,7 +224,7 @@ impl TuiApp {
         if event.kind != KeyEventKind::Press {
             return;
         }
-        self.toast = None;
+        self.prune_expired_toast();
         let key = event.code;
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match self.input_mode {
@@ -221,6 +236,14 @@ impl TuiApp {
                 if key == KeyCode::Char(':') {
                     self.input_mode = InputMode::Command;
                     self.command_input.clear();
+                    return;
+                }
+                if key == KeyCode::Char('m') {
+                    self.input_mode = InputMode::Marking;
+                    return;
+                }
+                if key == KeyCode::Char('\'') {
+                    self.next_mark();
                     return;
                 }
                 match self.active_area {
@@ -279,22 +302,6 @@ impl TuiApp {
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                             self.active_area = ActiveArea::FlowDetail
                         }
-                        KeyCode::Char(c @ 'A'..='Z') => {
-                            if let Some(f) = self.selected_flow() {
-                                self.marks.insert(f.id, c);
-                                self.toast = Some(format!("Marked '{}'", c));
-                            }
-                        }
-                        KeyCode::Char(c @ 'a'..='z') => {
-                            let flow_id = self.selected_flow().map(|f| f.id);
-                            let removed = flow_id
-                                .map(|id| self.marks.remove(&id).is_some())
-                                .unwrap_or(false);
-                            if removed {
-                                self.toast = Some(format!("Unmarked '{}'", c.to_ascii_uppercase()));
-                            }
-                        }
-                        KeyCode::Char('`') => self.next_mark(),
                         _ => {}
                     },
                     ActiveArea::FlowDetail => match key {
@@ -327,7 +334,7 @@ impl TuiApp {
                         KeyCode::Char('y') => self.copy_curl_selection(),
                         KeyCode::Char('v') => {
                             self.body_view = self.body_view.next();
-                            self.toast = Some(format!("View: {}", self.body_view.label()));
+                            self.set_toast(format!("View: {}", self.body_view.label()));
                         }
                         _ => {}
                     },
@@ -335,13 +342,33 @@ impl TuiApp {
             }
             InputMode::Filtering => match key {
                 KeyCode::Enter | KeyCode::Esc => self.input_mode = InputMode::Normal,
-                KeyCode::Char('?') => self.input_mode = InputMode::Help,
                 KeyCode::Char(c) => self.filter_input.push(c),
                 KeyCode::Backspace => {
                     self.filter_input.pop();
                 }
                 _ => {}
             },
+            InputMode::Marking => {
+                if key == KeyCode::Esc || key == KeyCode::Enter || key == KeyCode::Backspace {
+                    self.input_mode = InputMode::Normal;
+                    return;
+                }
+                if let KeyCode::Char(c) = key
+                    && c.is_ascii_alphabetic()
+                {
+                    let flow_id = self.selected_flow().map(|f| f.id);
+                    if let Some(id) = flow_id {
+                        let label = c.to_ascii_uppercase();
+                        if self.marks.remove(&id).is_some() {
+                            self.set_toast(format!("Unmarked '{}'", label));
+                        } else {
+                            self.marks.insert(id, label);
+                            self.set_toast(format!("Marked '{}'", label));
+                        }
+                    }
+                }
+                self.input_mode = InputMode::Normal;
+            }
             InputMode::Help => {
                 if key == KeyCode::Char('?') || key == KeyCode::Esc {
                     self.input_mode = InputMode::Normal;
@@ -424,7 +451,7 @@ impl TuiApp {
                 self.table_state.select(Some(idx));
                 self.auto_scroll = false;
                 self.detail_scroll = 0;
-                self.toast = Some(format!("Jumped to mark '{}'", marked[next].0));
+                self.set_toast(format!("Jumped to mark '{}'", marked[next].0));
             }
             return;
         }
@@ -438,7 +465,9 @@ impl TuiApp {
             self.table_state.select(Some(idx));
             self.auto_scroll = false;
             self.detail_scroll = 0;
-            self.toast = Some(format!("Jumped to mark '{}'", marked[0].0));
+            self.set_toast(format!("Jumped to mark '{}'", marked[0].0));
+        } else {
+            self.set_toast("Mark not in current filter");
         }
     }
 
@@ -460,6 +489,7 @@ impl TuiApp {
     }
 
     pub fn ui(&mut self, f: &mut Frame) {
+        self.prune_expired_toast();
         let area = f.area();
         f.render_widget(Block::default().style(Theme::surface()), area);
 
@@ -541,9 +571,8 @@ impl TuiApp {
             help_binding("G  End", "Jump to oldest (bottom)"),
             help_binding("Tab", "Focus detail panel (from list)"),
             help_binding("/", "Filter (host: path: method: status: err ws)"),
-            help_binding("A-Z", "Mark selected flow"),
-            help_binding("a-z", "Unmark selected flow"),
-            help_binding("`", "Jump to next mark"),
+            help_binding("m", "Toggle mark on selected flow (A-Z; same key removes)"),
+            help_binding("'", "Jump to next mark"),
             help_binding("Enter  →", "Focus detail panel"),
         ]);
 
@@ -558,10 +587,7 @@ impl TuiApp {
             help_binding("1 – 4", "Jump to tab by number"),
             help_binding("PgUp  PgDown", "Scroll content"),
             help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
-            help_binding(
-                "v",
-                "Cycle body view: Auto → Pretty → Raw → Hex → JSON Path",
-            ),
+            help_binding("v", "Cycle body view: Auto → Pretty → Raw → Hex"),
         ]);
 
         lines.push(Line::from(""));
@@ -722,16 +748,6 @@ impl TuiApp {
 
         match &flow.layer {
             Layer::Http(h) => {
-                lines.push(panel_kv_line(
-                    "Host:",
-                    host_from_url(&h.request.url),
-                    Theme::value(),
-                ));
-                lines.push(panel_kv_line(
-                    "Path:",
-                    display_path(&h.request.url, 160, false),
-                    Theme::value(),
-                ));
                 if let Some(query) = h.request.url.query() {
                     lines.push(panel_kv_line(
                         "Query:",
@@ -748,20 +764,14 @@ impl TuiApp {
                 if size > 0 {
                     lines.push(panel_kv_line("Size:", format_size(size), Theme::value()));
                 }
-
                 if let Some(err) = &h.error {
                     lines.push(panel_kv_line("Error:", err.as_str(), Theme::error()));
                 }
             }
             Layer::WebSocket(w) => {
                 lines.push(panel_kv_line(
-                    "Host:",
-                    host_from_url(&w.handshake_request.url),
-                    Theme::value(),
-                ));
-                lines.push(panel_kv_line(
-                    "Path:",
-                    display_path(&w.handshake_request.url, 160, false),
+                    "Messages:",
+                    w.messages.len().to_string(),
                     Theme::value(),
                 ));
                 if let Some(query) = w.handshake_request.url.query() {
@@ -771,11 +781,6 @@ impl TuiApp {
                         Theme::muted(),
                     ));
                 }
-                lines.push(panel_kv_line(
-                    "Messages:",
-                    w.messages.len().to_string(),
-                    Theme::value(),
-                ));
             }
             _ => {
                 lines.push(Line::from("Unknown Layer"));
@@ -1091,7 +1096,8 @@ impl TuiApp {
             hints.insert(0, (12, format!("↓{} new", self.pending_count)));
         }
         if !self.marks.is_empty() {
-            let marked: Vec<char> = self.marks.values().copied().collect();
+            let mut marked: Vec<char> = self.marks.values().copied().collect();
+            marked.sort();
             let label = format!(
                 "marks: {}",
                 marked
@@ -1113,59 +1119,59 @@ impl TuiApp {
                 self.pending_count = 0;
                 self.table_state.select(None);
                 self.detail_scroll = 0;
-                self.toast = Some("Flows cleared".into());
+                self.set_toast("Flows cleared");
             }
             Command::Pause => {
                 self.paused = true;
-                self.toast = Some("Paused".into());
+                self.set_toast("Paused");
             }
             Command::Resume => {
                 self.paused = false;
                 self.pending_count = 0;
-                self.toast = Some("Resumed".into());
+                self.set_toast("Resumed");
             }
             Command::Filter(filter) => {
-                self.toast = Some(format!("Filter: {filter}"));
+                self.set_toast(format!("Filter: {filter}"));
                 self.filter_input = filter;
+                let filtered = self.get_filtered_flows();
+                self.table_state
+                    .select(if filtered.is_empty() { None } else { Some(0) });
+                self.detail_scroll = 0;
             }
             Command::Unfilter => {
                 self.filter_input.clear();
-                self.toast = Some("Filter cleared".into());
+                self.set_toast("Filter cleared");
             }
             Command::Theme(name) => match crate::ui::theme::ThemeId::parse(&name) {
                 Ok(id) => {
                     crate::ui::theme::init(id);
-                    self.toast = Some(format!("Theme: {}", id.description()));
+                    self.set_toast(format!("Theme: {}", id.description()));
                 }
-                Err(e) => self.toast = Some(e.to_string()),
+                Err(e) => self.set_toast(e.to_string()),
             },
-            Command::Copy(_) => self.copy_curl_selection(),
+            Command::CopyCurl => self.copy_curl_selection(),
             Command::View(name) => {
                 let view = match name.as_str() {
                     "auto" => BodyView::Auto,
                     "pretty" => BodyView::Pretty,
                     "raw" => BodyView::Raw,
                     "hex" => BodyView::Hex,
-                    "json" | "jsonpath" => BodyView::JsonPath,
                     _ => {
-                        self.toast = Some(format!("Unknown view: {name}"));
+                        self.set_toast(format!("Unknown view: {name} (auto|pretty|raw|hex)"));
                         return;
                     }
                 };
                 self.body_view = view;
-                self.toast = Some(format!("View: {}", self.body_view.label()));
+                self.set_toast(format!("View: {}", self.body_view.label()));
             }
             Command::Help => {
-                self.toast = Some(
-                    "Commands: :q :clear :pause :resume :filter :unfilter :theme :copy :help"
-                        .into(),
+                self.set_toast(
+                    ":q :clear :pause :resume :f :uf :theme :cp :v :help | press ? for keys",
                 );
             }
             Command::Unknown(msg) => {
-                self.toast = Some(format!("{} — :help for commands", msg));
+                self.set_toast(format!("{msg} — try :help"));
             }
-            // Mark/Unmark/NextMark dispatched in on_key for direct key access
-            _ => {}
         }
     }
 
@@ -1245,8 +1251,8 @@ impl TuiApp {
 
                 let mut right_spans: Vec<Span> = Vec::new();
                 let mut used = 0u16;
-                for (_min_width, hint) in &hints {
-                    let hint_w = hint.len() as u16 + 1; // +1 for separator
+                for (min_width, hint) in &hints {
+                    let hint_w = (hint.len() as u16).max(*min_width) + 1;
                     if used + hint_w <= right_budget || right_spans.is_empty() {
                         right_spans.push(Span::styled(
                             if right_spans.is_empty() { "" } else { " " },
@@ -1277,7 +1283,10 @@ impl TuiApp {
                 let bar_area = bar_block.inner(area);
                 f.render_widget(bar_block, area);
 
-                if let Some(ref msg) = self.toast {
+                let toast_alive = self.toast_at.is_some_and(|at| at.elapsed().as_secs() < 5);
+                if !toast_alive {
+                    f.render_widget(Paragraph::new(Line::from(main_spans)), bar_area);
+                } else if let Some(ref msg) = self.toast {
                     let status_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(1), Constraint::Length(1)])
@@ -1325,6 +1334,15 @@ impl TuiApp {
                     Span::styled(" | ", Theme::muted()),
                     Span::styled("Enter", Theme::hotkey()),
                     Span::styled(" execute | ", Theme::muted()),
+                    Span::styled("Esc", Theme::hotkey()),
+                    Span::styled(" cancel", Theme::muted()),
+                ]
+            }
+            InputMode::Marking => {
+                vec![
+                    Span::styled("mark — ", Theme::accent_bold()),
+                    Span::styled("A-Z to toggle", Theme::muted()),
+                    Span::styled(" | ", Theme::muted()),
                     Span::styled("Esc", Theme::hotkey()),
                     Span::styled(" cancel", Theme::muted()),
                 ]
@@ -1417,7 +1435,10 @@ fn flow_table_row(
     };
     let mark_cell = Cell::from(Span::styled(
         mark.map(|c| c.to_string()).unwrap_or_default(),
-        Theme::host_color(""),
+        match mark {
+            Some(c) => Style::default().fg(Theme::host_color(&c.to_string())),
+            None => Style::default(),
+        },
     ));
     let method_key = method_label.trim_end_matches('+');
     let method_cell = Cell::from(Span::styled(
@@ -1463,7 +1484,7 @@ fn flow_table_row(
             ])
         }
         LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => {
-            let host = host_from_url(&url);
+            let host = format_host_port(&url);
             let host_color = Theme::host_color(&host);
             let path = display_path(&url, path_budget, has_query);
             let path_with_tags = if tags_str.is_empty() {
@@ -1539,7 +1560,6 @@ fn render_body_for_view(body_content: &str, view: BodyView) -> Vec<Line<'static>
         BodyView::Pretty => render_body_pretty(body_content),
         BodyView::Raw => render_body_raw(body_content),
         BodyView::Hex => render_body_hex(body_content.as_bytes()),
-        BodyView::JsonPath => render_body_json_path(body_content),
     }
 }
 
@@ -1633,21 +1653,6 @@ fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
             Theme::muted(),
         )));
     }
-    lines
-}
-
-/// JSON path view — simple pointer matching (supports `$..foo[0].bar` as `$.foo[0].bar`).
-fn render_body_json_path(body_content: &str) -> Vec<Line<'static>> {
-    // Show pretty-printed JSON with a note; actual JSON Path input is done via key `J`.
-    let mut lines = render_body_pretty(body_content);
-    lines.insert(
-        0,
-        Line::from(Span::styled(
-            "JSON Path mode — press J to enter a query (e.g. $.store.book[0].title)",
-            Theme::accent_dim(),
-        )),
-    );
-    lines.insert(1, Line::from(""));
     lines
 }
 
@@ -1882,7 +1887,7 @@ fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
                 .map(|r| r.status.to_string())
                 .unwrap_or_else(|| "…".to_string());
             let dur = format_duration_ms(flow_duration_ms(flow));
-            let host = host_from_url(&h.request.url);
+            let host_str = format_host_port(&h.request.url);
             let path = h.request.url.path();
             let path = if path.is_empty() { "/" } else { path };
             let path_show = smart_truncate(path, 40);
@@ -1894,13 +1899,13 @@ fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
                     format!("  {dur}  "),
                     Theme::duration_style(flow_duration_ms(flow)),
                 ),
-                Span::styled(format!("{host}{path_show}"), Theme::value()),
+                Span::styled(format!("{host_str}{path_show}"), Theme::value()),
             ]))
         }
         Layer::WebSocket(w) => {
             let status = w.handshake_response.status.to_string();
             let dur = format_duration_ms(flow_duration_ms(flow));
-            let host = host_from_url(&w.handshake_request.url);
+            let host_str = format_host_port(&w.handshake_request.url);
             let path = w.handshake_request.url.path();
             let path = if path.is_empty() { "/" } else { path };
             let path_show = smart_truncate(path, 40);
@@ -1913,7 +1918,7 @@ fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
                     format!("  {dur}  "),
                     Theme::duration_style(flow_duration_ms(flow)),
                 ),
-                Span::styled(format!("{host}{path_show}"), Theme::value()),
+                Span::styled(format!("{host_str}{path_show}"), Theme::value()),
                 Span::styled(format!("  ({msg_count} msgs)"), Theme::muted()),
             ]))
         }
@@ -2139,6 +2144,29 @@ mod tests {
     }
 
     #[test]
+    fn test_cap_eviction_cleans_marks() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let first_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap();
+        // Fill exactly 1000, marking the first one
+        for i in 0..1000 {
+            app.on_flow(make_http_flow(
+                &format!("00000000-0000-0000-0000-{i:012x}"),
+                &format!("http://example.com/{i}"),
+                "GET",
+            ));
+        }
+        app.marks.insert(first_id, 'Z');
+        // 1001st push evicts the oldest (first, index 0)
+        app.on_flow(make_http_flow(
+            "00000000-0000-0000-0000-000000001000",
+            "http://example.com/1000",
+            "GET",
+        ));
+        assert!(!app.marks.contains_key(&first_id));
+        assert_eq!(app.flows.len(), 1000);
+    }
+
+    #[test]
     fn test_key_quit() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
         app.on_key(key(KeyCode::Char('q')));
@@ -2269,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_narrow_layout_switches_pane_on_enter_esc() {
+    fn test_enter_esc_switches_focus() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
         assert_eq!(app.active_area, ActiveArea::FlowList);
         app.on_key(key(KeyCode::Enter));
@@ -2327,8 +2355,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_six_widths_no_panic() {
-        for width in [60, 80, 100, 120, 150, 200] {
+    fn test_render_widths_no_panic() {
+        for width in [40, 50, 60, 80, 100, 120, 150, 200] {
             let backend = TestBackend::new(width, 32);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = TuiApp::new(8080, ApiMode::Offline);
@@ -2342,7 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_flow_with_uppercase_letter() {
+    fn test_mark_flow_with_vim_style() {
         let mut app = TuiApp::new(8080, ApiMode::Offline);
         let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         app.flows.push_back(make_http_flow(
@@ -2351,25 +2379,28 @@ mod tests {
             "GET",
         ));
         app.table_state.select(Some(0));
-        app.on_key(key(KeyCode::Char('A')));
+        // m → enter mark mode, then 'a' to set mark A
+        app.on_key(key(KeyCode::Char('m')));
+        assert_eq!(app.input_mode, InputMode::Marking);
+        app.on_key(key(KeyCode::Char('a')));
         assert_eq!(app.marks.get(&id), Some(&'A'));
+        assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.toast.as_deref() == Some("Marked 'A'"));
-    }
 
-    #[test]
-    fn test_unmark_flow_with_lowercase_letter() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
-        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
-        app.flows.push_back(make_http_flow(
-            "00000000-0000-0000-0000-000000000001",
-            "http://example.com/test",
-            "GET",
-        ));
-        app.marks.insert(id, 'A');
-        app.table_state.select(Some(0));
+        // m → enter mark mode, then 'a' again to toggle off
+        app.on_key(key(KeyCode::Char('m')));
         app.on_key(key(KeyCode::Char('a')));
         assert!(!app.marks.contains_key(&id));
         assert!(app.toast.as_deref() == Some("Unmarked 'A'"));
+    }
+
+    #[test]
+    fn test_mark_esc_cancels() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        app.on_key(key(KeyCode::Char('m')));
+        assert_eq!(app.input_mode, InputMode::Marking);
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]
@@ -2390,7 +2421,7 @@ mod tests {
         app.marks.insert(id1, 'A');
         app.marks.insert(id2, 'B');
         app.table_state.select(Some(0));
-        app.on_key(key(KeyCode::Char('`')));
+        app.on_key(key(KeyCode::Char('\'')));
         // Should jump to flow b (next mark after A)
         assert_eq!(app.table_state.selected(), Some(1));
     }
@@ -2423,5 +2454,33 @@ mod tests {
                 .iter()
                 .any(|(_, s)| s.contains("marks:") && s.contains("A") && s.contains("B"))
         );
+    }
+
+    #[test]
+    fn test_set_toast_records_time() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        assert!(app.toast_at.is_none());
+        app.set_toast("hello");
+        assert!(app.toast_at.is_some());
+    }
+
+    #[test]
+    fn test_prune_expired_toast_clears_state() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        app.set_toast("stale");
+        // Simulate old toast
+        app.toast_at = Some(Instant::now() - std::time::Duration::from_secs(6));
+        app.prune_expired_toast();
+        assert!(app.toast.is_none());
+        assert!(app.toast_at.is_none());
+    }
+
+    #[test]
+    fn test_prune_keeps_fresh_toast() {
+        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        app.set_toast("fresh");
+        app.prune_expired_toast();
+        assert!(app.toast.is_some());
+        assert!(app.toast_at.is_some());
     }
 }
