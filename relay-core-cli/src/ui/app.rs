@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 use url::Url;
 
+use super::command::{Command, parse_command};
 use super::format::{
     ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
     empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms, format_size,
@@ -64,6 +65,7 @@ pub enum InputMode {
     Normal,
     Filtering,
     Help,
+    Command,
 }
 
 #[derive(PartialEq, Debug)]
@@ -99,6 +101,7 @@ pub struct TuiApp {
     pub pending_count: u64,
     pub req_timestamps: VecDeque<Instant>,
     pub api_mode: ApiMode,
+    pub command_input: String,
 }
 
 impl TuiApp {
@@ -121,6 +124,7 @@ impl TuiApp {
             pending_count: 0,
             req_timestamps: VecDeque::with_capacity(64),
             api_mode,
+            command_input: String::new(),
         };
         app.table_state.select(Some(0));
         app
@@ -204,6 +208,11 @@ impl TuiApp {
             InputMode::Normal => {
                 if key == KeyCode::Char('?') {
                     self.input_mode = InputMode::Help;
+                    return;
+                }
+                if key == KeyCode::Char(':') {
+                    self.input_mode = InputMode::Command;
+                    self.command_input.clear();
                     return;
                 }
                 match self.active_area {
@@ -310,6 +319,19 @@ impl TuiApp {
                     self.input_mode = InputMode::Normal;
                 }
             }
+            InputMode::Command => match key {
+                KeyCode::Enter => {
+                    let cmd = parse_command(&self.command_input);
+                    self.dispatch_command(cmd);
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Esc => self.input_mode = InputMode::Normal,
+                KeyCode::Backspace => {
+                    self.command_input.pop();
+                }
+                KeyCode::Char(c) => self.command_input.push(c),
+                _ => {}
+            },
         }
     }
 
@@ -996,6 +1018,56 @@ impl TuiApp {
         hints
     }
 
+    fn dispatch_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::Quit => self.should_quit = true,
+            Command::Clear => {
+                self.flows.clear();
+                self.pending_count = 0;
+                self.table_state.select(None);
+                self.detail_scroll = 0;
+                self.toast = Some("Flows cleared".into());
+            }
+            Command::Pause => {
+                self.paused = true;
+                self.toast = Some("Paused".into());
+            }
+            Command::Resume => {
+                self.paused = false;
+                self.pending_count = 0;
+                self.toast = Some("Resumed".into());
+            }
+            Command::Filter(filter) => {
+                self.toast = Some(format!("Filter: {filter}"));
+                self.filter_input = filter;
+            }
+            Command::Unfilter => {
+                self.filter_input.clear();
+                self.toast = Some("Filter cleared".into());
+            }
+            Command::Theme(name) => {
+                match crate::ui::theme::ThemeId::parse(&name) {
+                    Ok(id) => {
+                        crate::ui::theme::init(id);
+                        self.toast = Some(format!("Theme: {}", id.description()));
+                    }
+                    Err(e) => self.toast = Some(format!("{e}")),
+                }
+            }
+            Command::Copy(_) => self.copy_curl_selection(),
+            Command::Help => {
+                self.toast = Some(
+                    "Commands: :q :clear :pause :resume :filter :unfilter :theme :copy :help".into(),
+                );
+            }
+            Command::Unknown(msg) => {
+                self.toast = Some(format!("{} — :help for commands", msg));
+            }
+            // Mark/Unmark/NextMark dispatched in on_key for direct key access
+            _ => {}
+        }
+    }
+
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
         let flow_count = self.flows.len();
         let filtered_count = self.get_filtered_flows().len();
@@ -1139,6 +1211,22 @@ impl TuiApp {
                     Span::styled(" cancel", Theme::muted()),
                 ]);
                 spans
+            }
+            InputMode::Command => {
+                let colon = if self.command_input.is_empty() {
+                    Span::styled(":", Theme::accent())
+                } else {
+                    Span::styled(":", Theme::muted())
+                };
+                vec![
+                    colon,
+                    Span::styled(self.command_input.as_str(), Theme::accent()),
+                    Span::styled(" | ", Theme::muted()),
+                    Span::styled("Enter", Theme::hotkey()),
+                    Span::styled(" execute | ", Theme::muted()),
+                    Span::styled("Esc", Theme::hotkey()),
+                    Span::styled(" cancel", Theme::muted()),
+                ]
             }
             InputMode::Help => {
                 vec![
