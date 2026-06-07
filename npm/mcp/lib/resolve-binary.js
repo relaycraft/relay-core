@@ -2,22 +2,13 @@
 
 /**
  * Resolve a RelayCore native binary from the matching @relay-core/binaries-* optional dependency.
- * On Linux, prefers the musl (statically linked) variant for maximum distro compatibility.
+ * Linux uses glibc-linked (gnu) builds so the Deno/V8 script engine is included.
  * @param {string} name - e.g. "relay-core-cli" or "relay-core-probe"
  * @returns {string} Absolute path to the binary
  */
 function resolveBinary(name) {
   const platformPkg = `@relay-core/binaries-${process.platform}-${process.arch}`;
   const file = process.platform === "win32" ? `${name}.exe` : name;
-
-  if (process.platform === "linux") {
-    const muslPkg = `${platformPkg}-musl`;
-    try {
-      return require.resolve(`${muslPkg}/bin/${file}`);
-    } catch {
-      // musl package not installed — fall through to gnu
-    }
-  }
 
   try {
     return require.resolve(`${platformPkg}/bin/${file}`);
