@@ -82,6 +82,8 @@ benchmarks/__pycache__/
 benchmarks/bench_*.json
 benchmarks/bench_*.md
 benchmarks/*.csv
+benchmarks/.bench_ca_cert.*
+benchmarks/.bench_ca_key.pem
 relay-core-cli-*.tgz
 relay-core-mcp-*.tgz
 npm/packages/*/bin/*
