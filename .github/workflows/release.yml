@@ -159,6 +159,15 @@ jobs:
             echo "_No benchmarks/results/baseline_v${VERSION}.md at this tag._" >> "$OUT"
           fi
 
+          VS_MITM="benchmarks/results/vs_mitmproxy_v${VERSION}.json"
+          if [ -f "$VS_MITM" ]; then
+            echo "" >> "$OUT"
+            echo "### vs mitmproxy" >> "$OUT"
+            echo '```json' >> "$OUT"
+            cat "$VS_MITM" >> "$OUT"
+            echo '```' >> "$OUT"
+          fi
+
           gh release edit "${GITHUB_REF_NAME}" --notes-file "$OUT"
         env:
           GH_TOKEN: ${{ github.token }}
