@@ -26,32 +26,20 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apache2-utils python3
+          sudo apt-get install -y python3
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
 
-      - name: Benchmark Gate (strict DoD check)
-        id: gate
+      - name: Benchmark E2E smoke (report-only)
         run: |
           chmod +x ./benchmarks/bench_minimal.sh
-          ./benchmarks/bench_minimal.sh matrix --duration 10 --strict
-        continue-on-error: true
+          ./benchmarks/bench_minimal.sh matrix --duration 10
 
       - name: Micro Benchmarks (Criterion)
         run: |
           cargo bench --package relay-core-lib --bench rule_engine
           cargo bench --package relay-core-lib --bench tls_ca
           cargo bench --package relay-core-lib --bench scenarios
-
-      - name: Evaluate Gate Result
-        if: always()
-        run: |
-          if [[ "${{ steps.gate.outcome }}" == "failure" ]]; then
-            echo "## Benchmark Gate FAILED" >> "$GITHUB_STEP_SUMMARY"
-            echo "DoD thresholds not met." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          else
-            echo "## Benchmark Gate PASSED" >> "$GITHUB_STEP_SUMMARY"
-            echo "All DoD thresholds met." >> "$GITHUB_STEP_SUMMARY"
-          fi
 
       - name: Print Benchmark Summary
         if: always()
@@ -61,6 +49,8 @@ jobs:
           if [[ -n "$latest_json" ]]; then
             python3 benchmarks/print_summary.py "${latest_json}" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           fi
+          echo "## Note: E2E benchmarks on shared runners are subject to CPU noise." >> "$GITHUB_STEP_SUMMARY"
+          echo "Use CodSpeed (micro) and local \`bench_minimal.sh release\` for pass/fail decisions." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Benchmark Artifacts
         if: always()
