@@ -46,16 +46,21 @@ Cargo.toml bump:
 - If noise is too high, wait and re-run
 - Confirm markdown + JSON paths printed at the end (`release_<timestamp>.md`)
 
-**Commit the baseline:**
+**Commit the baseline and clean up:**
 
 ```bash
+# Generate versioned baseline from the latest release run
 ./scripts/commit-baseline.sh X.Y.Z
-git add benchmarks/results/baseline_vX.Y.Z.json benchmarks/results/baseline_vX.Y.Z.md
+
+# Remove timestamped raw runs — only versioned baselines should accumulate
+rm -f benchmarks/results/release_*.json benchmarks/results/release_*.md
+
+git add benchmarks/results/
 git commit -m "perf(bench): add release baseline for vX.Y.Z"
 ```
 
-The timestamped `release_*.json` / `release_*.md` snapshots may also be committed
-alongside the versioned baseline files.
+Each release keeps exactly one `baseline_vX.Y.Z.(json|md)` pair. The timestamped
+`release_*` snapshots are ephemeral and should not accumulate in the repository.
 
 ## 3. mitmproxy Comparison
 

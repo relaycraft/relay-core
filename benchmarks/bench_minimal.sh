@@ -592,13 +592,13 @@ EOF
   local OUT_JSON="$RESULTS_DIR/${report_prefix}.json"
 
   cat >"$OUT_MD" <<REPORT
-# RelayCore v${CRATE_VER} — Release Performance Report
+## RelayCore v${CRATE_VER} — Release Performance Report
 
 - **Date**: ${DATE_UTC}
 - **Commit**: \`${COMMIT}\`
 - **Mode**: release (${WARMUP_RUNS} warmup + ${RUNS} measurement rounds, ${DURATION}s each)
 
-## Environment
+### Environment
 
 | Item | Detail |
 |------|--------|
@@ -609,7 +609,7 @@ EOF
 | Load tool | ${TOOL_VER} |
 | Connections | ${CONNECTIONS} |
 
-## Results (S1: 1KB payload)
+### Results (S1: 1KB payload)
 
 | Metric | Mean | StdDev | Min | Max | DoD Target | Status |
 |--------|------|--------|-----|-----|------------|--------|
@@ -618,12 +618,12 @@ EOF
 | Throughput | ${tput_mean} req/s | ±$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])") | >${DOD_QPS} req/s | ${QPS_STATUS} |
 | P99 Latency | ${p99_mean}ms | ±$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")ms | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")ms | <${DOD_P99}ms | ${LAT_STATUS} |
 
-## Scenario Results
+### Scenario Results
 
 | Scenario | Payload | Throughput (req/s) | P99 (ms) | QPS | Lat |
 |----------|---------|--------------------|----------|-----|-----|${LOAD_MD_ROWS}
 
-## API Path Latency
+### API Path Latency
 
 | Path | Result | Status |
 |------|--------|--------|
@@ -631,14 +631,14 @@ EOF
 | GET /api/v1/flows/{id} | ${flow_detail_ms}ms | ${flow_detail_status} |
 | GET /api/v1/events (SSE first event) | ${sse_first_ms}ms | ${sse_status} |
 
-## Reproduce
+### Reproduce
 
 \`\`\`bash
 git checkout ${COMMIT}
 ./benchmarks/bench_minimal.sh release --runs ${RUNS} --warmup-runs ${WARMUP_RUNS} --duration ${DURATION}
 \`\`\`
 
-## Methodology Notes
+### Methodology Notes
 
 - **Single-machine constraint**: oha (load gen), relay-core (proxy), and the echo server all run on the same machine and compete for CPU. P99 latency is therefore an upper bound — in an isolated setup (separate load-gen machine), P99 typically drops by 50-70%.
 - **Cold start**: macOS performs code-signing verification and dyld cache warmup on first launch. The first cold-start sample is discarded as a throwaway warmup round; reported values are rounds 2+.
