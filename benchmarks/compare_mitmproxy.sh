@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - relay-core-cli built (release)
 #   - mitmproxy installed (pip install mitmproxy)
-#   - oha or ab for load generation
+#   - oha (brew install oha / cargo install oha)
 #
 # Usage:
 #   ./benchmarks/compare_mitmproxy.sh [--duration 30] [--connections 100]
@@ -46,15 +46,11 @@ has_tool() { command -v "$1" >/dev/null 2>&1; }
 
 # ── Tool detection ──────────────────────────────────────────────────
 
-LOAD_TOOL=""
-if has_tool oha; then
-  LOAD_TOOL="oha"
-elif has_tool ab; then
-  LOAD_TOOL="ab"
-else
-  fail "No load generator found (oha or ab required)"
+if ! has_tool oha; then
+  fail "oha is required. Install: brew install oha  or  cargo install oha"
   exit 1
 fi
+LOAD_TOOL="oha"
 
 if ! has_tool mitmdump; then
   fail "mitmdump not found — install mitmproxy: pip install mitmproxy"

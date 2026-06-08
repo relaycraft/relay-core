@@ -39,7 +39,7 @@ pass() { echo -e "  ${GREEN}✓${NC} $*"; }
 fail() { echo -e "  ${RED}✗${NC} $*"; }
 
 detect_tool() {
-  command -v oha >/dev/null 2>&1 && echo "oha" || echo "ab"
+  command -v oha >/dev/null 2>&1 && echo "oha" || echo ""
 }
 
 has_tool() { command -v "$1" >/dev/null 2>&1; }
@@ -50,10 +50,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Dependency checks ───────────────────────────────────────────────
-
-if ! has_tool oha && ! has_tool ab; then
-  fail "Need oha or ab for load generation"
+if ! has_tool oha; then
+  fail "oha is required. Install: brew install oha  or  cargo install oha"
   exit 1
 fi
 
@@ -127,12 +125,6 @@ LAST_SAMPLE=0
       oha)
         oha -z 60 -c "$CONNECTIONS" --no-tui \
           -x "http://127.0.0.1:$PROXY_PORT" \
-          "http://127.0.0.1:$TARGET_PORT/payload/1" \
-          >/dev/null 2>&1 || true
-        ;;
-      ab)
-        ab -t 60 -c "$CONNECTIONS" -r \
-          -X "127.0.0.1:$PROXY_PORT" \
           "http://127.0.0.1:$TARGET_PORT/payload/1" \
           >/dev/null 2>&1 || true
         ;;

@@ -142,13 +142,11 @@ cleanup() {
 trap cleanup EXIT
 
 detect_tool() {
-  if command -v oha >/dev/null 2>&1; then
-    echo "oha"
-  elif command -v ab >/dev/null 2>&1; then
-    echo "ab"
-  else
-    echo "curl"
+  if ! command -v oha >/dev/null 2>&1; then
+    echo ""
+    return 1
   fi
+  echo "oha"
 }
 
 now_ms() {
@@ -240,40 +238,17 @@ run_load() {
   local p99_ms=0
   local tool_raw=""
 
-  case "$TOOL" in
-    oha)
-      info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB" >&2
-      # oha 1.14 rejects NO_COLOR=1 (expects true/false); unset before invoking.
-      tool_raw=$(env -u NO_COLOR oha \
-        -z "${DURATION}s" \
-        -c "$CONNECTIONS" \
-        --no-tui \
-        --output-format json \
-        -x "$proxy_url" \
-        "$target_url" 2>/dev/null || echo "{}")
-      throughput=$(echo "$tool_raw" | extract_oha_rps)
-      p99_ms=$(echo "$tool_raw" | extract_oha_p99_ms)
-      ;;
-    ab)
-      info "[$scenario] ab ${DURATION}s, ${CONNECTIONS} concurrent, payload ${payload_kb}KB" >&2
-      tool_raw=$(ab -t "$DURATION" -c "$CONNECTIONS" -r -X "127.0.0.1:$PROXY_PORT" "$target_url" 2>&1 || echo "")
-      throughput="$(echo "$tool_raw" | awk '/Requests per second/{print int($4)}' | head -n1)"
-      p99_ms="$(echo "$tool_raw" | awk '/ 99%/{print $2}' | head -n1)"
-      ;;
-    curl)
-      info "[$scenario] curl fallback (latency sample only), payload ${payload_kb}KB" >&2
-      local count=50 total_ms=0
-      for _ in $(seq 1 "$count"); do
-        local sec
-        sec=$(curl -s -o /dev/null -w "%{time_total}" -x "$proxy_url" "$target_url" 2>/dev/null || echo 0)
-        local ms
-        ms=$(python3 -c "print(int(float('$sec')*1000))" 2>/dev/null || echo 0)
-        total_ms=$((total_ms + ms))
-      done
-      p99_ms=$((total_ms / count * 2))
-      throughput=0
-      ;;
-  esac
+  info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB" >&2
+  # oha 1.14 rejects NO_COLOR=1 (expects true/false); unset before invoking.
+  tool_raw=$(env -u NO_COLOR oha \
+    -z "${DURATION}s" \
+    -c "$CONNECTIONS" \
+    --no-tui \
+    --output-format json \
+    -x "$proxy_url" \
+    "$target_url" 2>/dev/null || echo "{}")
+  throughput=$(echo "$tool_raw" | extract_oha_rps)
+  p99_ms=$(echo "$tool_raw" | extract_oha_p99_ms)
 
   throughput="${throughput:-0}"
   p99_ms="${p99_ms:-0}"
@@ -354,7 +329,6 @@ detect_environment() {
 
   case "$TOOL" in
     oha) tool_ver="$(oha --version 2>/dev/null | head -1 || echo 'unknown')" ;;
-    ab)  tool_ver="$(ab -V 2>&1 | head -1 || echo 'unknown')" ;;
     *)   tool_ver="unknown" ;;
   esac
 
@@ -613,7 +587,7 @@ EOF
   DATE_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   # ── Reports ───────────────────────────────────────────────────────────
-  local report_prefix="release_${TIMESTAMP}"
+  local report_prefix="release_v${CRATE_VER}_${TIMESTAMP}"
   local OUT_MD="$RESULTS_DIR/${report_prefix}.md"
   local OUT_JSON="$RESULTS_DIR/${report_prefix}.json"
 
@@ -724,6 +698,10 @@ echo "=== relay-core benchmark (${TIMESTAMP}) ==="
 echo ""
 
 TOOL="$(detect_tool)"
+if [[ -z "$TOOL" ]]; then
+  echo "Error: oha is required. Install: brew install oha  or  cargo install oha"
+  exit 1
+fi
 info "Load generator: ${TOOL}"
 info "Mode: ${MODE}, duration=${DURATION}s"
 
@@ -805,10 +783,7 @@ for pair in "${SCENARIOS[@]}"; do
   if [[ "$SCENARIO" == "S1" ]]; then
     S1_QPS="$THROUGHPUT"
     S1_P99="$P99_MS"
-    if [[ "$TOOL" == "curl" ]]; then
-      QPS_STATUS="SKIP"
-      info "[S1] Throughput skipped in curl fallback mode"
-    elif [[ "$THROUGHPUT" -ge "$DOD_QPS" ]]; then
+    if [[ "$THROUGHPUT" -ge "$DOD_QPS" ]]; then
       QPS_STATUS="PASS"
       ROW_QPS_STATUS="PASS"
       pass "[S1] Throughput: ${THROUGHPUT} req/s (DoD: > ${DOD_QPS} req/s)"

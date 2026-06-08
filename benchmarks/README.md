@@ -26,9 +26,7 @@
 
 - Rust toolchain (`cargo`)
 - `python3`
-- 负载工具二选一：
-  - `oha`（推荐）
-  - `ab`（macOS 通常预装）
+- `oha` — HTTP load generator (recommended: `brew install oha` or `cargo install oha`)
 
 ## Usage
 
@@ -99,6 +97,5 @@ JSON 可作为后续 CI 趋势分析与回归比较输入。
 
 ## Notes
 
-- 当前定位是“快速体检 + 回归趋势”，不是最终容量极限评估。
-- 若本机仅有 `curl`，脚本仍可运行，但吞吐结果会降级为近似或跳过。
+- 当前定位是"快速体检 + 回归趋势"，不是最终容量极限评估。
 - 建议固定机器负载后再比较两次结果，避免噪声导致误判。
