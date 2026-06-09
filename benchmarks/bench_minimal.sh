@@ -431,15 +431,19 @@ run_release_mode() {
   info "Methodology:  ${WARMUP_RUNS} warmup + ${RUNS} measurement rounds, ${DURATION}s each, ${CONNECTIONS} connections"
   echo ""
 
-  # Build
-  info "Building release binary..."
-  cd "$REPO_ROOT"
-  local build_start build_end build_time
-  build_start=$(now_ms)
-  cargo build --release --package relay-core-cli --quiet
-  build_end=$(now_ms)
-  build_time=$((build_end - build_start))
-  pass "Build completed in ${build_time}ms"
+  # Build (skip if binary already exists)
+  if [[ -f "$PROXY_BIN" ]]; then
+    pass "Using existing binary: $PROXY_BIN"
+  else
+    info "Building release binary..."
+    cd "$REPO_ROOT"
+    local build_start build_end build_time
+    build_start=$(now_ms)
+    cargo build --release --package relay-core-cli --quiet
+    build_end=$(now_ms)
+    build_time=$((build_end - build_start))
+    pass "Build completed in ${build_time}ms"
+  fi
   echo ""
 
   if [[ ! -f "$CA_CERT" ]]; then
@@ -758,10 +762,14 @@ run_ramp_mode() {
   [[ "$TLS_MODE" -eq 1 ]] && echo "  Mode:                TLS (MITM re-encrypt)"
   echo ""
 
-  info "Building release binary..."
-  cd "$REPO_ROOT"
-  cargo build --release --package relay-core-cli --quiet
-  echo ""
+  if [[ -f "$PROXY_BIN" ]]; then
+    info "Using existing binary: $PROXY_BIN"
+  else
+    info "Building release binary..."
+    cd "$REPO_ROOT"
+    cargo build --release --package relay-core-cli --quiet
+    echo ""
+  fi
 
   if [[ ! -f "$CA_CERT" ]]; then
     info "Generating benchmark CA..."
@@ -849,13 +857,17 @@ if [[ "$MODE" == "matrix" ]]; then
   SCENARIOS=("S1:1" "S2:64" "S3:1024")
 fi
 
-info "Building release binary..."
-cd "$REPO_ROOT"
-BUILD_START=$(now_ms)
-cargo build --release --package relay-core-cli --quiet
-BUILD_END=$(now_ms)
-BUILD_TIME=$((BUILD_END - BUILD_START))
-info "Build completed in ${BUILD_TIME}ms"
+if [[ -f "$PROXY_BIN" ]]; then
+  info "Using existing binary: $PROXY_BIN"
+else
+  info "Building release binary..."
+  cd "$REPO_ROOT"
+  BUILD_START=$(now_ms)
+  cargo build --release --package relay-core-cli --quiet
+  BUILD_END=$(now_ms)
+  BUILD_TIME=$((BUILD_END - BUILD_START))
+  info "Build completed in ${BUILD_TIME}ms"
+fi
 echo ""
 
 if [[ ! -f "$CA_CERT" ]]; then
