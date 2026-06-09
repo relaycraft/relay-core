@@ -4,10 +4,14 @@
 Supported endpoints:
   - /             -> default payload size (PAYLOAD_KB_DEFAULT, default 1KB)
   - /payload/<kb> -> payload size in KB (1..2048)
+
+Set TLS_PORT to enable HTTPS on a second port (requires TLS_CERT + TLS_KEY).
 """
 import http.server
 import json
 import os
+import ssl
+import sys
 
 DEFAULT_PAYLOAD_KB = int(os.environ.get("PAYLOAD_KB_DEFAULT", "1"))
 MAX_PAYLOAD_KB = int(os.environ.get("PAYLOAD_KB_MAX", "2048"))
@@ -48,12 +52,36 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
         pass  # suppress per-request log noise
 
 
+def start_server(port, handler, use_tls=False):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+    if use_tls:
+        cert = os.environ.get("TLS_CERT", "")
+        key = os.environ.get("TLS_KEY", "")
+        if not cert or not key:
+            print("TLS_PORT set but TLS_CERT/TLS_KEY missing", file=sys.stderr)
+            sys.exit(1)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        label = "TLS"
+    else:
+        label = "HTTP"
+    print(f"echo server ({label}) listening on 127.0.0.1:{port} "
+          f"(default={DEFAULT_PAYLOAD_KB}KB, max={MAX_PAYLOAD_KB}KB)", flush=True)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "9000"))
-    server = http.server.HTTPServer(("127.0.0.1", port), EchoHandler)
-    print(
-        f"echo server listening on 127.0.0.1:{port} "
-        f"(default={DEFAULT_PAYLOAD_KB}KB, max={MAX_PAYLOAD_KB}KB)",
-        flush=True,
-    )
-    server.serve_forever()
+    tls_port = os.environ.get("TLS_PORT", "")
+
+    import threading
+    threading.Thread(target=start_server, args=(port, EchoHandler), daemon=True).start()
+
+    if tls_port:
+        start_server(int(tls_port), EchoHandler, use_tls=True)
+    else:
+        # keep the main thread alive
+        import time
+        while True:
+            time.sleep(3600)

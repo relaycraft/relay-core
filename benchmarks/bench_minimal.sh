@@ -11,6 +11,7 @@
 #   - single (default): S1 only (1KB)
 #   - matrix: S1/S2/S3 payload matrix (1KB/64KB/1024KB)
 #   - release: multi-round with stats, environment capture, reproducible report
+#   - ramp: stepped concurrency load test to find throughput saturation point
 #
 # Usage examples:
 #   ./benchmarks/bench_minimal.sh
@@ -18,6 +19,8 @@
 #   ./benchmarks/bench_minimal.sh matrix --duration 15
 #   ./benchmarks/bench_minimal.sh --baseline benchmarks/results/bench_xxx.json
 #   ./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30
+#   ./benchmarks/bench_minimal.sh ramp --duration 10
+#   ./benchmarks/bench_minimal.sh ramp --tls --duration 10
 
 set -euo pipefail
 
@@ -38,8 +41,9 @@ MODE="single"
 DURATION=60
 RUNS=5
 WARMUP_RUNS=3
-BASELINE_JSON=""
+TLS_MODE=0
 REPORT_VERSION=""
+BASELINE_JSON=""
 STRICT=0
 
 # DoD thresholds — calibrated for single-machine localhost testing.
@@ -59,7 +63,7 @@ info() { echo -e "  ${YELLOW}->${NC} $*"; }
 
 usage() {
   cat <<EOF
-Usage: ./benchmarks/bench_minimal.sh [quick|matrix|release] [options]
+Usage: ./benchmarks/bench_minimal.sh [quick|matrix|release|ramp] [options]
 
 Options:
   --duration <seconds>   Load duration per round (default: 60, quick: 10)
@@ -80,6 +84,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     matrix)
       MODE="matrix"
+      shift
+      ;;
+    ramp)
+      MODE="ramp"
+      DURATION="${DURATION:-15}"
       shift
       ;;
     release)
@@ -109,6 +118,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --strict)
       STRICT=1
+      shift
+      ;;
+    --tls)
+      TLS_MODE=1
+      shift
+      ;;
+    --ramp)
+      MODE="ramp"
       shift
       ;;
     -h|--help)
@@ -154,9 +171,23 @@ now_ms() {
 }
 
 start_target() {
-  PORT="$TARGET_PORT" python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
+  local tls_env=""
+  if [[ "$TLS_MODE" -eq 1 ]]; then
+    local tls_cert="$SCRIPT_DIR/.tls/echo-cert.pem"
+    local tls_key="$SCRIPT_DIR/.tls/echo-key.pem"
+    if [[ ! -f "$tls_cert" ]]; then
+      info "Generating self-signed TLS cert for echo server..."
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "$tls_key" -out "$tls_cert" -days 365 -nodes \
+        -subj "/CN=localhost" 2>/dev/null
+    fi
+    tls_env="TLS_PORT=$TARGET_PORT TLS_CERT=$tls_cert TLS_KEY=$tls_key"
+    PORT="$TARGET_PORT" $tls_env python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
+  else
+    PORT="$TARGET_PORT" python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
+  fi
   TARGET_PID=$!
-  sleep 0.4
+  sleep 0.3
 }
 
 start_proxy() {
@@ -178,7 +209,7 @@ poll_proxy_ready() {
   local target_url="$1"
   local ready=0
   for _ in $(seq 1 50); do
-    if curl -s -x "http://127.0.0.1:$PROXY_PORT" "$target_url" --connect-timeout 0.2 -o /dev/null 2>/dev/null; then
+    if curl -s -k -x "http://127.0.0.1:$PROXY_PORT" "$target_url" --connect-timeout 0.2 -o /dev/null 2>/dev/null; then
       ready=1
       break
     fi
@@ -231,20 +262,29 @@ print(round(p99, 2))
 run_load() {
   local scenario="$1"
   local payload_kb="$2"
-  local target_url="http://127.0.0.1:$TARGET_PORT/payload/${payload_kb}"
+  local scheme="http"
+  local oha_tls_flag=""
+  if [[ "$TLS_MODE" -eq 1 ]]; then
+    scheme="https"
+    oha_tls_flag="--insecure"
+  fi
+  local target_url="${scheme}://127.0.0.1:$TARGET_PORT/payload/${payload_kb}"
   local proxy_url="http://127.0.0.1:$PROXY_PORT"
+  local tls_label=""
+  [[ "$TLS_MODE" -eq 1 ]] && tls_label=", TLS"
 
   local throughput=0
   local p99_ms=0
   local tool_raw=""
 
-  info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB" >&2
+  info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB${tls_label}" >&2
   # oha 1.14 rejects NO_COLOR=1 (expects true/false); unset before invoking.
   tool_raw=$(env -u NO_COLOR oha \
     -z "${DURATION}s" \
     -c "$CONNECTIONS" \
     --no-tui \
     --output-format json \
+    $oha_tls_flag \
     -x "$proxy_url" \
     "$target_url" 2>/dev/null || echo "{}")
   throughput=$(echo "$tool_raw" | extract_oha_rps)
@@ -692,6 +732,94 @@ JSON
   echo ""
 }
 
+# ── ramp mode runner ──────────────────────────────────────────────────────────
+
+CONCURRENCY_LEVELS=(10 50 100 200 500)
+
+run_ramp_mode() {
+  local payload_kb="${1:-1}"
+
+  if [[ "$TLS_MODE" -eq 1 ]]; then
+    echo "=== relay-core Ramp-up Benchmark (TLS) (${TIMESTAMP}) ==="
+  else
+    echo "=== relay-core Ramp-up Benchmark (${TIMESTAMP}) ==="
+  fi
+  echo ""
+
+  TOOL="$(detect_tool)"
+  if [[ -z "$TOOL" ]]; then
+    echo "Error: oha is required."
+    exit 1
+  fi
+
+  echo "  Concurrency levels: ${CONCURRENCY_LEVELS[*]}"
+  echo "  Duration per step:  ${DURATION}s"
+  echo "  Payload:             ${payload_kb}KB"
+  [[ "$TLS_MODE" -eq 1 ]] && echo "  Mode:                TLS (MITM re-encrypt)"
+  echo ""
+
+  info "Building release binary..."
+  cd "$REPO_ROOT"
+  cargo build --release --package relay-core-cli --quiet
+  echo ""
+
+  if [[ ! -f "$CA_CERT" ]]; then
+    info "Generating benchmark CA..."
+    "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
+  fi
+
+  start_target
+  info "Starting proxy..."
+  start_proxy
+  sleep 1
+  ready=$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")
+  if [[ "$ready" -ne 1 ]]; then
+    fail "Proxy not ready"
+    return 1
+  fi
+
+  echo ""
+  printf "%-6s %12s %10s\n" "Conn" "QPS" "P99(ms)"
+  printf "%-6s %12s %10s\n" "------" "------------" "----------"
+
+  local ramp_csv="Conn,QPS,P99_ms"
+  local first_row=1
+
+  for conn in "${CONCURRENCY_LEVELS[@]}"; do
+    local saved_conn="$CONNECTIONS"
+    CONNECTIONS="$conn"
+
+    local warmup_needed=1
+    if [[ "$first_row" -eq 1 ]]; then
+      first_row=0
+      warmup_needed=0
+    fi
+
+    # Warmup pass (discard)
+    run_load "RAMP" "$payload_kb" > /dev/null
+
+    # Measurement pass
+    local metrics
+    metrics="$(run_load "RAMP" "$payload_kb")"
+    local tput="${metrics%%|*}"
+    local p99="${metrics##*|}"
+    printf "%-6s %12s %10s\n" "$conn" "$tput" "$p99"
+    ramp_csv+=$'\n'"${conn},${tput},${p99}"
+
+    CONNECTIONS="$saved_conn"
+  done
+
+  stop_proxy
+
+  echo ""
+  echo "=== Ramp-up Summary ==="
+  echo "$ramp_csv"
+
+  local OUT_CSV="$RESULTS_DIR/ramp_${TIMESTAMP}.csv"
+  echo "$ramp_csv" > "$OUT_CSV"
+  info "CSV report: $OUT_CSV"
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 echo "=== relay-core benchmark (${TIMESTAMP}) ==="
@@ -710,6 +838,12 @@ if [[ "$MODE" == "release" ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "ramp" ]]; then
+  run_ramp_mode
+  exit 0
+fi
+
+TLS_SCHEME="$([[ "$TLS_MODE" -eq 1 ]] && echo "https" || echo "http")"
 SCENARIOS=("S1:1")
 if [[ "$MODE" == "matrix" ]]; then
   SCENARIOS=("S1:1" "S2:64" "S3:1024")

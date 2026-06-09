@@ -51,7 +51,7 @@ jobs:
           if [ -z "$user_commits" ]; then
             user_commits=$(git log --oneline --no-merges "${prev_tag}..HEAD" | tr '\n' ' ')
           fi
-          prompt="根据以下 feat/fix commits 生成 Release Notes（中英双语，Features / Fixes 两类，每条一句，最后一段总结）。不要逐条展开 chore/ci/refactor/test/docs；若需提及维护项，最多用一句概括。\n\nCommits: ${user_commits}"
+          prompt="根据以下 feat/fix commits 生成 Release Notes。格式要求：\n1. 先英文部分（### Features / ### Bug Fixes 标题，每条一句）\n2. 单独一行 --- 分隔\n3. 再中文部分（### 新特性 / ### 问题修复 标题，每条一句）\n4. 不要加\"总结/Summary\"段落，不要混排中英\n5. 忽略 chore/ci/refactor/test/docs commits\n\nCommits: ${user_commits}"
           response=$(curl -s "${LLM_BASE_URL}/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${LLM_API_KEY}" \
