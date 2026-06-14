@@ -1,30 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    text::{Line, Span, Text},
-    widgets::{
-        Block, BorderType, Borders, Cell, Clear, HighlightSpacing, Padding, Paragraph, Row, Table,
-        TableState, Wrap,
-    },
+    layout::{Constraint, Direction, Layout},
+    widgets::{Block, TableState},
 };
-use relay_core_api::flow::{Flow, Layer};
+use relay_core_api::flow::Flow;
 use relay_core_api::modification::{flow_matches_filter, parse_flow_filter};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::time::Instant;
-use url::Url;
 use uuid::Uuid;
 
+use super::action::TuiAction;
 use super::command::{Command, parse_command};
-use super::format::{
-    BodyView, ColumnWidth, LayoutProfile, copy_to_clipboard, display_method, display_path,
-    empty_flow_list_message, flow_duration_ms, flow_list_title, format_duration_ms,
-    format_host_port, format_size, http_flow_to_curl, main_split, path_budget_for, plan_columns,
-    smart_truncate, tags_list_suffix, visible_flow_tags,
-};
+use super::format::{BodyView, LayoutProfile, copy_to_clipboard, http_flow_to_curl, main_split};
 use super::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -45,7 +34,7 @@ impl DetailTab {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
             Self::Request => "Request",
@@ -54,7 +43,7 @@ impl DetailTab {
         }
     }
 
-    const ALL: [Self; 4] = [
+    pub(super) const ALL: [Self; 4] = [
         Self::Overview,
         Self::Request,
         Self::Response,
@@ -186,7 +175,7 @@ impl TuiApp {
         }
     }
 
-    fn get_filtered_flows(&self) -> Vec<&Flow> {
+    pub(super) fn get_filtered_flows(&self) -> Vec<&Flow> {
         if self.filter_input.is_empty() {
             return self.flows.iter().collect();
         }
@@ -517,576 +506,22 @@ impl TuiApp {
                     Constraint::Percentage(detail_pct),
                 ])
                 .split(chunks[0]);
-            self.render_flow_list(f, main_chunks[0]);
-            self.render_flow_detail(f, main_chunks[1]);
+            super::render::render_flow_list(self, f, main_chunks[0]);
+            super::render::render_flow_detail(self, f, main_chunks[1]);
         } else {
             match self.active_area {
-                ActiveArea::FlowList => self.render_flow_list(f, chunks[0]),
-                ActiveArea::FlowDetail => self.render_flow_detail(f, chunks[0]),
+                ActiveArea::FlowList => super::render::render_flow_list(self, f, chunks[0]),
+                ActiveArea::FlowDetail => super::render::render_flow_detail(self, f, chunks[0]),
             }
         }
-        self.render_status_bar(f, chunks[1]);
+        super::render::render_status_bar(self, f, chunks[1]);
 
         if self.input_mode == InputMode::Help {
-            self.render_help_overlay(f);
+            super::render::render_help_overlay(self, f);
         }
     }
 
-    fn render_help_overlay(&self, f: &mut Frame) {
-        let mut lines: Vec<Line> = vec![
-            Line::from(vec![Span::styled("RelayCore TUI", Theme::accent_bold())]),
-            Line::from(""),
-        ];
-
-        match self.api_mode {
-            ApiMode::Connected => {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled("HTTP API: ", Theme::label()),
-                    Span::styled("on", Theme::stat_ok()),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        "REST + SSE on localhost (/api/v1/flows, rules, events) for ",
-                        Theme::muted(),
-                    ),
-                    Span::styled("relay flows", Theme::accent_dim()),
-                    Span::styled(", MCP, and other clients. ", Theme::muted()),
-                    Span::styled("This TUI is unchanged.", Theme::muted()),
-                ]));
-            }
-            ApiMode::Offline => {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled("HTTP API: ", Theme::label()),
-                    Span::styled("off", Theme::muted()),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        "--api-port PORT starts REST + SSE on localhost for ",
-                        Theme::muted(),
-                    ),
-                    Span::styled("relay flows", Theme::accent_dim()),
-                    Span::styled(", MCP, and integrations. ", Theme::muted()),
-                    Span::styled("Does not change this TUI.", Theme::muted()),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled("Example: ", Theme::label()),
-                    Span::styled("relay run --ui --api-port 8082", Theme::accent_dim()),
-                ]));
-            }
-        }
-
-        lines.push(Line::from(""));
-        lines.push(help_section("Flow List"));
-        lines.extend([
-            help_binding("j  ↓", "Move selection down"),
-            help_binding("k  ↑", "Move selection up"),
-            help_binding("g  Home", "Jump to newest (top)"),
-            help_binding("G  End", "Jump to oldest (bottom)"),
-            help_binding("Tab", "Focus detail panel (from list)"),
-            help_binding("/", "Filter (host: path: method: status: err ws)"),
-            help_binding("m", "Toggle mark on selected flow (A-Z; same key removes)"),
-            help_binding("'", "Jump to next mark"),
-            help_binding("Enter  →", "Focus detail panel"),
-        ]);
-
-        lines.push(Line::from(""));
-        lines.push(help_section("Detail Tabs"));
-        lines.extend([
-            help_binding("Esc  ←", "Back to flow list"),
-            help_binding("Tab", "Cycle Overview → Request → Response → Messages"),
-            help_binding("1 / 2 / 3 / 4", "Jump to tab (not a four-panel layout)"),
-            help_binding("PgUp  PgDown", "Scroll content"),
-            help_binding("Ctrl+u  Ctrl+d", "Scroll up / down 10 lines"),
-            help_binding("v", "Cycle body view: Auto → Pretty → Raw → Hex"),
-        ]);
-
-        lines.push(Line::from(""));
-        lines.push(help_section("Actions"));
-        lines.extend([
-            help_binding(":", "Command palette (:q :clear :filter :theme :view)"),
-            help_binding("y", "Copy selected flow as cURL"),
-            help_binding("d", "Delete selected flow"),
-            help_binding("p", "Pause / resume list (proxy keeps running)"),
-            help_binding("c", "Clear flow list"),
-        ]);
-        lines.push(Line::from(""));
-        lines.push(help_section("General"));
-        lines.extend([
-            help_binding("?", "Toggle this help"),
-            help_binding("q", "Quit"),
-        ]);
-
-        let help_width = 72;
-        let help_height = lines.len() as u16 + 2;
-        let area = centered_rect(help_width, help_height, f.area());
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Theme::border(true))
-            .title(Span::styled(
-                " Help (? or Esc to close) ",
-                Theme::panel_title(),
-            ))
-            .style(Style::default().bg(Theme::bg_elevated()));
-        let paragraph = Paragraph::new(lines).block(block);
-        f.render_widget(Clear, area);
-        f.render_widget(paragraph, area);
-    }
-
-    fn render_flow_list(&mut self, f: &mut Frame, area: Rect) {
-        let filtered_flows = self.get_filtered_flows();
-        let show_mark = !self.marks.is_empty();
-        let profile = LayoutProfile::for_flow_list_width(area.width);
-        let columns = plan_columns(profile, show_mark);
-        let filter = &self.filter_input;
-        let filtering = !filter.is_empty();
-        let path_budget = path_budget_for(profile, area.width, show_mark);
-
-        let list_focused = self.active_area == ActiveArea::FlowList;
-        let title = flow_list_title(filter, filtered_flows.len(), self.flows.len());
-
-        let widths: Vec<Constraint> = columns
-            .iter()
-            .map(|c| match c.width {
-                ColumnWidth::Fixed(w) => Constraint::Length(w),
-                ColumnWidth::Rest => Constraint::Min(10),
-            })
-            .collect();
-
-        if filtered_flows.is_empty() {
-            let block = outer_panel_block(&title, list_focused).padding(panel_body_padding());
-            f.render_widget(
-                Paragraph::new(empty_flow_list_message(filtering))
-                    .style(Theme::muted())
-                    .block(block),
-                area,
-            );
-            return;
-        }
-
-        let selected = self.table_state.selected();
-        let rows: Vec<Row> = filtered_flows
-            .iter()
-            .enumerate()
-            .map(|(i, flow)| {
-                let mark = self.marks.get(&flow.id).copied();
-                flow_table_row(
-                    flow,
-                    profile,
-                    path_budget,
-                    filter,
-                    selected == Some(i),
-                    show_mark,
-                    mark,
-                )
-            })
-            .collect();
-
-        let header: Vec<&str> = columns.iter().map(|c| c.header).collect();
-        let header_row = Row::new(header).style(Theme::table_header());
-
-        let table = Table::new(rows, widths)
-            .header(header_row)
-            .block(outer_panel_block(&title, list_focused))
-            .row_highlight_style(Theme::row_highlight())
-            .highlight_spacing(HighlightSpacing::Never);
-
-        f.render_stateful_widget(table, area, &mut self.table_state);
-    }
-
-    fn render_flow_detail(&self, f: &mut Frame, area: Rect) {
-        let detail_focused = self.active_area == ActiveArea::FlowDetail;
-        let detail_title = "Detail";
-        let block = outer_panel_block(detail_title, detail_focused);
-        let inner = block.inner(area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)].as_ref())
-            .split(inner);
-
-        render_detail_tab_bar(f, chunks[0], self.detail_tab);
-        f.render_widget(block, area);
-
-        let filtered_flows = self.get_filtered_flows();
-        if let Some(selected) = self.table_state.selected() {
-            if let Some(flow) = filtered_flows.get(selected) {
-                match self.detail_tab {
-                    DetailTab::Overview => self.render_overview(f, chunks[1], flow),
-                    DetailTab::Request => self.render_request(f, chunks[1], flow),
-                    DetailTab::Response => self.render_response(f, chunks[1], flow),
-                    DetailTab::Messages => self.render_messages(f, chunks[1], flow),
-                }
-            } else {
-                f.render_widget(
-                    Paragraph::new("Flow not found")
-                        .style(Theme::muted())
-                        .block(panel_body_block(0)),
-                    chunks[1],
-                );
-            }
-        } else {
-            f.render_widget(
-                Paragraph::new("Select a flow to view details")
-                    .style(Theme::muted())
-                    .block(panel_body_block(0)),
-                chunks[1],
-            );
-        }
-    }
-
-    fn render_overview(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = panel_body_block(self.detail_scroll);
-
-        let mut lines: Vec<Line> = Vec::new();
-
-        if let Some(summary) = flow_summary_line(flow) {
-            lines.push(summary);
-        }
-
-        lines.push(panel_kv_line("ID:", flow.id.to_string(), Theme::muted()));
-
-        match &flow.layer {
-            Layer::Http(h) => {
-                if let Some(query) = h.request.url.query() {
-                    lines.push(panel_kv_line(
-                        "Query:",
-                        smart_truncate(query, 160),
-                        Theme::muted(),
-                    ));
-                }
-                let size = h
-                    .response
-                    .as_ref()
-                    .and_then(|r| r.body.as_ref())
-                    .map(|b| b.size)
-                    .unwrap_or(0);
-                if size > 0 {
-                    lines.push(panel_kv_line("Size:", format_size(size), Theme::value()));
-                }
-                if let Some(err) = &h.error {
-                    lines.push(panel_kv_line("Error:", err.as_str(), Theme::error()));
-                }
-            }
-            Layer::WebSocket(w) => {
-                lines.push(panel_kv_line(
-                    "Messages:",
-                    w.messages.len().to_string(),
-                    Theme::value(),
-                ));
-                if let Some(query) = w.handshake_request.url.query() {
-                    lines.push(panel_kv_line(
-                        "Query:",
-                        smart_truncate(query, 160),
-                        Theme::muted(),
-                    ));
-                }
-            }
-            _ => {
-                lines.push(Line::from("Unknown Layer"));
-            }
-        }
-
-        push_panel_section(&mut lines, "Network");
-        let net = &flow.network;
-        lines.push(panel_kv_line_indented(
-            PANEL_SECTION_INDENT,
-            "Client:",
-            format!("{}:{}", net.client_ip, net.client_port),
-            Theme::value(),
-        ));
-        lines.push(panel_kv_line_indented(
-            PANEL_SECTION_INDENT,
-            "Server:",
-            format!("{}:{}", net.server_ip, net.server_port),
-            Theme::value(),
-        ));
-        if net.tls {
-            let tls_val = net.tls_version.as_deref().unwrap_or("on").to_string();
-            lines.push(panel_kv_line_indented(
-                PANEL_SECTION_INDENT,
-                "TLS:",
-                tls_val,
-                Theme::stat_ok(),
-            ));
-        }
-        if let Some(ref sni) = net.sni {
-            lines.push(panel_kv_line_indented(
-                PANEL_SECTION_INDENT,
-                "SNI:",
-                sni.clone(),
-                Theme::value(),
-            ));
-        }
-
-        if !flow.tags.is_empty() {
-            let visible = visible_flow_tags(&flow.tags);
-            if !visible.is_empty() {
-                push_panel_section(&mut lines, "Tags");
-                lines.push(Line::from(vec![
-                    Span::raw(PANEL_SECTION_INDENT),
-                    Span::styled(visible.join("  "), Theme::accent_dim()),
-                ]));
-            }
-        }
-
-        let timing_present = match &flow.layer {
-            Layer::Http(h) => h
-                .response
-                .as_ref()
-                .is_some_and(|r| r.timing.time_to_first_byte.is_some()),
-            Layer::WebSocket(w) => w.handshake_response.timing.time_to_first_byte.is_some(),
-            _ => false,
-        };
-
-        if timing_present || flow.end_time.is_some() {
-            push_panel_section(&mut lines, "Timing");
-
-            let (ttfb, ttlb, connect, ssl) = match &flow.layer {
-                Layer::Http(h) => {
-                    if let Some(ref resp) = h.response {
-                        (
-                            resp.timing.time_to_first_byte,
-                            resp.timing.time_to_last_byte,
-                            resp.timing.connect_time_ms,
-                            resp.timing.ssl_time_ms,
-                        )
-                    } else {
-                        (None, None, None, None)
-                    }
-                }
-                Layer::WebSocket(w) => {
-                    let t = &w.handshake_response.timing;
-                    (
-                        t.time_to_first_byte,
-                        t.time_to_last_byte,
-                        t.connect_time_ms,
-                        t.ssl_time_ms,
-                    )
-                }
-                _ => (None, None, None, None),
-            };
-
-            let total_ms = flow
-                .end_time
-                .map(|e| (e - flow.start_time).num_milliseconds() as u64)
-                .or(ttlb);
-
-            lines.push(panel_kv_line_indented(
-                PANEL_SECTION_INDENT,
-                "Total:",
-                format_timing_ms(total_ms),
-                timing_value_style(total_ms),
-            ));
-            lines.push(panel_kv_line_indented(
-                PANEL_SECTION_INDENT,
-                "TTFB:",
-                format_timing_ms(ttfb),
-                timing_value_style(ttfb),
-            ));
-            lines.push(panel_kv_line_indented(
-                PANEL_SECTION_INDENT,
-                "TTLB:",
-                format_timing_ms(ttlb),
-                timing_value_style(ttlb),
-            ));
-
-            if connect.is_some() || ssl.is_some() {
-                lines.push(panel_kv_line_indented(
-                    PANEL_SECTION_INDENT,
-                    "Connect:",
-                    format_timing_ms(connect),
-                    timing_value_style(connect),
-                ));
-                lines.push(panel_kv_line_indented(
-                    PANEL_SECTION_INDENT,
-                    "SSL:",
-                    format_timing_ms(ssl),
-                    timing_value_style(ssl),
-                ));
-            }
-        }
-
-        let p = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: true })
-            .scroll((self.detail_scroll, 0));
-        f.render_widget(p, area);
-    }
-
-    fn render_request(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = panel_body_block(self.detail_scroll);
-
-        match &flow.layer {
-            Layer::Http(h) => {
-                let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
-                for header in &h.request.headers {
-                    text.push(Line::from(vec![
-                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
-                        Span::styled(&header.1, Theme::value()),
-                    ]));
-                }
-
-                text.push(Line::from(""));
-                text.push(Line::from(Span::styled("Body", Theme::subsection())));
-
-                if let Some(body) = &h.request.body {
-                    text.push(Line::from(format!(
-                        "Size: {} bytes, Encoding: {}",
-                        body.size, body.encoding
-                    )));
-                    if body.size > 0 {
-                        text.push(Line::from(""));
-                        for line in render_body_for_view(&body.content, self.body_view) {
-                            text.push(line);
-                        }
-                    }
-                } else {
-                    text.push(Line::from("(No Body)"));
-                }
-
-                let p = Paragraph::new(text)
-                    .block(block)
-                    .wrap(Wrap { trim: true })
-                    .scroll((self.detail_scroll, 0));
-                f.render_widget(p, area);
-            }
-            Layer::WebSocket(w) => {
-                let mut text = vec![Line::from(Span::styled(
-                    "Handshake request headers",
-                    Theme::subsection(),
-                ))];
-                for header in &w.handshake_request.headers {
-                    text.push(Line::from(vec![
-                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
-                        Span::styled(&header.1, Theme::value()),
-                    ]));
-                }
-                let p = Paragraph::new(text)
-                    .block(block)
-                    .wrap(Wrap { trim: true })
-                    .scroll((self.detail_scroll, 0));
-                f.render_widget(p, area);
-            }
-            _ => f.render_widget(Paragraph::new("N/A").block(block), area),
-        }
-    }
-
-    fn render_response(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = panel_body_block(self.detail_scroll);
-
-        match &flow.layer {
-            Layer::Http(h) => {
-                if let Some(resp) = &h.response {
-                    let mut text = vec![Line::from(Span::styled("Headers", Theme::subsection()))];
-                    for header in &resp.headers {
-                        text.push(Line::from(vec![
-                            Span::styled(format!("{}: ", header.0), Theme::header_key()),
-                            Span::styled(&header.1, Theme::value()),
-                        ]));
-                    }
-
-                    text.push(Line::from(""));
-                    text.push(Line::from(Span::styled("Body", Theme::subsection())));
-
-                    if let Some(body) = &resp.body {
-                        text.push(Line::from(format!(
-                            "Size: {} bytes, Encoding: {}",
-                            body.size, body.encoding
-                        )));
-                        if body.size > 0 {
-                            text.push(Line::from(""));
-                            for line in render_body_for_view(&body.content, self.body_view) {
-                                text.push(line);
-                            }
-                        }
-                    } else {
-                        text.push(Line::from("(No Body)"));
-                    }
-
-                    let p = Paragraph::new(text)
-                        .block(block)
-                        .wrap(Wrap { trim: true })
-                        .scroll((self.detail_scroll, 0));
-                    f.render_widget(p, area);
-                } else {
-                    f.render_widget(Paragraph::new("Waiting for response...").block(block), area);
-                }
-            }
-            Layer::WebSocket(w) => {
-                let mut text = vec![Line::from(Span::styled(
-                    "Handshake response headers",
-                    Theme::subsection(),
-                ))];
-                for header in &w.handshake_response.headers {
-                    text.push(Line::from(vec![
-                        Span::styled(format!("{}: ", header.0), Theme::header_key()),
-                        Span::styled(&header.1, Theme::value()),
-                    ]));
-                }
-                let p = Paragraph::new(text)
-                    .block(block)
-                    .wrap(Wrap { trim: true })
-                    .scroll((self.detail_scroll, 0));
-                f.render_widget(p, area);
-            }
-            _ => f.render_widget(Paragraph::new("N/A").block(block), area),
-        }
-    }
-
-    fn render_messages(&self, f: &mut Frame, area: Rect, flow: &Flow) {
-        let block = panel_body_block(self.detail_scroll);
-
-        match &flow.layer {
-            Layer::WebSocket(w) => {
-                let lines: Vec<Line> = w
-                    .messages
-                    .iter()
-                    .map(|msg| {
-                        let direction = match msg.direction {
-                            relay_core_api::flow::Direction::ClientToServer => "->",
-                            relay_core_api::flow::Direction::ServerToClient => "<-",
-                        };
-                        let dir_style = match msg.direction {
-                            relay_core_api::flow::Direction::ClientToServer => Theme::ws_outbound(),
-                            relay_core_api::flow::Direction::ServerToClient => Theme::ws_inbound(),
-                        };
-
-                        let content = if msg.content.size > 50 {
-                            format!(
-                                "{}... ({} bytes)",
-                                &msg.content.content[..50],
-                                msg.content.size
-                            )
-                        } else {
-                            msg.content.content.clone()
-                        };
-
-                        Line::from(vec![
-                            Span::styled(format!("{} ", direction), dir_style),
-                            Span::styled(format!("[{}] ", msg.opcode), Theme::ws_opcode()),
-                            Span::styled(content, Theme::text()),
-                        ])
-                    })
-                    .collect();
-
-                let p = Paragraph::new(lines)
-                    .block(block)
-                    .wrap(Wrap { trim: true })
-                    .scroll((self.detail_scroll, 0));
-                f.render_widget(p, area);
-            }
-            _ => f.render_widget(Paragraph::new("Not a WebSocket flow").block(block), area),
-        }
-    }
-
-    fn status_hints(&self) -> Vec<(u16, String)> {
+    pub(super) fn status_hints(&self) -> Vec<(u16, String)> {
         let p_action = if self.paused { "resume" } else { "pause" };
         let mut hints = vec![
             (10, "[?]help".into()),
@@ -1113,25 +548,44 @@ impl TuiApp {
     }
 
     fn dispatch_command(&mut self, cmd: Command) {
-        match cmd {
-            Command::Quit => self.should_quit = true,
-            Command::Clear => {
+        let action = match cmd {
+            Command::Quit => TuiAction::Quit,
+            Command::Clear => TuiAction::ClearFlows,
+            Command::Pause => TuiAction::SetPaused(true),
+            Command::Resume => TuiAction::SetPaused(false),
+            Command::Filter(filter) => TuiAction::ApplyFilter(filter),
+            Command::Unfilter => TuiAction::ClearFilter,
+            Command::Theme(name) => TuiAction::ApplyTheme(name),
+            Command::CopyCurl => TuiAction::CopySelectedCurl,
+            Command::View(name) => match name.as_str() {
+                "auto" => TuiAction::SetBodyView(BodyView::Auto),
+                "pretty" => TuiAction::SetBodyView(BodyView::Pretty),
+                "raw" => TuiAction::SetBodyView(BodyView::Raw),
+                "hex" => TuiAction::SetBodyView(BodyView::Hex),
+                _ => TuiAction::SetToast(format!("Unknown view: {name} (auto|pretty|raw|hex)")),
+            },
+            Command::Help => TuiAction::ShowCommandHelp,
+            Command::Unknown(msg) => TuiAction::SetToast(format!("{msg} — try :help")),
+        };
+        self.apply_action(action);
+    }
+
+    fn apply_action(&mut self, action: TuiAction) {
+        match action {
+            TuiAction::Quit => self.should_quit = true,
+            TuiAction::ClearFlows => {
                 self.flows.clear();
                 self.pending_count = 0;
                 self.table_state.select(None);
                 self.detail_scroll = 0;
                 self.set_toast("Flows cleared");
             }
-            Command::Pause => {
-                self.paused = true;
-                self.set_toast("Paused");
-            }
-            Command::Resume => {
-                self.paused = false;
+            TuiAction::SetPaused(paused) => {
+                self.paused = paused;
                 self.pending_count = 0;
-                self.set_toast("Resumed");
+                self.set_toast(if paused { "Paused" } else { "Resumed" });
             }
-            Command::Filter(filter) => {
+            TuiAction::ApplyFilter(filter) => {
                 self.set_toast(format!("Filter: {filter}"));
                 self.filter_input = filter;
                 let filtered = self.get_filtered_flows();
@@ -1139,857 +593,30 @@ impl TuiApp {
                     .select(if filtered.is_empty() { None } else { Some(0) });
                 self.detail_scroll = 0;
             }
-            Command::Unfilter => {
+            TuiAction::ClearFilter => {
                 self.filter_input.clear();
                 self.set_toast("Filter cleared");
             }
-            Command::Theme(name) => match crate::ui::theme::ThemeId::parse(&name) {
+            TuiAction::ApplyTheme(name) => match crate::ui::theme::ThemeId::parse(&name) {
                 Ok(id) => {
                     crate::ui::theme::init(id);
                     self.set_toast(format!("Theme: {}", id.description()));
                 }
                 Err(e) => self.set_toast(e.to_string()),
             },
-            Command::CopyCurl => self.copy_curl_selection(),
-            Command::View(name) => {
-                let view = match name.as_str() {
-                    "auto" => BodyView::Auto,
-                    "pretty" => BodyView::Pretty,
-                    "raw" => BodyView::Raw,
-                    "hex" => BodyView::Hex,
-                    _ => {
-                        self.set_toast(format!("Unknown view: {name} (auto|pretty|raw|hex)"));
-                        return;
-                    }
-                };
+            TuiAction::CopySelectedCurl => self.copy_curl_selection(),
+            TuiAction::SetBodyView(view) => {
                 self.body_view = view;
                 self.set_toast(format!("View: {}", self.body_view.label()));
             }
-            Command::Help => {
+            TuiAction::ShowCommandHelp => {
                 self.set_toast(
                     ":q :clear :pause :resume :f :uf :theme :cp :v :help | press ? for keys",
                 );
             }
-            Command::Unknown(msg) => {
-                self.set_toast(format!("{msg} — try :help"));
-            }
+            TuiAction::SetToast(msg) => self.set_toast(msg),
         }
     }
-
-    fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let flow_count = self.flows.len();
-        let filtered_count = self.get_filtered_flows().len();
-        let count_str = if filtered_count != flow_count {
-            format!("{}/{}", filtered_count, flow_count)
-        } else {
-            flow_count.to_string()
-        };
-
-        // req/s: count timestamps in the last 1 second
-        let now = Instant::now();
-        let req_per_sec = self
-            .req_timestamps
-            .iter()
-            .rev()
-            .take_while(|t| now.duration_since(**t).as_secs() < 1)
-            .count();
-
-        let elapsed = self.start_time.elapsed();
-        let uptime = if elapsed.as_secs() < 60 {
-            format!("{}s", elapsed.as_secs())
-        } else if elapsed.as_secs() < 3600 {
-            format!("{}m{}s", elapsed.as_secs() / 60, elapsed.as_secs() % 60)
-        } else {
-            format!(
-                "{}h{}m",
-                elapsed.as_secs() / 3600,
-                (elapsed.as_secs() % 3600) / 60
-            )
-        };
-
-        let bar_text = match self.input_mode {
-            InputMode::Normal => {
-                let rec = if self.paused {
-                    Span::styled("[⏸ PAUSED] ", Theme::error_bold())
-                } else {
-                    Span::styled("[●REC] ", Theme::stat_ok())
-                };
-
-                let pending = if self.pending_count > 0 {
-                    Span::styled(
-                        format!("↓{} new ", self.pending_count),
-                        Theme::accent_bold(),
-                    )
-                } else {
-                    Span::raw("")
-                };
-
-                let focus = match self.active_area {
-                    ActiveArea::FlowList => Span::styled("· LIST · ", Theme::muted()),
-                    ActiveArea::FlowDetail => Span::styled("· DETAIL · ", Theme::muted()),
-                };
-
-                // Left section
-                let left = vec![
-                    rec,
-                    pending,
-                    focus,
-                    Span::styled("Flows: ", Theme::label()),
-                    Span::styled(format!("{} ", count_str), Theme::stat_ok()),
-                    Span::styled(format!("{}req/s ", req_per_sec), Theme::stat_info()),
-                    Span::styled("| ", Theme::muted()),
-                    Span::styled("Total: ", Theme::label()),
-                    Span::styled(format!("{}", self.flow_count_total), Theme::text()),
-                ];
-
-                // Middle section
-                let middle = vec![
-                    Span::styled("proxy ", Theme::label()),
-                    Span::styled(format!(":{}", self.proxy_port), Theme::uptime()),
-                    Span::styled("  up ", Theme::muted()),
-                    Span::styled(uptime, Theme::uptime()),
-                ];
-
-                // Right section — priority-based hints that truncate on narrow terminals.
-                let hints = self.status_hints();
-                let left_width = Text::from(Line::from(left.clone())).width() as u16;
-                let middle_width = Text::from(Line::from(middle.clone())).width() as u16;
-                let right_budget = area.width.saturating_sub(left_width + middle_width);
-
-                let mut right_spans: Vec<Span> = Vec::new();
-                let mut used = 0u16;
-                for (min_width, hint) in &hints {
-                    let hint_w = (hint.len() as u16).max(*min_width) + 1;
-                    if used + hint_w <= right_budget || right_spans.is_empty() {
-                        if !right_spans.is_empty() {
-                            right_spans.push(Span::raw(" "));
-                        }
-                        right_spans.extend(status_hint_spans(hint));
-                        used += hint_w;
-                    }
-                }
-
-                let spacer1 = if left_width + middle_width + used < area.width {
-                    (area.width - left_width - middle_width - used) / 2
-                } else {
-                    1u16
-                };
-                let spacer2 = area
-                    .width
-                    .saturating_sub(left_width + spacer1 + middle_width + used);
-
-                let mut main_spans: Vec<Span> = Vec::new();
-                main_spans.extend(left);
-                main_spans.push(Span::raw(" ".repeat(spacer1 as usize)));
-                main_spans.extend(middle);
-                main_spans.push(Span::raw(" ".repeat(spacer2 as usize)));
-                main_spans.extend(right_spans);
-
-                let bar_block = status_bar_block();
-                let bar_area = bar_block.inner(area);
-                f.render_widget(bar_block, area);
-
-                let toast_alive = self.toast_at.is_some_and(|at| at.elapsed().as_secs() < 5);
-                if !toast_alive {
-                    f.render_widget(Paragraph::new(Line::from(main_spans)), bar_area);
-                } else if let Some(ref msg) = self.toast {
-                    let status_chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(1), Constraint::Length(1)])
-                        .split(bar_area);
-                    f.render_widget(Paragraph::new(Line::from(main_spans)), status_chunks[0]);
-                    let toast_line = Line::from(vec![
-                        Span::styled("▸ ", Theme::row_marker()),
-                        Span::styled(msg.as_str(), Theme::accent_dim()),
-                    ]);
-                    f.render_widget(Paragraph::new(toast_line), status_chunks[1]);
-                } else {
-                    f.render_widget(Paragraph::new(Line::from(main_spans)), bar_area);
-                }
-                return;
-            }
-            InputMode::Filtering => {
-                let mut spans = vec![
-                    Span::styled("Filter: ", Theme::label()),
-                    Span::styled(self.filter_input.as_str(), Theme::accent()),
-                ];
-                if self.filter_input.is_empty() {
-                    spans.push(Span::styled(
-                        "  host:api.example method:POST status:>=400 err",
-                        Theme::muted(),
-                    ));
-                }
-                spans.extend([
-                    Span::styled(" | ", Theme::muted()),
-                    Span::styled("Enter", Theme::hotkey()),
-                    Span::styled(" apply | ", Theme::muted()),
-                    Span::styled("Esc", Theme::hotkey()),
-                    Span::styled(" cancel", Theme::muted()),
-                ]);
-                spans
-            }
-            InputMode::Command => {
-                let colon = if self.command_input.is_empty() {
-                    Span::styled(":", Theme::accent())
-                } else {
-                    Span::styled(":", Theme::muted())
-                };
-                vec![
-                    colon,
-                    Span::styled(self.command_input.as_str(), Theme::accent()),
-                    Span::styled(" | ", Theme::muted()),
-                    Span::styled("Enter", Theme::hotkey()),
-                    Span::styled(" execute | ", Theme::muted()),
-                    Span::styled("Esc", Theme::hotkey()),
-                    Span::styled(" cancel", Theme::muted()),
-                ]
-            }
-            InputMode::Marking => {
-                vec![
-                    Span::styled("mark — ", Theme::accent_bold()),
-                    Span::styled("A-Z to toggle", Theme::muted()),
-                    Span::styled(" | ", Theme::muted()),
-                    Span::styled("Esc", Theme::hotkey()),
-                    Span::styled(" cancel", Theme::muted()),
-                ]
-            }
-            InputMode::Help => {
-                vec![
-                    Span::styled("HELP", Theme::accent_bold()),
-                    Span::styled(" — press ", Theme::muted()),
-                    Span::styled("? or Esc", Theme::hotkey()),
-                    Span::styled(" to close", Theme::muted()),
-                ]
-            }
-        };
-
-        let text = Text::from(Line::from(bar_text));
-        let paragraph = Paragraph::new(text).block(status_bar_block());
-        f.render_widget(paragraph, area);
-    }
-}
-
-fn status_bar_block() -> Block<'static> {
-    Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Theme::status_bar_border())
-        .style(Theme::surface())
-        .padding(Padding {
-            left: 1,
-            right: 0,
-            top: 0,
-            bottom: 0,
-        })
-}
-
-fn flow_table_row(
-    flow: &Flow,
-    profile: LayoutProfile,
-    path_budget: usize,
-    filter: &str,
-    selected: bool,
-    show_mark: bool,
-    mark: Option<char>,
-) -> Row<'static> {
-    let filtering = !filter.is_empty();
-    let (method, url, status, size_str, has_body, has_query) = match &flow.layer {
-        Layer::Http(h) => {
-            let size = h
-                .response
-                .as_ref()
-                .and_then(|r| r.body.as_ref())
-                .map(|b| b.size)
-                .unwrap_or(0);
-            (
-                h.request.method.clone(),
-                h.request.url.clone(),
-                if let Some(resp) = &h.response {
-                    resp.status.to_string()
-                } else {
-                    "---".to_string()
-                },
-                format_size(size),
-                h.request.body.is_some(),
-                !h.request.query.is_empty() || h.request.url.query().is_some(),
-            )
-        }
-        Layer::WebSocket(w) => (
-            "WS".to_string(),
-            w.handshake_request.url.clone(),
-            w.handshake_response.status.to_string(),
-            String::new(),
-            false,
-            w.handshake_request.url.query().is_some(),
-        ),
-        _ => (
-            "???".to_string(),
-            Url::parse("http://unknown/").unwrap(),
-            "---".to_string(),
-            String::new(),
-            false,
-            false,
-        ),
-    };
-
-    let method_label = display_method(&method, has_body);
-    let dur_ms = flow_duration_ms(flow);
-    let dur_label = format_duration_ms(dur_ms);
-
-    let marker_cell = if selected {
-        Cell::from(Span::styled("▸", Theme::row_marker()))
-    } else {
-        Cell::from(Span::raw(""))
-    };
-    let mark_cell = Cell::from(Span::styled(
-        mark.map(|c| c.to_string()).unwrap_or_default(),
-        match mark {
-            Some(c) => Style::default().fg(Theme::host_color(&c.to_string())),
-            None => Style::default(),
-        },
-    ));
-    let method_key = method_label.trim_end_matches('+');
-    let method_cell = Cell::from(Span::styled(
-        method_label.clone(),
-        Theme::method_text(method_key),
-    ));
-    let (status_text, status_style) = if status == "---" {
-        ("…".to_string(), Theme::pending_status())
-    } else {
-        (format!("{:>3}", status), Theme::status_badge(&status))
-    };
-    let status_cell = Cell::from(Span::styled(status_text, status_style));
-    let dur_cell = Cell::from(Span::styled(
-        format!("{:>6}", dur_label),
-        Theme::duration_style(dur_ms),
-    ));
-
-    let tags_str = tags_list_suffix(&flow.tags);
-
-    let mut prefix = vec![marker_cell];
-    if show_mark {
-        prefix.push(mark_cell);
-    }
-
-    match profile {
-        LayoutProfile::TooNarrow | LayoutProfile::SinglePane => {
-            let url_text = smart_truncate(url.as_str(), path_budget);
-            let mut cells = prefix;
-            cells.push(Cell::from(Span::styled(url_text, Theme::text())));
-            Row::new(cells)
-        }
-        LayoutProfile::TwoPaneCompact | LayoutProfile::TwoPaneStandard => {
-            let url_text = smart_truncate(url.as_str(), path_budget);
-            let url_with_tags = if tags_str.is_empty() {
-                url_text
-            } else {
-                format!("{}{}", url_text, tags_str)
-            };
-            let mut cells = prefix;
-            cells.extend([
-                method_cell,
-                status_cell,
-                dur_cell,
-                styled_text_cell(&url_with_tags, filter, filtering, Theme::text()),
-            ]);
-            Row::new(cells)
-        }
-        LayoutProfile::TwoPaneWide | LayoutProfile::TwoPaneExtraWide => {
-            let host = format_host_port(&url);
-            let host_color = Theme::host_color(&host);
-            let path = display_path(&url, path_budget, has_query);
-            let path_with_tags = if tags_str.is_empty() {
-                path
-            } else {
-                format!("{}{}", path, tags_str)
-            };
-            let mut cells = prefix;
-            cells.extend([
-                method_cell,
-                status_cell,
-                dur_cell,
-                Cell::from(Span::styled(format!("{:>7}", size_str), Theme::text())),
-                Cell::from(Span::styled(host, Style::default().fg(host_color))),
-                styled_text_cell(&path_with_tags, filter, filtering, Theme::text()),
-            ]);
-            Row::new(cells)
-        }
-    }
-}
-
-fn styled_text_cell(text: &str, filter: &str, filtering: bool, base: Style) -> Cell<'static> {
-    if filtering && !filter.is_empty() {
-        Cell::from(Line::from(highlight_filter_spans(text, filter, base)))
-    } else {
-        Cell::from(Span::styled(text.to_string(), base))
-    }
-}
-
-fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'static>> {
-    let lower_text = text.to_lowercase();
-    let lower_filter = filter.to_lowercase();
-    let mut spans = Vec::new();
-    let mut last = 0;
-    for (idx, _) in lower_text.match_indices(&lower_filter) {
-        if idx > last {
-            spans.push(Span::styled(text[last..idx].to_string(), base));
-        }
-        spans.push(Span::styled(
-            text[idx..idx + filter.len()].to_string(),
-            Theme::filter_hit(),
-        ));
-        last = idx + filter.len();
-    }
-    if last < text.len() {
-        spans.push(Span::styled(text[last..].to_string(), base));
-    }
-    if spans.is_empty() {
-        spans.push(Span::styled(text.to_string(), base));
-    }
-    spans
-}
-
-/// Maximum body bytes to render before truncating.
-const BODY_RENDER_LIMIT: usize = 4096;
-/// Maximum body bytes to attempt full rendering; beyond this show truncated view.
-const BODY_FULL_RENDER_LIMIT: usize = 65536;
-
-/// Dispatch body rendering based on BodyView.
-fn render_body_for_view(body_content: &str, view: BodyView) -> Vec<Line<'static>> {
-    if body_content.len() > BODY_FULL_RENDER_LIMIT {
-        return vec![Line::from(Span::styled(
-            format!(
-                "View unavailable — body too large ({} bytes). Only first {} shown.",
-                format_size(body_content.len() as u64),
-                format_size(BODY_FULL_RENDER_LIMIT as u64)
-            ),
-            Theme::muted(),
-        ))];
-    }
-    match view {
-        BodyView::Auto => render_body_auto(body_content),
-        BodyView::Pretty => render_body_pretty(body_content),
-        BodyView::Raw => render_body_raw(body_content),
-        BodyView::Hex => render_body_hex(body_content.as_bytes()),
-    }
-}
-
-/// Auto-detect: JSON → pretty, binary → hex, other → raw.
-fn render_body_auto(body_content: &str) -> Vec<Line<'static>> {
-    if serde_json::from_str::<Value>(body_content).is_ok() {
-        render_body_pretty(body_content)
-    } else if body_content
-        .bytes()
-        .any(|b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
-    {
-        render_body_hex(body_content.as_bytes())
-    } else {
-        render_body_raw(body_content)
-    }
-}
-
-/// JSON pretty-printed with syntax highlighting.
-fn render_body_pretty(body_content: &str) -> Vec<Line<'static>> {
-    if let Ok(value) = serde_json::from_str::<Value>(body_content)
-        && let Ok(formatted) = serde_json::to_string_pretty(&value)
-    {
-        return render_json_highlighted(&formatted, BODY_RENDER_LIMIT);
-    }
-    render_body_raw(body_content)
-}
-
-/// Raw UTF-8 text, truncated.
-fn render_body_raw(body_content: &str) -> Vec<Line<'static>> {
-    let truncated = body_content.len() > BODY_RENDER_LIMIT;
-    let display = if truncated {
-        &body_content[..BODY_RENDER_LIMIT]
-    } else {
-        body_content
-    };
-    let mut lines: Vec<Line> = display
-        .lines()
-        .map(|line| Line::from(Span::styled(line.to_string(), Theme::text())))
-        .collect();
-    if truncated {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "… showing first {} of {} bytes",
-                format_size(BODY_RENDER_LIMIT as u64),
-                format_size(body_content.len() as u64)
-            ),
-            Theme::muted(),
-        )));
-    }
-    lines
-}
-
-/// Hex dump: 16 bytes per row with offset + ASCII column.
-fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
-    let limit = BODY_RENDER_LIMIT.min(data.len());
-    let mut lines: Vec<Line> = Vec::new();
-    for row in 0..limit.div_ceil(16) {
-        let offset = row * 16;
-        let row_end = (offset + 16).min(limit);
-        let hex_part: String = data[offset..row_end]
-            .iter()
-            .map(|b| format!("{b:02x} "))
-            .collect::<Vec<_>>()
-            .join("");
-        let hex_part = format!("{hex_part:<48}");
-        let ascii_part: String = data[offset..row_end]
-            .iter()
-            .map(|&b| {
-                if b.is_ascii_graphic() || b == b' ' {
-                    b as char
-                } else {
-                    '.'
-                }
-            })
-            .collect();
-        lines.push(Line::from(vec![
-            Span::styled(format!("{offset:08x}  "), Theme::label()),
-            Span::styled(hex_part, Theme::text()),
-            Span::styled(ascii_part, Theme::muted()),
-        ]));
-    }
-    if data.len() > limit {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "… showing first {} of {} bytes",
-                format_size(limit as u64),
-                format_size(data.len() as u64)
-            ),
-            Theme::muted(),
-        )));
-    }
-    lines
-}
-
-/// JSON syntax highlighting for a pre-formatted (pretty) string.
-fn render_json_highlighted(formatted: &str, limit: usize) -> Vec<Line<'static>> {
-    let truncated = formatted.len() > limit;
-    let display = if truncated {
-        &formatted[..limit]
-    } else {
-        formatted
-    };
-    let mut lines: Vec<Line> = display
-        .lines()
-        .map(|line| {
-            Line::from(
-                highlight_json_line(line)
-                    .into_iter()
-                    .map(|(text, style)| Span::styled(text, style))
-                    .collect::<Vec<Span>>(),
-            )
-        })
-        .collect();
-    if truncated {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "… showing first {} of {} bytes",
-                format_size(limit as u64),
-                format_size(formatted.len() as u64)
-            ),
-            Theme::muted(),
-        )));
-    }
-    lines
-}
-
-/// Simple JSON line highlighter: returns (text, style) pairs.
-fn highlight_json_line(line: &str) -> Vec<(String, Style)> {
-    let mut parts: Vec<(String, Style)> = Vec::new();
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    let len = chars.len();
-
-    while i < len {
-        let c = chars[i];
-
-        // Whitespace
-        if c.is_whitespace() {
-            let start = i;
-            while i < len && chars[i].is_whitespace() {
-                i += 1;
-            }
-            parts.push((chars[start..i].iter().collect(), Theme::text()));
-            continue;
-        }
-
-        // String (double-quoted)
-        if c == '"' {
-            let start = i;
-            i += 1;
-            while i < len {
-                if chars[i] == '\\' && i + 1 < len {
-                    i += 2;
-                } else if chars[i] == '"' {
-                    i += 1;
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
-            let s: String = chars[start..i].iter().collect();
-            // Check if this string is a key (followed by :)
-            let is_key = chars.get(i).is_some_and(|&_nc| {
-                let rest: String = chars[i..].iter().collect();
-                rest.trim_start().starts_with(':')
-            });
-            parts.push((
-                s,
-                if is_key {
-                    Theme::json_key()
-                } else {
-                    Theme::json_string()
-                },
-            ));
-            continue;
-        }
-
-        // Number
-        if c == '-' || c.is_ascii_digit() {
-            let start = i;
-            if c == '-' {
-                i += 1;
-            }
-            while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            parts.push((chars[start..i].iter().collect(), Theme::json_number()));
-            continue;
-        }
-
-        // Boolean / null
-        if c == 't' || c == 'f' || c == 'n' {
-            let start = i;
-            while i < len && chars[i].is_alphabetic() {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            if word == "true" || word == "false" || word == "null" {
-                parts.push((word, Theme::json_bool()));
-                continue;
-            }
-            // Not a keyword, backtrack
-            i = start;
-        }
-
-        // Structural chars (brackets, braces, commas, colons)
-        parts.push((c.to_string(), Theme::muted()));
-        i += 1;
-    }
-
-    parts
-}
-
-fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Theme::border(focused))
-        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
-        .style(Theme::surface())
-}
-
-/// Left inset for panel body text (tabs, tables, key-value lines) under border titles.
-fn panel_body_padding() -> Padding {
-    Padding {
-        left: 1,
-        right: 0,
-        top: 0,
-        bottom: 0,
-    }
-}
-
-/// Panel body — optional scroll hint for detail tabs.
-fn panel_body_block(scroll: u16) -> Block<'static> {
-    let mut block = Block::default()
-        .style(Theme::surface())
-        .padding(panel_body_padding());
-    if scroll > 0 {
-        block = block.title(Span::styled(format!(" ↓{scroll} "), Theme::muted()));
-    }
-    block
-}
-
-fn render_detail_tab_bar(f: &mut Frame, area: Rect, selected: DetailTab) {
-    let mut spans: Vec<Span> = Vec::new();
-    for (i, &tab) in DetailTab::ALL.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw("  "));
-        }
-        let style = if tab == selected {
-            Theme::tab_active()
-        } else {
-            Theme::tab_inactive()
-        };
-        spans.push(Span::styled(tab.label(), style));
-    }
-    let block = Block::default().padding(panel_body_padding());
-    f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
-}
-
-/// Fixed label column so key-value rows align across panels.
-const PANEL_KV_LABEL_WIDTH: usize = 12;
-const PANEL_SECTION_INDENT: &str = "  ";
-
-fn panel_kv_label_column(label: &str) -> String {
-    format!("{label:<PANEL_KV_LABEL_WIDTH$}")
-}
-
-fn panel_kv_line(label: &str, value: impl AsRef<str>, value_style: Style) -> Line<'static> {
-    panel_kv_line_indented("", label, value, value_style)
-}
-
-fn panel_kv_line_indented(
-    indent: &str,
-    label: &str,
-    value: impl AsRef<str>,
-    value_style: Style,
-) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(indent.to_string()),
-        Span::styled(panel_kv_label_column(label), Theme::label()),
-        Span::styled(value.as_ref().to_string(), value_style),
-    ])
-}
-
-fn panel_section_gap() -> Line<'static> {
-    Line::from("")
-}
-
-fn push_panel_section(lines: &mut Vec<Line>, title: &'static str) {
-    lines.push(panel_section_gap());
-    lines.push(subsection_line(title));
-}
-
-fn format_timing_ms(ms: Option<u64>) -> String {
-    match ms {
-        Some(v) => format!("{v}ms"),
-        None => "—".to_string(),
-    }
-}
-
-fn timing_value_style(ms: Option<u64>) -> Style {
-    if ms.is_some() {
-        Theme::text()
-    } else {
-        Theme::muted()
-    }
-}
-
-fn subsection_line(title: &'static str) -> Line<'static> {
-    Line::from(Span::styled(format!("· {title} ·"), Theme::subsection()))
-}
-
-fn flow_summary_line(flow: &Flow) -> Option<Line<'static>> {
-    match &flow.layer {
-        Layer::Http(h) => {
-            let method_label = display_method(&h.request.method, h.request.body.is_some());
-            let method_key = method_label.trim_end_matches('+');
-            let status = h
-                .response
-                .as_ref()
-                .map(|r| r.status.to_string())
-                .unwrap_or_else(|| "…".to_string());
-            let dur = format_duration_ms(flow_duration_ms(flow));
-            let host_str = format_host_port(&h.request.url);
-            let path = h.request.url.path();
-            let path = if path.is_empty() { "/" } else { path };
-            let path_show = smart_truncate(path, 40);
-            Some(Line::from(vec![
-                Span::styled(method_label.clone(), Theme::method_badge(method_key)),
-                Span::raw("  "),
-                Span::styled(format!("{status:>3}"), Theme::status_badge(&status)),
-                Span::styled(
-                    format!("  {dur}  "),
-                    Theme::duration_style(flow_duration_ms(flow)),
-                ),
-                Span::styled(format!("{host_str}{path_show}"), Theme::value()),
-            ]))
-        }
-        Layer::WebSocket(w) => {
-            let status = w.handshake_response.status.to_string();
-            let dur = format_duration_ms(flow_duration_ms(flow));
-            let host_str = format_host_port(&w.handshake_request.url);
-            let path = w.handshake_request.url.path();
-            let path = if path.is_empty() { "/" } else { path };
-            let path_show = smart_truncate(path, 40);
-            let msg_count = w.messages.len();
-            Some(Line::from(vec![
-                Span::styled("WS", Theme::method_badge("WS")),
-                Span::raw("  "),
-                Span::styled(format!("{status:>3}"), Theme::status_badge(&status)),
-                Span::styled(
-                    format!("  {dur}  "),
-                    Theme::duration_style(flow_duration_ms(flow)),
-                ),
-                Span::styled(format!("{host_str}{path_show}"), Theme::value()),
-                Span::styled(format!("  ({msg_count} msgs)"), Theme::muted()),
-            ]))
-        }
-        _ => None,
-    }
-}
-
-fn help_section(title: &'static str) -> Line<'static> {
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(format!("· {title} ·"), Theme::subsection()),
-    ])
-}
-
-fn help_binding(keys: &'static str, description: &'static str) -> Line<'static> {
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(format!("{keys:<16}"), Theme::hotkey()),
-        Span::styled(description, Theme::muted()),
-    ])
-}
-
-/// Render `[key]label` hints with accent keys and muted labels (status bar).
-fn status_hint_spans(hint: &str) -> Vec<Span<'_>> {
-    if let Some(rest) = hint.strip_prefix('[')
-        && let Some((key, tail)) = rest.split_once(']')
-    {
-        return vec![
-            Span::styled("[", Theme::muted()),
-            Span::styled(key, Theme::hotkey()),
-            Span::styled("]", Theme::muted()),
-            Span::styled(tail, Theme::muted()),
-        ];
-    }
-    if hint.starts_with('↓') {
-        vec![Span::styled(hint, Theme::accent_bold())]
-    } else if hint.starts_with("marks:") {
-        vec![Span::styled(hint, Theme::accent_dim())]
-    } else {
-        vec![Span::styled(hint, Theme::muted())]
-    }
-}
-
-fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length((r.height.saturating_sub(height)) / 2),
-            Constraint::Length(height),
-            Constraint::Length((r.height.saturating_sub(height)) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length((r.width.saturating_sub(width)) / 2),
-            Constraint::Length(width),
-            Constraint::Length((r.width.saturating_sub(width)) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 #[cfg(test)]
@@ -1999,11 +626,17 @@ mod tests {
 
     #[test]
     fn panel_kv_label_column_is_fixed_width() {
-        assert_eq!(panel_kv_label_column("ID:").len(), PANEL_KV_LABEL_WIDTH);
-        assert_eq!(panel_kv_label_column("Host:").len(), PANEL_KV_LABEL_WIDTH);
         assert_eq!(
-            panel_kv_label_column("WS Pending:").len(),
-            PANEL_KV_LABEL_WIDTH
+            super::super::render::panel_kv_label_column("ID:").len(),
+            super::super::render::PANEL_KV_LABEL_WIDTH
+        );
+        assert_eq!(
+            super::super::render::panel_kv_label_column("Host:").len(),
+            super::super::render::PANEL_KV_LABEL_WIDTH
+        );
+        assert_eq!(
+            super::super::render::panel_kv_label_column("WS Pending:").len(),
+            super::super::render::PANEL_KV_LABEL_WIDTH
         );
     }
     use relay_core_api::flow::{
