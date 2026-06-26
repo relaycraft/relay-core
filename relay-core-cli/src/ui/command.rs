@@ -11,6 +11,7 @@ pub enum Command {
     Theme(String),
     CopyCurl,
     View(String),
+    Replay,
     Help,
     Unknown(String),
 }
@@ -47,6 +48,7 @@ pub fn parse_command(input: &str) -> Command {
             }
         }
         "cp" | "copy" => Command::CopyCurl,
+        "rr" | "replay" => Command::Replay,
         "v" | "view" => {
             if args.is_empty() {
                 Command::View("auto".into())

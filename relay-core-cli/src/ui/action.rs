@@ -17,4 +17,5 @@ pub enum TuiAction {
     SetBodyView(BodyView),
     ShowCommandHelp,
     SetToast(String),
+    ReplaySelectedFlow,
 }

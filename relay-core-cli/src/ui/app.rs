@@ -97,6 +97,7 @@ pub struct TuiApp {
     pub command_input: String,
     pub marks: BTreeMap<Uuid, char>,
     pub body_view: BodyView,
+    replay_rx: Option<tokio::sync::oneshot::Receiver<String>>,
 }
 
 impl TuiApp {
@@ -123,6 +124,7 @@ impl TuiApp {
             command_input: String::new(),
             marks: BTreeMap::new(),
             body_view: BodyView::Auto,
+            replay_rx: None,
         };
         app.table_state.select(Some(0));
         app
@@ -288,6 +290,7 @@ impl TuiApp {
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('/') => self.input_mode = InputMode::Filtering,
                         KeyCode::Char('y') => self.copy_curl_selection(),
+                        KeyCode::Char('R') => self.apply_action(TuiAction::ReplaySelectedFlow),
                         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                             self.active_area = ActiveArea::FlowDetail
                         }
@@ -321,6 +324,7 @@ impl TuiApp {
                         KeyCode::Char('3') => self.detail_tab = DetailTab::Response,
                         KeyCode::Char('4') => self.detail_tab = DetailTab::Messages,
                         KeyCode::Char('y') => self.copy_curl_selection(),
+                        KeyCode::Char('R') => self.apply_action(TuiAction::ReplaySelectedFlow),
                         KeyCode::Char('v') => {
                             self.body_view = self.body_view.next();
                             self.set_toast(format!("View: {}", self.body_view.label()));
@@ -479,6 +483,7 @@ impl TuiApp {
 
     pub fn ui(&mut self, f: &mut Frame) {
         self.prune_expired_toast();
+        self.poll_replay_result();
         let area = f.area();
         f.render_widget(Block::default().style(Theme::surface()), area);
 
@@ -564,6 +569,7 @@ impl TuiApp {
                 "hex" => TuiAction::SetBodyView(BodyView::Hex),
                 _ => TuiAction::SetToast(format!("Unknown view: {name} (auto|pretty|raw|hex)")),
             },
+            Command::Replay => TuiAction::ReplaySelectedFlow,
             Command::Help => TuiAction::ShowCommandHelp,
             Command::Unknown(msg) => TuiAction::SetToast(format!("{msg} — try :help")),
         };
@@ -611,11 +617,121 @@ impl TuiApp {
             }
             TuiAction::ShowCommandHelp => {
                 self.set_toast(
-                    ":q :clear :pause :resume :f :uf :theme :cp :v :help | press ? for keys",
+                    ":q :clear :pause :resume :f :uf :theme :cp :v :rr :help | press ? for keys",
                 );
             }
             TuiAction::SetToast(msg) => self.set_toast(msg),
+            TuiAction::ReplaySelectedFlow => self.replay_selected_flow(),
         }
+    }
+
+    fn poll_replay_result(&mut self) {
+        if let Some(ref mut rx) = self.replay_rx
+            && let Ok(msg) = rx.try_recv()
+        {
+            self.set_toast(msg);
+            self.replay_rx = None;
+        }
+    }
+
+    fn replay_selected_flow(&mut self) {
+        let Some(flow) = self.selected_flow() else {
+            self.set_toast("No flow selected to replay");
+            return;
+        };
+
+        let (method, url, headers, body_bytes) = match &flow.layer {
+            relay_core_api::flow::Layer::Http(h) => {
+                let body_bytes = h.request.body.as_ref().and_then(|b| {
+                    if b.size == 0 {
+                        return None;
+                    }
+                    let bytes = if b.encoding == "base64" {
+                        use base64::{Engine as _, engine::general_purpose::STANDARD};
+                        STANDARD.decode(&b.content).unwrap_or_default()
+                    } else {
+                        b.content.as_bytes().to_vec()
+                    };
+                    Some(bytes)
+                });
+
+                (
+                    h.request.method.clone(),
+                    h.request.url.clone(),
+                    h.request.headers.clone(),
+                    body_bytes,
+                )
+            }
+            _ => {
+                self.set_toast("Replay only supported for HTTP flows");
+                return;
+            }
+        };
+
+        if self.replay_rx.is_some() {
+            self.set_toast("Replay already in progress");
+            return;
+        }
+
+        let proxy_port = self.proxy_port;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.replay_rx = Some(rx);
+
+        let Ok(method) = reqwest::Method::from_bytes(method.as_bytes()).inspect_err(|_| {
+            self.replay_rx = None;
+            self.set_toast("Invalid HTTP method")
+        }) else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            let proxy_url = format!("http://127.0.0.1:{}", proxy_port);
+            let Ok(proxy) = reqwest::Proxy::all(&proxy_url) else {
+                let _ = tx.send("Replay failed: invalid proxy URL".into());
+                return;
+            };
+
+            let Ok(client) = reqwest::Client::builder()
+                .proxy(proxy)
+                .danger_accept_invalid_certs(true)
+                .build()
+            else {
+                let _ = tx.send("Replay failed: could not build HTTP client".into());
+                return;
+            };
+
+            let mut req = client.request(method, url);
+
+            for (k, v) in &headers {
+                let k_lower = k.to_lowercase();
+                if k_lower == "host"
+                    || k_lower == "connection"
+                    || k_lower == "content-length"
+                    || k_lower == "transfer-encoding"
+                {
+                    continue;
+                }
+                if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                    && let Ok(val) = reqwest::header::HeaderValue::from_str(v)
+                {
+                    req = req.header(name, val);
+                }
+            }
+
+            if let Some(bytes) = body_bytes {
+                req = req.body(bytes);
+            }
+
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let _ = tx.send(format!("Replayed — {status}"));
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("Replay failed: {e}"));
+                }
+            }
+        });
     }
 }
 

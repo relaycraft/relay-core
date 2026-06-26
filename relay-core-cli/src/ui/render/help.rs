@@ -68,6 +68,7 @@ pub(in crate::ui) fn render_help_overlay(app: &TuiApp, f: &mut Frame) {
         help_binding("/", "Filter (host: path: method: status: err ws)"),
         help_binding("m", "Toggle mark on selected flow (A-Z; same key removes)"),
         help_binding("'", "Jump to next mark"),
+        help_binding("R", "Replay selected request"),
         help_binding("Enter  →", "Focus detail panel"),
     ]);
 
