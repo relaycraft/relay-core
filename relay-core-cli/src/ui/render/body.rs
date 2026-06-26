@@ -60,7 +60,8 @@ fn render_body_pretty(body_content: &str) -> Vec<Line<'static>> {
 fn render_body_raw(body_content: &str) -> Vec<Line<'static>> {
     let truncated = body_content.len() > BODY_RENDER_LIMIT;
     let display = if truncated {
-        &body_content[..BODY_RENDER_LIMIT]
+        let boundary = body_content.floor_char_boundary(BODY_RENDER_LIMIT);
+        &body_content[..boundary]
     } else {
         body_content
     };
@@ -129,7 +130,8 @@ fn render_body_hex(data: &[u8]) -> Vec<Line<'static>> {
 fn render_json_highlighted(formatted: &str, limit: usize) -> Vec<Line<'static>> {
     let truncated = formatted.len() > limit;
     let display = if truncated {
-        &formatted[..limit]
+        let boundary = formatted.floor_char_boundary(limit);
+        &formatted[..boundary]
     } else {
         formatted
     };

@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, HighlightSpacing, Padding, Paragraph, Row, Table},
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table},
 };
 use relay_core_api::flow::{Flow, Layer};
 use url::Url;
@@ -39,7 +39,8 @@ pub(in crate::ui) fn render_flow_list(app: &mut TuiApp, f: &mut Frame, area: Rec
         .collect();
 
     if filtered_flows.is_empty() {
-        let block = outer_panel_block(&title, list_focused).padding(panel_body_padding());
+        let block =
+            super::outer_panel_block(&title, list_focused).padding(super::panel_body_padding());
         f.render_widget(
             Paragraph::new(empty_flow_list_message(filtering))
                 .style(Theme::muted())
@@ -72,7 +73,7 @@ pub(in crate::ui) fn render_flow_list(app: &mut TuiApp, f: &mut Frame, area: Rec
 
     let table = Table::new(rows, widths)
         .header(header_row)
-        .block(outer_panel_block(&title, list_focused))
+        .block(super::outer_panel_block(&title, list_focused))
         .row_highlight_style(Theme::row_highlight())
         .highlight_spacing(HighlightSpacing::Never);
 
@@ -243,22 +244,4 @@ fn highlight_filter_spans(text: &str, filter: &str, base: Style) -> Vec<Span<'st
         spans.push(Span::styled(text.to_string(), base));
     }
     spans
-}
-
-fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Theme::border(focused))
-        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
-        .style(Theme::surface())
-}
-
-fn panel_body_padding() -> Padding {
-    Padding {
-        left: 1,
-        right: 0,
-        top: 0,
-        bottom: 0,
-    }
 }

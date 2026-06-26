@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Paragraph, Wrap},
 };
 use relay_core_api::flow::{Flow, Layer};
 
@@ -18,7 +18,7 @@ use super::body::render_body_for_view;
 pub(in crate::ui) fn render_flow_detail(app: &TuiApp, f: &mut Frame, area: Rect) {
     let detail_focused = app.active_area == ActiveArea::FlowDetail;
     let detail_title = "Detail";
-    let block = outer_panel_block(detail_title, detail_focused);
+    let block = super::outer_panel_block(detail_title, detail_focused);
     let inner = block.inner(area);
 
     let chunks = Layout::default()
@@ -374,9 +374,10 @@ fn render_messages(app: &TuiApp, f: &mut Frame, area: Rect, flow: &Flow) {
                     };
 
                     let content = if msg.content.size > 50 {
+                        let boundary = msg.content.content.floor_char_boundary(50);
                         format!(
                             "{}... ({} bytes)",
-                            &msg.content.content[..50],
+                            &msg.content.content[..boundary],
                             msg.content.size
                         )
                     } else {
@@ -401,30 +402,11 @@ fn render_messages(app: &TuiApp, f: &mut Frame, area: Rect, flow: &Flow) {
     }
 }
 
-fn outer_panel_block(title: &str, focused: bool) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Theme::border(focused))
-        .title(Span::styled(format!(" {title} "), Theme::panel_title()))
-        .style(Theme::surface())
-}
-
-/// Left inset for panel body text (tabs, tables, key-value lines) under border titles.
-fn panel_body_padding() -> Padding {
-    Padding {
-        left: 1,
-        right: 0,
-        top: 0,
-        bottom: 0,
-    }
-}
-
 /// Panel body — optional scroll hint for detail tabs.
 fn panel_body_block(scroll: u16) -> Block<'static> {
     let mut block = Block::default()
         .style(Theme::surface())
-        .padding(panel_body_padding());
+        .padding(super::panel_body_padding());
     if scroll > 0 {
         block = block.title(Span::styled(format!(" ↓{scroll} "), Theme::muted()));
     }
@@ -444,7 +426,7 @@ fn render_detail_tab_bar(f: &mut Frame, area: Rect, selected: DetailTab) {
         };
         spans.push(Span::styled(tab.label(), style));
     }
-    let block = Block::default().padding(panel_body_padding());
+    let block = Block::default().padding(super::panel_body_padding());
     f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
