@@ -177,9 +177,21 @@ pub struct CoreStatusReport {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PendingInterceptItem {
+    pub key: String,
+    pub flow_id: String,
+    pub phase: String,
+    pub url: String,
+    pub method: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CoreInterceptSnapshot {
     pub pending_count: usize,
     pub ws_pending_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<PendingInterceptItem>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -448,10 +460,47 @@ impl CoreState {
 
     pub async fn intercept_snapshot(&self) -> CoreInterceptSnapshot {
         let metrics = self.get_metrics().await;
+        let items = self.list_pending_intercept_items().await;
         CoreInterceptSnapshot {
             pending_count: metrics.intercepts_pending,
             ws_pending_count: metrics.ws_pending_messages,
+            items,
         }
+    }
+
+    pub async fn list_pending_intercept_items(&self) -> Vec<PendingInterceptItem> {
+        let keys = self.list_pending_intercept_keys().await;
+        let mut items = Vec::with_capacity(keys.len());
+        for (key, created_at_ms) in keys {
+            let (flow_id, phase) = parse_intercept_key(&key);
+            let (url, method) = if let Some(flow) = self.get_flow(flow_id.clone()).await {
+                flow_url_method(&flow)
+            } else {
+                (String::new(), String::new())
+            };
+            items.push(PendingInterceptItem {
+                key,
+                flow_id,
+                phase,
+                url,
+                method,
+                created_at_ms,
+            });
+        }
+        items
+    }
+
+    async fn list_pending_intercept_keys(&self) -> Vec<(String, u64)> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .intercept_broker
+            .send(InterceptBrokerMessage::ListPendingIntercepts { respond_to: tx })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
     }
 
     pub fn audit_snapshot(&self, limit: usize) -> CoreAuditSnapshot {
@@ -1573,6 +1622,25 @@ fn redact_flow(mut flow: Flow, redaction: &RedactionPolicy) -> Flow {
         _ => {}
     }
     flow
+}
+
+fn parse_intercept_key(key: &str) -> (String, String) {
+    if let Some((flow_id, rest)) = key.split_once(':') {
+        (flow_id.to_string(), rest.to_string())
+    } else {
+        (key.to_string(), String::new())
+    }
+}
+
+fn flow_url_method(flow: &Flow) -> (String, String) {
+    match &flow.layer {
+        Layer::Http(http) => (http.request.url.to_string(), http.request.method.clone()),
+        Layer::WebSocket(ws) => (
+            ws.handshake_request.url.to_string(),
+            ws.handshake_request.method.clone(),
+        ),
+        _ => (String::new(), String::new()),
+    }
 }
 
 fn redact_flow_summary(mut summary: FlowSummary, redaction: &RedactionPolicy) -> FlowSummary {

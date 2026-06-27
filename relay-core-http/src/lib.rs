@@ -24,5 +24,7 @@
 
 mod routes;
 pub mod server;
+#[cfg(feature = "webui")]
+pub mod webui;
 
 pub use server::{HttpApiConfig, HttpApiServer};

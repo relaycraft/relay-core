@@ -99,3 +99,7 @@ npm/mcp/bin/relay-core-probe.tar.gz
 npm/mcp/bin/relay-core-probe.zip
 npm/**/node_modules/
 .env
+
+# WebUI build artifacts
+webui/node_modules/
+webui/dist/

@@ -23,6 +23,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::routes;
+#[cfg(feature = "webui")]
+use crate::webui::serve_webui;
 
 /// Configuration for the HTTP API server.
 #[derive(Debug, Clone)]
@@ -31,6 +33,8 @@ pub struct HttpApiConfig {
     pub addr: SocketAddr,
     pub bearer_token: Option<String>,
     pub allowed_origins: Vec<HeaderValue>,
+    /// Serve embedded Web UI static files on non-API routes
+    pub serve_webui: bool,
 }
 
 impl HttpApiConfig {
@@ -39,6 +43,7 @@ impl HttpApiConfig {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             bearer_token: None,
             allowed_origins: Vec::new(),
+            serve_webui: false,
         }
     }
 
@@ -49,6 +54,11 @@ impl HttpApiConfig {
 
     pub fn with_allowed_origins(mut self, origins: impl IntoIterator<Item = HeaderValue>) -> Self {
         self.allowed_origins = origins.into_iter().collect();
+        self
+    }
+
+    pub fn with_webui(mut self, serve: bool) -> Self {
+        self.serve_webui = serve;
         self
     }
 }
@@ -136,7 +146,7 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
         ))
         .layer(TraceLayer::new_for_http());
 
-    if config.allowed_origins.is_empty() {
+    let router = if config.allowed_origins.is_empty() {
         router
     } else {
         router.layer(
@@ -151,7 +161,14 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
                 ])
                 .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT, ORIGIN]),
         )
+    };
+
+    #[cfg(feature = "webui")]
+    if config.serve_webui {
+        return router.fallback_service(serve_webui());
     }
+
+    router
 }
 
 async fn require_bearer_token(
@@ -537,5 +554,44 @@ mod tests {
             .await
             .expect("request should succeed");
         assert!(denied.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn get_intercepts_returns_pending_items() {
+        use relay_core_runtime::audit::AuditActor;
+        use tokio::sync::oneshot;
+
+        let state = Arc::new(CoreState::new(None).await);
+        let flow_id = "00000000-0000-0000-0000-000000000001".to_string();
+        let key = format!("{}:request_headers", flow_id);
+        let (tx, _rx) = oneshot::channel();
+        state.register_intercept(key.clone(), tx).await;
+
+        let ctx = Arc::new(HttpApiContext::new(state.clone()));
+        let app = build_router(ctx, Arc::new(HttpApiConfig::new(8082)));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/intercepts")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("valid json");
+        assert_eq!(json["pending_count"], 1);
+        assert_eq!(json["items"].as_array().expect("items array").len(), 1);
+        assert_eq!(json["items"][0]["key"], key);
+
+        state
+            .resolve_intercept_with_modifications_from(AuditActor::Http, key, "continue", None)
+            .await
+            .expect("intercept should resolve");
     }
 }

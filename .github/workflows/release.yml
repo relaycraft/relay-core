@@ -98,6 +98,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build webui assets (embedded by relay-core-http)
+        run: |
+          cd webui
+          npm ci
+          npm run build
+
       - name: Build relay-core-cli (native)
         run: cargo build --release --package relay-core-cli --target ${{ matrix.target }}
 

@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-accent: #22d3ee;
+  --color-accent-amber: #f59e0b;
+  --color-success: #22c55e;
+  --color-info: #3b82f6;
+  --color-warn: #f59e0b;
+  --color-error: #ef4444;
+  --color-subtle: #1e293b;
+  --color-border: #334155;
+  --color-hover: #1e293b;
+  --color-surface: #0f172a;
+  --color-surface-alt: #1e293b;
+  --color-text: #e2e8f0;
+  --color-text-dim: #64748b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Monospace font for code/data areas */
+.font-mono {
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+}

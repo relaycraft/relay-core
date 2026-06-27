@@ -277,6 +277,7 @@ pub async fn execute(
     #[cfg(feature = "script")] script_watch: bool,
     #[cfg(feature = "script")] script_env_allow: Option<String>,
     ui: bool,
+    web: bool,
     theme: Option<String>,
     transparent: bool,
     output: String,
@@ -296,6 +297,12 @@ pub async fn execute(
             "CA files not found:\n  cert: {}\n  key: {}\nRun `relay-core-cli ca generate` first.",
             ca_paths.cert.display(),
             ca_paths.key.display()
+        ));
+    }
+
+    if web && ui {
+        return Err(anyhow::anyhow!(
+            "--web and --ui are mutually exclusive; use --web for the browser dashboard or --ui for the terminal UI"
         ));
     }
 
@@ -349,8 +356,13 @@ pub async fn execute(
         }
     });
 
-    // Start REST/SSE HTTP API server (if --api-port specified)
-    if let Some(port) = api_port {
+    // Start REST/SSE HTTP API server (if --api-port specified or --web auto-enables it)
+    let effective_api_port = if web {
+        Some(api_port.unwrap_or(8082))
+    } else {
+        api_port
+    };
+    if let Some(port) = effective_api_port {
         let bind_addr = std::net::SocketAddr::new(
             api_bind
                 .parse()
@@ -360,6 +372,7 @@ pub async fn execute(
         let api_state = state.clone();
         let api_token = api_token.clone();
         let api_cors = api_cors.clone();
+        let serve_webui = web;
         tokio::spawn(async move {
             let mut cfg = HttpApiConfig::new(port);
             cfg.addr = bind_addr;
@@ -383,6 +396,7 @@ pub async fn execute(
                         .with_allowed_origins(origins.into_iter().filter_map(|s| s.parse().ok()));
                 }
             }
+            cfg = cfg.with_webui(serve_webui);
             let srv = HttpApiServer::new(cfg, api_state);
             if let Err(e) = srv.run().await {
                 error!("HTTP API server error: {}", e);
@@ -390,6 +404,9 @@ pub async fn execute(
         });
         if !ui {
             info!("HTTP API listening on {}", bind_addr);
+        }
+        if web && !ui {
+            info!("Web UI available at http://{}", bind_addr);
         }
     }
 
@@ -568,8 +585,8 @@ pub async fn execute(
             Err(e) => error!("Failed to start proxy: {}", e),
         }
 
-        // `--api-port` only toggles help copy; TUI flow feed uses the broadcast channel either way.
-        let api_mode = if api_port.is_some() {
+        // `--api-port` or `--web` only toggles help copy; TUI flow feed uses the broadcast channel either way.
+        let api_mode = if effective_api_port.is_some() {
             ApiMode::Connected
         } else {
             ApiMode::Offline

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 Examples:
   relay run                      Start proxy in background (default)
   relay run --ui                 Start proxy with interactive TUI
+  relay run --web                Start proxy with Web UI (API + dashboard on :8082)
+  relay run --web --api-port 9090  Web UI on custom port
   relay run --ui --theme slate   TUI with alternate color preset
   relay flows --output table     View captured flows in table format
   relay analyze --file flows.jsonl           Analyze captured flow data
@@ -72,6 +74,10 @@ pub enum Commands {
         /// Enable TUI mode
         #[arg(long)]
         ui: bool,
+
+        /// Enable Web UI mode (implies --api-port 8082 if not explicitly set)
+        #[arg(long)]
+        web: bool,
 
         /// TUI color preset (relay, slate, high-contrast). Overrides config; env: RELAY_CORE_TUI_THEME
         #[arg(long, env = "RELAY_CORE_TUI_THEME", value_name = "THEME")]

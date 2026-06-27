@@ -5,6 +5,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+echo "==> webui build"
+(cd webui && npm ci && npm run build)
+
+echo "==> webui test"
+(cd webui && npm test)
+
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 

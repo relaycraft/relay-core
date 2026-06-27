@@ -153,6 +153,26 @@ async fn test_core_state_intercept_prefix_lookup() {
 }
 
 #[tokio::test]
+async fn test_list_pending_intercept_items_includes_registered_key() {
+    let state = CoreState::new(None).await;
+    let flow = create_test_flow("http://example.com/intercept", "POST");
+    let flow_id = flow.id.to_string();
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    let key = format!("{}:request_headers", flow_id);
+    let (tx, _rx) = oneshot::channel();
+    state.register_intercept(key.clone(), tx).await;
+
+    let items = state.list_pending_intercept_items().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].key, key);
+    assert_eq!(items[0].flow_id, flow_id);
+    assert_eq!(items[0].method, "POST");
+    assert!(items[0].url.contains("example.com"));
+}
+
+#[tokio::test]
 async fn test_core_state_intercept_prefix_does_not_match_other_flows() {
     let state = CoreState::new(None).await;
     let key = "flow-a:request_headers".to_string();

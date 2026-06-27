@@ -34,6 +34,9 @@ pub enum InterceptBrokerMessage {
     GetMetrics {
         respond_to: oneshot::Sender<(usize, usize, Option<u64>, Option<u64>)>, // pending_intercepts, pending_ws_messages, oldest_intercept_age_ms, oldest_ws_message_age_ms
     },
+    ListPendingIntercepts {
+        respond_to: oneshot::Sender<Vec<(String, u64)>>,
+    },
 }
 
 pub struct InterceptBrokerActor {
@@ -117,6 +120,20 @@ impl InterceptBrokerActor {
                                     oldest_intercept_age_ms,
                                     oldest_ws_message_age_ms,
                                 ));
+                            }
+                            InterceptBrokerMessage::ListPendingIntercepts { respond_to } => {
+                                let now = Instant::now();
+                                let items: Vec<(String, u64)> = self
+                                    .pending_intercepts
+                                    .iter()
+                                    .map(|(key, (_, created_at))| {
+                                        (
+                                            key.clone(),
+                                            now.duration_since(*created_at).as_millis() as u64,
+                                        )
+                                    })
+                                    .collect();
+                                let _ = respond_to.send(items);
                             }
                         },
                         None => break,
