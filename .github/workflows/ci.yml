@@ -64,6 +64,16 @@ jobs:
 
       - uses: ./.github/actions/rust-workspace
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build webui assets (embedded by relay-core-http)
+        run: |
+          cd webui
+          npm ci
+          npm run build
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
