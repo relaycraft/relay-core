@@ -17,7 +17,7 @@ webui = ["rust-embed"]
 
 [dependencies]
 relay-core-api.workspace = true
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.9.0" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.9.4" }
 axum = { version = "0.8.8", features = ["ws"] }
 tokio.workspace = true
 tokio-stream = { version = "0.1.18", features = ["sync"] }
