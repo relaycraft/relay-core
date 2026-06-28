@@ -9,17 +9,11 @@ use rust_embed::RustEmbed;
 #[folder = "embed/webui/"]
 struct WebUiAssets;
 
-/// Build a fallback service that serves embedded web UI static files.
-/// Falls back to `index.html` for SPA-style client-side routing.
+/// Fallback handler for embedded web UI static files (SPA: unknown paths → index.html).
 pub fn serve_webui() -> axum::routing::MethodRouter {
-    use axum::routing::get_service;
+    use axum::routing::any;
 
-    get_service(axum::handler::Handler::with_state(
-        (),
-        |_: axum::extract::State<()>, req: axum::http::Request<Body>| async move {
-            webui_handler(req).await
-        },
-    ))
+    any(webui_handler)
 }
 
 async fn webui_handler(req: axum::http::Request<Body>) -> Response {
@@ -71,5 +65,31 @@ fn mime_guess_from_path(path: &str) -> &'static str {
         "ttf" => "font/ttf",
         "wasm" => "application/wasm",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn embedded_index_is_non_empty() {
+        let file = WebUiAssets::get("index.html").expect("index.html must be embedded");
+        assert!(file.data.len() > 100, "embedded index.html too small: {}", file.data.len());
+    }
+
+    #[tokio::test]
+    async fn webui_handler_serves_index_at_root() {
+        let req = axum::http::Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = webui_handler(req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert!(body.len() > 100, "response body empty");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("html"), "expected html, got: {}", &text[..text.len().min(80)]);
     }
 }

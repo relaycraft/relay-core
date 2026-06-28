@@ -9,5 +9,12 @@ fn main() {
                 index.display()
             );
         }
+        println!("cargo:rerun-if-changed={}", index.display());
+        let embed_dir = std::path::Path::new(&manifest_dir).join("embed/webui");
+        if let Ok(entries) = std::fs::read_dir(&embed_dir) {
+            for entry in entries.flatten() {
+                println!("cargo:rerun-if-changed={}", entry.path().display());
+            }
+        }
     }
 }

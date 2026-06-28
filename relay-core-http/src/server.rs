@@ -594,4 +594,31 @@ mod tests {
             .await
             .expect("intercept should resolve");
     }
+
+    #[cfg(feature = "webui")]
+    #[tokio::test]
+    async fn webui_fallback_serves_index_at_root() {
+        use tower::ServiceExt;
+
+        let core = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(HttpApiContext::new(core));
+        let config = Arc::new(HttpApiConfig::new(8082).with_webui(true));
+        let app = build_router(ctx, config);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        assert!(body.len() > 100, "fallback body empty, len={}", body.len());
+    }
 }
