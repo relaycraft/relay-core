@@ -103,3 +103,4 @@ npm/**/node_modules/
 # WebUI build artifacts
 webui/node_modules/
 webui/dist/
+relay-core-http/embed/

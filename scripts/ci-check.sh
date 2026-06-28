@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 echo "==> webui build"
-(cd webui && npm ci && npm run build)
+"$ROOT/scripts/webui-build.sh"
 
 echo "==> webui test"
 (cd webui && npm test)

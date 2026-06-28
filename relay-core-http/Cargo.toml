@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "REST/SSE HTTP API adapter for relay-core: language-agnostic integration boundary for external tools"
+build = "build.rs"
+# embed/webui is gitignored but must ship in the crates.io tarball (built by scripts/webui-build.sh).
+include = ["src/**/*", "build.rs", "Cargo.toml", "embed/**/*"]
 
 [features]
 default = ["script"]

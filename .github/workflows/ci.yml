@@ -46,10 +46,8 @@ jobs:
           node-version: 20
 
       - name: Build webui assets (embedded by relay-core-http)
-        run: |
-          cd webui
-          npm ci
-          npm run build
+        shell: bash
+        run: ./scripts/webui-build.sh
 
       - name: Build release binaries (win32-x64)
         run: |
@@ -69,10 +67,8 @@ jobs:
           node-version: 20
 
       - name: Build webui assets (embedded by relay-core-http)
-        run: |
-          cd webui
-          npm ci
-          npm run build
+        shell: bash
+        run: ./scripts/webui-build.sh
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

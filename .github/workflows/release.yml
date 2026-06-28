@@ -103,16 +103,14 @@ jobs:
           node-version: 20
 
       - name: Build webui assets (embedded by relay-core-http)
-        run: |
-          cd webui
-          npm ci
-          npm run build
+        shell: bash
+        run: ./scripts/webui-build.sh
 
       - name: Build relay-core-cli (native)
-        run: cargo build --release --package relay-core-cli --target ${{ matrix.target }}
+        run: ./scripts/cargo-retry.sh build --release --package relay-core-cli --target ${{ matrix.target }}
 
       - name: Build relay-core-probe (native)
-        run: cargo build --release --package relay-core-probe --target ${{ matrix.target }}
+        run: ./scripts/cargo-retry.sh build --release --package relay-core-probe --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'

@@ -6,7 +6,7 @@ use axum::{
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "../webui/dist/"]
+#[folder = "embed/webui/"]
 struct WebUiAssets;
 
 /// Build a fallback service that serves embedded web UI static files.

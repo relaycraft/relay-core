@@ -57,12 +57,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build webui assets (embedded by relay-core-http)
+        shell: bash
+        run: ./scripts/webui-build.sh
+
       - name: Build binaries (native)
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --package relay-core-cli --target ${{ matrix.target }}
-          cargo build --release --package relay-core-probe --target ${{ matrix.target }}
+          ./scripts/cargo-retry.sh build --release --package relay-core-cli --target ${{ matrix.target }}
+          ./scripts/cargo-retry.sh build --release --package relay-core-probe --target ${{ matrix.target }}
 
       - uses: actions/setup-node@v4
         with:
