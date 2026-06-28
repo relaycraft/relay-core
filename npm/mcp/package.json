@@ -1,6 +1,6 @@
 {
   "name": "@relay-core/mcp",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "RelayCore MCP server — AI agent traffic control via Model Context Protocol",
   "license": "MIT",
   "homepage": "https://relaycore.dev",
@@ -15,11 +15,11 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "@relay-core/binaries-darwin-arm64": "0.9.4",
-    "@relay-core/binaries-darwin-x64": "0.9.4",
-    "@relay-core/binaries-linux-x64": "0.9.4",
-    "@relay-core/binaries-linux-arm64": "0.9.4",
-    "@relay-core/binaries-win32-x64": "0.9.4"
+    "@relay-core/binaries-darwin-arm64": "0.9.5",
+    "@relay-core/binaries-darwin-x64": "0.9.5",
+    "@relay-core/binaries-linux-x64": "0.9.5",
+    "@relay-core/binaries-linux-arm64": "0.9.5",
+    "@relay-core/binaries-win32-x64": "0.9.5"
   },
   "engines": {
     "node": ">=18"
