@@ -76,7 +76,11 @@ mod tests {
     #[tokio::test]
     async fn embedded_index_is_non_empty() {
         let file = WebUiAssets::get("index.html").expect("index.html must be embedded");
-        assert!(file.data.len() > 100, "embedded index.html too small: {}", file.data.len());
+        assert!(
+            file.data.len() > 100,
+            "embedded index.html too small: {}",
+            file.data.len()
+        );
     }
 
     #[tokio::test]
@@ -90,6 +94,10 @@ mod tests {
         let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
         assert!(body.len() > 100, "response body empty");
         let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("html"), "expected html, got: {}", &text[..text.len().min(80)]);
+        assert!(
+            text.contains("html"),
+            "expected html, got: {}",
+            &text[..text.len().min(80)]
+        );
     }
 }
