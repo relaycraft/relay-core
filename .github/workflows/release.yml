@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag to build and attach binaries to (e.g. v0.9.4)"
+        required: true
+        default: v0.9.4
 
 permissions:
   contents: write
@@ -13,12 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
       - uses: ./.github/actions/rust-workspace
       - run: ./scripts/ci-check.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node npm/scripts/set-version.js ${{ github.ref_name }}
+      - run: node npm/scripts/set-version.js ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
 
   notes:
     runs-on: ubuntu-latest
@@ -68,6 +75,7 @@ jobs:
   build:
     needs: quality
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -85,6 +93,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -107,9 +117,11 @@ jobs:
         run: ./scripts/webui-build.sh
 
       - name: Build relay-core-cli (native)
+        shell: bash
         run: ./scripts/cargo-retry.sh build --release --package relay-core-cli --target ${{ matrix.target }}
 
       - name: Build relay-core-probe (native)
+        shell: bash
         run: ./scripts/cargo-retry.sh build --release --package relay-core-probe --target ${{ matrix.target }}
 
       - name: Package (unix)
@@ -128,6 +140,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
           files: |
             target/${{ matrix.target }}/release/relay-core-cli-${{ matrix.target }}.*
             target/${{ matrix.target }}/release/relay-core-probe-${{ matrix.target }}.*
@@ -138,6 +151,8 @@ jobs:
     if: needs.build.result == 'success'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
 
       - uses: actions/download-artifact@v4
         continue-on-error: true
@@ -147,7 +162,8 @@ jobs:
       - name: Assemble and update release body
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          REF="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}"
+          VERSION="${REF#v}"
           OUT="assembled-notes.md"
 
           if [ -f notes.md ]; then
@@ -176,6 +192,6 @@ jobs:
             echo '```' >> "$OUT"
           fi
 
-          gh release edit "${GITHUB_REF_NAME}" --notes-file "$OUT"
+          gh release edit "${REF}" --notes-file "$OUT"
         env:
           GH_TOKEN: ${{ github.token }}
