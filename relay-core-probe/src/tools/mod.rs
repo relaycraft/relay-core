@@ -3,10 +3,16 @@ use rmcp::model::{Content, Tool};
 use serde_json::Value;
 use std::sync::Arc;
 
-mod intercept;
-mod query;
-mod rules;
-mod script;
+pub mod intercept;
+pub mod query;
+pub mod rules;
+pub mod script;
+
+// Re-export all public tool functions for external testing
+pub use intercept::{get_pending_intercepts, resume_flow, set_intercept};
+pub use query::{export_har, get_flow, get_metrics, replay_flow, search_flows};
+pub use rules::{delete_rule, get_policy, mock_url, patch_policy, set_rule, update_policy};
+pub use script::set_script;
 
 #[derive(Debug)]
 pub enum ToolError {
