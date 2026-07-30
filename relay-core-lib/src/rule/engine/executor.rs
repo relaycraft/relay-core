@@ -352,11 +352,7 @@ mod tests {
         if let RuleOutcome::Failed(msg) = &ctx.trace[0].outcome {
             assert!(msg.contains("Filter invalid"));
         } else {
-            assert!(
-                false,
-                "Expected Failed outcome, got {:?}",
-                ctx.trace[0].outcome
-            );
+            panic!("Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
         }
     }
 
@@ -390,11 +386,7 @@ mod tests {
             assert!(msg.contains("Action"));
             assert!(msg.contains("not allowed"));
         } else {
-            assert!(
-                false,
-                "Expected Failed outcome, got {:?}",
-                ctx.trace[0].outcome
-            );
+            panic!("Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
         }
     }
 

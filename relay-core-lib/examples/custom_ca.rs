@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // No-op flow handler (just prints nothing)
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
     // No-op interceptor (no rules)
     let interceptor = Arc::new(NoOpInterceptor);

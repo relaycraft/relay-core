@@ -230,8 +230,8 @@ mod tests {
             "00000000-0000-0000-0000-{:012}",
             (ts as u64) % 1_000_000_000_000
         );
-        let minute = ((ts / 60_000) % 60) as i64;
-        let second = ((ts / 1_000) % 60) as i64;
+        let minute = (ts / 60_000) % 60;
+        let second = (ts / 1_000) % 60;
         let millis = (ts % 1_000).abs();
         let start_rfc3339 = format!("2023-11-14T22:{:02}:{:02}.{:03}Z", minute, second, millis);
         serde_json::from_value(json!({

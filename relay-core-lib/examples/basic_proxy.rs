@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
     // Drain channel
-    tokio::spawn(async move { while let Some(_) = rx.recv().await {} });
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
     let interceptor = Arc::new(NoOpInterceptor);
     let ca = Arc::new(CertificateAuthority::new()?);

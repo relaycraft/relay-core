@@ -85,9 +85,9 @@ fn test_flow_to_flow_index_conversion() {
     assert_eq!(index.content_type, "application/json");
     assert_eq!(index.time, 100);
     assert_eq!(index.size, 15);
-    assert_eq!(index.has_request_body, false);
-    assert_eq!(index.has_response_body, true);
-    assert_eq!(index.is_websocket, false);
+    assert!(!index.has_request_body);
+    assert!(index.has_response_body);
+    assert!(!index.is_websocket);
 
     // 4. Verify JSON Serialization (CamelCase check)
     let json = serde_json::to_string(&index).unwrap();
@@ -248,17 +248,17 @@ fn test_websocket_flow_to_detail_conversion() {
     let detail = FlowDetail::from(flow);
 
     assert_eq!(detail.id, flow_id.to_string());
-    assert_eq!(detail._rc.is_websocket, true);
+    assert!(detail._rc.is_websocket);
     assert_eq!(detail._rc.websocket_frame_count, 2);
     assert_eq!(detail._rc.websocket_messages.len(), 2);
 
     let msg1 = &detail._rc.websocket_messages[0];
-    assert_eq!(msg1.from_client, true);
+    assert!(msg1.from_client);
     assert_eq!(msg1.content, "Hello Server");
     assert_eq!(msg1.type_field, "text");
 
     let msg2 = &detail._rc.websocket_messages[1];
-    assert_eq!(msg2.from_client, false);
+    assert!(!msg2.from_client);
     assert_eq!(msg2.content, "Hello Client");
 
     // Check JSON serialization for camelCase and special renames

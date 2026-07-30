@@ -230,12 +230,11 @@ async fn test_https_mitm_h1() {
     loop {
         match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(Some(FlowUpdate::Full(flow))) => {
-                if let relay_core_api::flow::Layer::Http(http) = flow.layer {
-                    if http.request.url.as_str().contains("https") {
+                if let relay_core_api::flow::Layer::Http(http) = flow.layer
+                    && http.request.url.as_str().contains("https") {
                         // Found our HTTPS flow
                         break;
                     }
-                }
             }
             Ok(None) => panic!("Channel closed"),
             Err(_) => panic!("Timeout waiting for HTTPS flow update"),
@@ -482,15 +481,14 @@ async fn test_concurrent_requests() {
     // Run 50 concurrent requests
     let mut handles = vec![];
     for i in 0..50 {
-        let proxy_port = proxy_port;
-        let echo_port = echo_port;
+
         handles.push(tokio::spawn(async move {
             let stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port))
                 .await
                 .unwrap();
             let io = TokioIo::new(stream);
             let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
-            tokio::spawn(async move { if let Err(_) = conn.await {} });
+            tokio::spawn(async move { let _ = conn.await; });
 
             let req = hyper::Request::builder()
                 .uri(format!("http://127.0.0.1:{}/{}", echo_port, i))

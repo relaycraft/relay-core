@@ -162,7 +162,7 @@ mod tests {
 
         // Collect frames and FlowUpdate events
         let waker = Waker::noop();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(waker);
 
         let mut data_frames = 0;
         let mut trailer_frames = 0;

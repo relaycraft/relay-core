@@ -481,7 +481,7 @@ mod tests {
                 .to_string_lossy()
                 .trim_end_matches(".txt")
                 .split('-')
-                .last()
+                .next_back()
                 .unwrap_or("")
         );
         let before = crate::metrics::get_proxy_sandbox_reject();

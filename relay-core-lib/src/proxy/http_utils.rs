@@ -601,15 +601,14 @@ mod tests {
     #[tokio::test]
     async fn test_build_client_response_from_flow_invalid_status_non_strict_fallback_ok() {
         let mut flow = sample_flow_with_response(1000);
-        if let Layer::Http(http) = &mut flow.layer {
-            if let Some(res) = &mut http.response {
+        if let Layer::Http(http) = &mut flow.layer
+            && let Some(res) = &mut http.response {
                 res.body = Some(relay_core_api::flow::BodyData {
                     encoding: "utf-8".to_string(),
                     content: "hello".to_string(),
                     size: 5,
                 });
             }
-        }
 
         let resp = build_client_response_from_flow(&flow, Version::HTTP_11, false)
             .expect("non-strict should fallback");

@@ -148,7 +148,7 @@ mod tests {
         let mut trailers: Option<hyper::HeaderMap> = None;
 
         let waker = Waker::noop();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(waker);
         loop {
             match Pin::new(&mut throttled).poll_frame(&mut cx) {
                 Poll::Ready(Some(Ok(frame))) => {
