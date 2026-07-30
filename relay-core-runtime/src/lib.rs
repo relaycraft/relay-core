@@ -1393,6 +1393,7 @@ impl CoreState {
 
         interceptors.push(Arc::new(interceptors::rule::RuleInterceptor::new(
             self.clone(),
+            self.clone(),
         )));
 
         interceptors.push(Arc::new(interceptors::metrics::MetricsInterceptor::new(

@@ -1,4 +1,4 @@
-use crate::CoreState;
+use crate::services::InterceptService;
 use relay_core_api::flow::{Flow, Layer, WebSocketMessage};
 use relay_core_api::rule::TerminalReason;
 use relay_core_lib::InterceptionResult;
@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 
 pub async fn handle_rule_termination(
-    state: &Arc<CoreState>,
+    intercepts: &Arc<dyn InterceptService>,
     reason: &TerminalReason,
     flow: &Flow,
     phase: &str,
@@ -34,12 +34,14 @@ pub async fn handle_rule_termination(
             }
             _ => InterceptionResult::Drop,
         },
-        TerminalReason::Inspect => await_user_inspect(state, flow, phase, ws_message).await,
+        TerminalReason::Inspect => {
+            await_user_inspect(intercepts, flow, phase, ws_message).await
+        }
     }
 }
 
 async fn await_user_inspect(
-    state: &Arc<CoreState>,
+    intercepts: &Arc<dyn InterceptService>,
     flow: &Flow,
     phase: &str,
     ws_message: Option<&WebSocketMessage>,
@@ -51,15 +53,17 @@ async fn await_user_inspect(
         format!("{}:{}", flow.id, phase)
     };
 
-    state.register_intercept(key.clone(), tx).await;
+    intercepts.register_intercept(key.clone(), tx).await;
     if let Some(msg) = ws_message {
-        state.set_pending_ws_message(key.clone(), msg.clone()).await;
+        intercepts
+            .set_pending_ws_message(key.clone(), msg.clone())
+            .await;
     }
 
     match timeout(Duration::from_secs(300), rx).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) | Err(_) => {
-            let _ = state
+            let _ = intercepts
                 .resolve_intercept(key, InterceptionResult::Continue)
                 .await;
             InterceptionResult::Continue

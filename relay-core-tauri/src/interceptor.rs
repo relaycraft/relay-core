@@ -10,7 +10,7 @@ use relay_core_lib::interceptor::{
 use relay_core_lib::proxy::budget::BudgetedBody;
 use relay_core_lib::proxy::http_utils::mock_to_response;
 use relay_core_lib::rule::{RuleStage, RuleTraceSummary, TerminalReason};
-use relay_core_runtime::CoreState;
+use relay_core_runtime::services::{InterceptService, PolicyService, RuleService};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::{mpsc, oneshot};
@@ -20,14 +20,16 @@ pub use relay_core_runtime::rule::InterceptRule;
 
 pub struct TauriInterceptor<R: Runtime> {
     pub app_handle: AppHandle<R>,
-    pub state: Arc<CoreState>,
+    pub rules: Arc<dyn RuleService>,
+    pub intercepts: Arc<dyn InterceptService>,
+    pub policy: Arc<dyn PolicyService>,
     pub flow_sender: mpsc::Sender<FlowUpdate>,
 }
 
 #[async_trait]
 impl<R: Runtime> Interceptor for TauriInterceptor<R> {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
-        let engine = self.state.get_rule_engine().await;
+        let engine = self.rules.get_rule_engine().await;
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
@@ -46,36 +48,27 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
     }
 
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
-        let engine = self.state.get_rule_engine().await;
-        let policy = self.state.policy_snapshot();
+        let engine = self.rules.get_rule_engine().await;
+        let policy = self.policy.policy_snapshot();
 
-        // 0. Check if we need to intercept body for rules
         if !engine.has_rules_for_stage(RuleStage::RequestBody) {
             return Ok(RequestAction::Continue(body));
         }
 
-        // P1: Budget-aware body inspection via BudgetedBody.
-        // Rules inspect up to `budget` bytes; if exceeded, rules are skipped
-        // and the body passes through. Full degrade-to-stream (P1 remaining)
-        // will replace collect() with frame-level iteration.
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
 
-        // If budget exceeded, skip rule execution and pass through
         if budgeted.budget_exceeded {
             flow.tags.push("rule_skipped:budget_exceeded".to_string());
             let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
             return Ok(RequestAction::Continue(new_body));
         }
 
-        // 2. Update Flow
         self.update_flow_request_body(flow, &body_bytes);
 
-        // 3. Execute Rule
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;
 
-        // 4. Handle Termination
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             let result = self
                 .handle_termination(reason, flow, "request_body", None)
@@ -89,8 +82,6 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
                     return Ok(RequestAction::MockResponse(mock_to_response(res)));
                 }
                 InterceptionResult::ModifiedRequest(req) => {
-                    // User modified request in UI inspector
-                    // Extract body
                     let new_body_bytes = if let Some(bd) = req.body {
                         self.decode_body(&bd)
                     } else {
@@ -100,32 +91,26 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
                         Full::new(new_body_bytes).map_err(|e| match e {}).boxed();
                     return Ok(RequestAction::Continue(new_body));
                 }
-                InterceptionResult::Continue => {
-                    // Fall through to check if flow was modified by rule (not terminated)
-                }
+                InterceptionResult::Continue => {}
                 _ => return Ok(RequestAction::Drop),
             }
         }
 
-        // 5. Handle Modification (RuleEngine modification in place in flow)
-        if let RuleTraceSummary::Modified { .. } = &ctx.summary {
-            // Reconstruct body from flow
-            if let Layer::Http(http) = &flow.layer
-                && let Some(body_data) = &http.request.body
-            {
-                let new_bytes = self.decode_body(body_data);
-                let new_body: HttpBody = Full::new(new_bytes).map_err(|e| match e {}).boxed();
-                return Ok(RequestAction::Continue(new_body));
-            }
+        if let RuleTraceSummary::Modified { .. } = &ctx.summary
+            && let Layer::Http(http) = &flow.layer
+            && let Some(body_data) = &http.request.body
+        {
+            let new_bytes = self.decode_body(body_data);
+            let new_body: HttpBody = Full::new(new_bytes).map_err(|e| match e {}).boxed();
+            return Ok(RequestAction::Continue(new_body));
         }
 
-        // Default: Continue with original body
         let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
         Ok(RequestAction::Continue(new_body))
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
-        let engine = self.state.get_rule_engine().await;
+        let engine = self.rules.get_rule_engine().await;
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
@@ -149,15 +134,13 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         flow: &mut Flow,
         body: HttpBody,
     ) -> Result<ResponseAction, BoxError> {
-        let engine = self.state.get_rule_engine().await;
-        let policy = self.state.policy_snapshot();
+        let engine = self.rules.get_rule_engine().await;
+        let policy = self.policy.policy_snapshot();
 
-        // 0. Check if we need to intercept body for rules
         if !engine.has_rules_for_stage(RuleStage::ResponseBody) {
             return Ok(ResponseAction::Continue(body));
         }
 
-        // P1: Budget-aware body inspection via BudgetedBody.
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
@@ -168,13 +151,10 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(ResponseAction::Continue(new_body));
         }
 
-        // 2. Update Flow
         self.update_flow_response_body(flow, &body_bytes);
 
-        // 3. Execute Rule
         let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
 
-        // 4. Handle Termination
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             let result = self
                 .handle_termination(reason, flow, "response_body", None)
@@ -187,28 +167,19 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
                 InterceptionResult::ModifiedResponse(res) => {
                     return Ok(ResponseAction::ModifiedResponse(mock_to_response(res)));
                 }
-                InterceptionResult::Continue => {
-                    // Fall through
-                }
+                InterceptionResult::Continue => {}
                 _ => return Ok(ResponseAction::Drop),
             }
         }
 
-        // 5. Handle Modification
         if let RuleTraceSummary::Modified { .. } = &ctx.summary
             && let Layer::Http(http) = &flow.layer
             && let Some(res) = &http.response
             && let Some(_body_data) = &res.body
         {
-            // We need to return ModifiedResponse because headers might also be modified
-            // But ResponseAction::ModifiedResponse takes Response<HttpBody>.
-            // So we construct full response from flow.
-            return Ok(ResponseAction::ModifiedResponse(mock_to_response(
-                res.clone(),
-            )));
+            return Ok(ResponseAction::ModifiedResponse(mock_to_response(res.clone())));
         }
 
-        // Default: Continue with original body
         let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
         Ok(ResponseAction::Continue(new_body))
     }
@@ -218,29 +189,24 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         flow: &mut Flow,
         message: WebSocketMessage,
     ) -> Result<WebSocketMessageAction, BoxError> {
-        let engine = self.state.get_rule_engine().await;
+        let engine = self.rules.get_rule_engine().await;
 
-        // 1. Temporarily add message to flow for RuleEngine matching
         if let Layer::WebSocket(ws) = &mut flow.layer {
             ws.messages.push(message.clone());
 
-            // Cap history at 1000 messages to prevent memory leaks
             if ws.messages.len() > 1000 {
                 let excess = ws.messages.len() - 1000;
                 ws.messages.drain(0..excess);
             }
         }
 
-        // 2. Execute RuleEngine
         let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
 
-        // 3. Extract the (potentially modified) message
         let mut modified_message = None;
         if let Layer::WebSocket(ws) = &mut flow.layer {
             modified_message = ws.messages.pop();
         }
 
-        // 4. Check for termination
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             match reason {
                 TerminalReason::Mock => {
@@ -268,7 +234,6 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             }
         }
 
-        // 5. Default: Return modified message if exists, else original
         if let Some(mod_msg) = modified_message {
             Ok(WebSocketMessageAction::Continue(mod_msg))
         } else {
@@ -334,34 +299,23 @@ impl<R: Runtime> TauriInterceptor<R> {
             TerminalReason::Drop | TerminalReason::Abort | TerminalReason::RateLimited => {
                 InterceptionResult::Drop
             }
-            TerminalReason::Mock | TerminalReason::Redirect => {
-                match &flow.layer {
-                    Layer::Http(http) => {
-                        if let Some(res) = &http.response {
-                            InterceptionResult::MockResponse(res.clone())
-                        } else {
-                            // If mocking request, we construct a response
-                            // Wait, if redirect/mock happens in request phase, we need a response to return.
-                            // But `http.response` might be None if we are in request phase.
-                            // RuleEngine usually sets `http.response` when Mock action is taken.
-                            if let Some(res) = &http.response {
-                                InterceptionResult::MockResponse(res.clone())
-                            } else {
-                                InterceptionResult::Drop // Should not happen if rule engine is correct
-                            }
-                        }
+            TerminalReason::Mock | TerminalReason::Redirect => match &flow.layer {
+                Layer::Http(http) => {
+                    if let Some(res) = &http.response {
+                        InterceptionResult::MockResponse(res.clone())
+                    } else {
+                        InterceptionResult::Drop
                     }
-                    Layer::WebSocket(ws) => {
-                        if ws.handshake_response.status != 0 && ws.handshake_response.status != 101
-                        {
-                            InterceptionResult::MockResponse(ws.handshake_response.clone())
-                        } else {
-                            InterceptionResult::Drop
-                        }
-                    }
-                    _ => InterceptionResult::Drop,
                 }
-            }
+                Layer::WebSocket(ws) => {
+                    if ws.handshake_response.status != 0 && ws.handshake_response.status != 101 {
+                        InterceptionResult::MockResponse(ws.handshake_response.clone())
+                    } else {
+                        InterceptionResult::Drop
+                    }
+                }
+                _ => InterceptionResult::Drop,
+            },
             TerminalReason::Inspect => {
                 let (tx, rx) = oneshot::channel();
                 let key = if let Some(msg) = ws_message {
@@ -370,10 +324,10 @@ impl<R: Runtime> TauriInterceptor<R> {
                     format!("{}:{}", flow.id, phase)
                 };
 
-                self.state.register_intercept(key.clone(), tx).await;
+                self.intercepts.register_intercept(key.clone(), tx).await;
 
                 if let Some(msg) = ws_message {
-                    self.state
+                    self.intercepts
                         .set_pending_ws_message(key.clone(), msg.clone())
                         .await;
                 }
@@ -392,7 +346,7 @@ impl<R: Runtime> TauriInterceptor<R> {
                     Ok(Err(_)) => {
                         eprintln!("Interception channel dropped for {}", key);
                         let _ = self
-                            .state
+                            .intercepts
                             .resolve_intercept(key.clone(), InterceptionResult::Continue)
                             .await
                             .inspect_err(|e| {
@@ -403,7 +357,7 @@ impl<R: Runtime> TauriInterceptor<R> {
                     Err(_) => {
                         eprintln!("Interception timeout for {}", key);
                         let _ = self
-                            .state
+                            .intercepts
                             .resolve_intercept(key.clone(), InterceptionResult::Continue)
                             .await
                             .inspect_err(|e| {

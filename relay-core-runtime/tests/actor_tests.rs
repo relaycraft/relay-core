@@ -611,7 +611,7 @@ async fn test_intercept_orphan_cleanup_after_channel_drop() {
 
 #[tokio::test]
 async fn test_rule_interceptor_applies_request_header_rule() {
-    let state = CoreState::new(None).await;
+    let state = Arc::new(CoreState::new(None).await);
     let rule = Rule {
         id: "ri-rule".to_string(),
         name: "ri rule".to_string(),
@@ -628,7 +628,7 @@ async fn test_rule_interceptor_applies_request_header_rule() {
     };
     state.set_rules(vec![rule]).await;
 
-    let interceptor = RuleInterceptor::new(Arc::new(state));
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone());
     let mut flow = create_test_flow("http://example.com/ri", "GET");
 
     let result = interceptor.on_request_headers(&mut flow).await;

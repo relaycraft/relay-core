@@ -207,7 +207,9 @@ pub async fn start_core_proxy<R: Runtime>(
 
     let tauri_interceptor = Arc::new(TauriInterceptor {
         app_handle: app.clone(),
-        state: state.core.clone(),
+        rules: state.ctx.rules.clone(),
+        intercepts: state.ctx.intercepts.clone(),
+        policy: state.ctx.policy.clone(),
         flow_sender: proxy_tx.clone(),
     });
 
