@@ -1,6 +1,4 @@
-#[allow(unused_imports)]
 use chrono::Utc;
-#[allow(unused_imports)]
 use relay_core_api::flow::{Flow, FlowUpdate, Layer, NetworkInfo, TransportProtocol, UdpLayer};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -10,6 +8,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
+
+use crate::interceptor::{InterceptionResult, Interceptor};
 
 #[cfg(target_os = "linux")]
 use crate::capture::linux_tproxy::LinuxTproxy;
@@ -191,6 +191,7 @@ pub struct UdpProxy {
     socket: Arc<UdpSocket>,
     session_manager: Arc<UdpSessionManager>,
     remote_addr: Option<SocketAddr>,
+    interceptor: Option<Arc<dyn Interceptor>>,
 }
 
 impl UdpProxy {
@@ -199,12 +200,42 @@ impl UdpProxy {
             socket: Arc::new(socket),
             session_manager: Arc::new(UdpSessionManager::new(idle_timeout)),
             remote_addr: None,
+            interceptor: None,
         }
     }
 
     pub fn with_remote(mut self, addr: SocketAddr) -> Self {
         self.remote_addr = Some(addr);
         self
+    }
+
+    pub fn with_interceptor(mut self, interceptor: Arc<dyn Interceptor>) -> Self {
+        self.interceptor = Some(interceptor);
+        self
+    }
+
+    async fn check_udp_session(&self, flow: &mut Flow) -> bool {
+        if let Some(interceptor) = &self.interceptor {
+            match interceptor.on_udp_session(flow).await {
+                InterceptionResult::Continue => true,
+                InterceptionResult::Drop => {
+                    tracing::debug!(
+                        "UDP session dropped by interceptor: {}:{} -> {}:{}",
+                        flow.network.client_ip,
+                        flow.network.client_port,
+                        flow.network.server_ip,
+                        flow.network.server_port
+                    );
+                    false
+                }
+                other => {
+                    tracing::warn!("Unexpected UDP intercept result {:?}, allowing", other);
+                    true
+                }
+            }
+        } else {
+            true
+        }
     }
 
     /// Run the proxy loop
@@ -235,8 +266,7 @@ impl UdpProxy {
                     {
                         Ok((session, is_new)) => {
                             if is_new {
-                                // Create initial flow
-                                let flow = Flow {
+                                let mut flow = Flow {
                                     id: session.flow_id,
                                     start_time: Utc::now(),
                                     end_time: None,
@@ -260,6 +290,9 @@ impl UdpProxy {
                                     rule_variables: HashMap::new(),
                                     matched_rules: vec![],
                                 };
+                                if !self.check_udp_session(&mut flow).await {
+                                    continue;
+                                }
                                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
                                     crate::metrics::inc_flows_dropped();
                                 }
@@ -326,7 +359,7 @@ impl UdpProxy {
                 };
 
                 if is_new {
-                    let flow = Flow {
+                    let mut flow = Flow {
                         id: session.flow_id,
                         start_time: Utc::now(),
                         end_time: None,
@@ -350,6 +383,9 @@ impl UdpProxy {
                         rule_variables: HashMap::new(),
                         matched_rules: vec![],
                     };
+                    if !self.check_udp_session(&mut flow).await {
+                        continue;
+                    }
                     let _ = flow_tx.try_send(FlowUpdate::Full(Box::new(flow)));
 
                     let sock_clone = sock.clone();
@@ -391,5 +427,86 @@ impl UdpProxy {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interceptor::{
+        BoxError, HttpBody, RequestAction, ResponseAction, WebSocketMessageAction,
+    };
+    use async_trait::async_trait;
+    use relay_core_api::flow::{NetworkInfo, TransportProtocol, UdpLayer, WebSocketMessage};
+
+    struct DropAllInterceptor;
+    #[async_trait]
+    impl Interceptor for DropAllInterceptor {
+        async fn on_udp_session(&self, _flow: &mut Flow) -> InterceptionResult {
+            InterceptionResult::Drop
+        }
+        async fn on_request(
+            &self,
+            _flow: &mut Flow,
+            body: HttpBody,
+        ) -> Result<RequestAction, BoxError> {
+            Ok(RequestAction::Continue(body))
+        }
+        async fn on_response(
+            &self,
+            _flow: &mut Flow,
+            body: HttpBody,
+        ) -> Result<ResponseAction, BoxError> {
+            Ok(ResponseAction::Continue(body))
+        }
+        async fn on_websocket_message(
+            &self,
+            _flow: &mut Flow,
+            msg: WebSocketMessage,
+        ) -> Result<WebSocketMessageAction, BoxError> {
+            Ok(WebSocketMessageAction::Continue(msg))
+        }
+    }
+
+    fn make_udp_flow() -> Flow {
+        Flow {
+            id: Uuid::new_v4(),
+            start_time: chrono::Utc::now(),
+            end_time: None,
+            network: NetworkInfo {
+                client_ip: "10.0.0.1".to_string(),
+                client_port: 50000,
+                server_ip: "10.0.0.2".to_string(),
+                server_port: 53,
+                protocol: TransportProtocol::UDP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Udp(UdpLayer {
+                payload_size: 100,
+                packet_count: 1,
+            }),
+            tags: vec![],
+            meta: HashMap::new(),
+            resilience_trace: None,
+            rule_variables: HashMap::new(),
+            matched_rules: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_udp_interceptor_allows_by_default() {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let proxy = UdpProxy::new(sock, Duration::from_secs(60));
+        assert!(proxy.check_udp_session(&mut make_udp_flow()).await);
+    }
+
+    #[tokio::test]
+    async fn test_udp_interceptor_drops() {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let proxy = UdpProxy::new(sock, Duration::from_secs(60))
+            .with_interceptor(Arc::new(DropAllInterceptor));
+        assert!(!proxy.check_udp_session(&mut make_udp_flow()).await);
     }
 }

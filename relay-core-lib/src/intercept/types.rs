@@ -114,6 +114,13 @@ pub trait Interceptor: Send + Sync {
 
     /// Called when a WebSocket connection encounters an error.
     async fn on_websocket_error(&self, _flow: &mut Flow, _error: &str) {}
+
+    /// Called before a new UDP session is created.
+    /// Return InterceptionResult::Drop to block the session entirely,
+    /// or Continue to allow it. Default: allow all.
+    async fn on_udp_session(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
 }
 
 // Default implementation that does nothing
@@ -303,5 +310,21 @@ impl Interceptor for CompositeInterceptor {
         for interceptor in &self.interceptors {
             interceptor.on_websocket_error(flow, error).await;
         }
+    }
+
+    async fn on_udp_session(&self, flow: &mut Flow) -> InterceptionResult {
+        for interceptor in &self.interceptors {
+            match interceptor.on_udp_session(flow).await {
+                InterceptionResult::Drop => return InterceptionResult::Drop,
+                InterceptionResult::Continue => {}
+                other => {
+                    tracing::warn!(
+                        "Unexpected intercept result for UDP: {:?}, treating as Continue",
+                        other
+                    );
+                }
+            }
+        }
+        InterceptionResult::Continue
     }
 }

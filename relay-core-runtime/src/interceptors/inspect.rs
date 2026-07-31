@@ -37,9 +37,7 @@ pub async fn handle_rule_termination(
             }
             _ => InterceptionResult::Drop,
         },
-        TerminalReason::Inspect => {
-            await_user_inspect(intercepts, flow, phase, ws_message).await
-        }
+        TerminalReason::Inspect => await_user_inspect(intercepts, flow, phase, ws_message).await,
     }
 }
 

@@ -178,7 +178,9 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             && let Some(res) = &http.response
             && let Some(_body_data) = &res.body
         {
-            return Ok(ResponseAction::ModifiedResponse(mock_to_response(res.clone())));
+            return Ok(ResponseAction::ModifiedResponse(mock_to_response(
+                res.clone(),
+            )));
         }
 
         let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();

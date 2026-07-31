@@ -100,7 +100,10 @@ async fn test_transparent_proxy_routing() {
     let on_flow = tx.clone();
 
     tokio::spawn(async move {
-        let policy = ProxyPolicy { transparent_enabled: true, ..Default::default() };
+        let policy = ProxyPolicy {
+            transparent_enabled: true,
+            ..Default::default()
+        };
 
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
         start_proxy(
@@ -179,7 +182,10 @@ async fn test_transparent_proxy_loop_detection() {
     let on_flow = tx.clone();
 
     tokio::spawn(async move {
-        let policy = ProxyPolicy { transparent_enabled: true, ..Default::default() };
+        let policy = ProxyPolicy {
+            transparent_enabled: true,
+            ..Default::default()
+        };
 
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
         start_proxy(

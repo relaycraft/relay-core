@@ -258,20 +258,21 @@ async fn test_timeout_sets_trace_timeout_type() {
     // Verify resilience trace in flow update
     while let Ok(update) = rx.try_recv() {
         if let FlowUpdate::Full(flow) = update
-            && let Some(trace) = flow.resilience_trace.as_ref() {
-                assert_eq!(
-                    trace.timeout_type.as_deref(),
-                    Some("total"),
-                    "timeout_type should be 'total'"
-                );
-                assert!(
-                    trace
-                        .upstream_errors
-                        .iter()
-                        .any(|e| e.contains("Timed Out")),
-                    "upstream_errors should contain timeout error"
-                );
-            }
+            && let Some(trace) = flow.resilience_trace.as_ref()
+        {
+            assert_eq!(
+                trace.timeout_type.as_deref(),
+                Some("total"),
+                "timeout_type should be 'total'"
+            );
+            assert!(
+                trace
+                    .upstream_errors
+                    .iter()
+                    .any(|e| e.contains("Timed Out")),
+                "upstream_errors should contain timeout error"
+            );
+        }
     }
 }
 
@@ -333,9 +334,10 @@ async fn test_circuit_breaker_sets_trace() {
     // Verify resilience trace
     while let Ok(update) = rx.try_recv() {
         if let FlowUpdate::Full(flow) = update
-            && let Some(trace) = flow.resilience_trace.as_ref() {
-                assert!(trace.circuit_open, "circuit_open should be true");
-            }
+            && let Some(trace) = flow.resilience_trace.as_ref()
+        {
+            assert!(trace.circuit_open, "circuit_open should be true");
+        }
     }
 }
 

@@ -32,8 +32,14 @@ impl Interceptor for RuleInterceptor {
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-            return handle_rule_termination(&self.intercepts, reason, flow, "request_headers", None)
-                .await;
+            return handle_rule_termination(
+                &self.intercepts,
+                reason,
+                flow,
+                "request_headers",
+                None,
+            )
+            .await;
         }
 
         InterceptionResult::Continue
@@ -44,10 +50,9 @@ impl Interceptor for RuleInterceptor {
         if engine.has_rules_for_stage(RuleStage::RequestBody) {
             let ctx = engine.execute(RuleStage::RequestBody, flow).await;
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-                let result = handle_rule_termination(
-                    &self.intercepts, reason, flow, "request_body", None,
-                )
-                .await;
+                let result =
+                    handle_rule_termination(&self.intercepts, reason, flow, "request_body", None)
+                        .await;
                 return Ok(match result {
                     InterceptionResult::Drop => RequestAction::Drop,
                     InterceptionResult::MockResponse(res) => {
@@ -90,10 +95,9 @@ impl Interceptor for RuleInterceptor {
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
             let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-                let result = handle_rule_termination(
-                    &self.intercepts, reason, flow, "response_body", None,
-                )
-                .await;
+                let result =
+                    handle_rule_termination(&self.intercepts, reason, flow, "response_body", None)
+                        .await;
                 return Ok(match result {
                     InterceptionResult::Drop => ResponseAction::Drop,
                     InterceptionResult::MockResponse(res) => {
@@ -119,7 +123,11 @@ impl Interceptor for RuleInterceptor {
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result = handle_rule_termination(
-                    &self.intercepts, reason, flow, "ws_msg", Some(&message),
+                    &self.intercepts,
+                    reason,
+                    flow,
+                    "ws_msg",
+                    Some(&message),
                 )
                 .await;
                 return Ok(match result {

@@ -1360,11 +1360,13 @@ impl CoreState {
 
         if let Some(udp_port) = config.udp_tproxy_port {
             let udp_proxy_tx = proxy_tx.clone();
+            let udp_interceptor = interceptor.clone();
             let udp_addr = SocketAddr::from(([0, 0, 0, 0], udp_port));
             tokio::spawn(async move {
                 match tokio::net::UdpSocket::bind(udp_addr).await {
                     Ok(socket) => {
-                        let proxy = UdpProxy::new(socket, std::time::Duration::from_secs(60));
+                        let proxy = UdpProxy::new(socket, std::time::Duration::from_secs(60))
+                            .with_interceptor(udp_interceptor);
                         if let Err(e) = proxy.run(udp_proxy_tx).await {
                             error!("UDP TPROXY failed: {}", e);
                         }
