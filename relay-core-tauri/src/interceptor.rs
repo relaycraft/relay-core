@@ -10,11 +10,12 @@ use relay_core_lib::interceptor::{
 use relay_core_lib::proxy::budget::BudgetedBody;
 use relay_core_lib::proxy::http_utils::mock_to_response;
 use relay_core_lib::rule::{RuleStage, RuleTraceSummary, TerminalReason};
+use relay_core_runtime::interceptors::inspect::INSPECT_TIMEOUT;
 use relay_core_runtime::services::{InterceptService, PolicyService, RuleService};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 pub use relay_core_runtime::rule::InterceptRule;
 
@@ -338,7 +339,7 @@ impl<R: Runtime> TauriInterceptor<R> {
 
                 println!("Intercepted {}: {}", phase, key);
 
-                match timeout(Duration::from_secs(30), rx).await {
+                match timeout(INSPECT_TIMEOUT, rx).await {
                     Ok(Ok(result)) => {
                         println!("Resumed {}: {} with result {:?}", phase, key, result);
                         result

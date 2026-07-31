@@ -6,6 +6,9 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 
+/// Max wait for a UI/agent to resolve an intercepted flow.
+pub const INSPECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub async fn handle_rule_termination(
     intercepts: &Arc<dyn InterceptService>,
     reason: &TerminalReason,
@@ -60,7 +63,7 @@ async fn await_user_inspect(
             .await;
     }
 
-    match timeout(Duration::from_secs(300), rx).await {
+    match timeout(INSPECT_TIMEOUT, rx).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) | Err(_) => {
             let _ = intercepts
