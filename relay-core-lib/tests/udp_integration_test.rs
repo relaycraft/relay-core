@@ -42,6 +42,7 @@ impl Interceptor for DropAllInterceptor {
 }
 
 /// Verify that a UDP proxy with DropAll interceptor produces no flows.
+#[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_drop_all_interceptor() {
     // Bind echo server
@@ -95,6 +96,9 @@ async fn test_udp_proxy_drop_all_interceptor() {
 }
 
 /// Verify that a UDP proxy without interceptor forwards packets normally.
+/// Only works on non-Linux because Linux requires TPROXY (iptables) setup
+/// for the proxy socket; the explicit remote_addr path is macOS/Windows only.
+#[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_allow_all() {
     let echo = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
