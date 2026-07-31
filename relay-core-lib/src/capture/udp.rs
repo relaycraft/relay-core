@@ -369,6 +369,8 @@ impl UdpProxy {
                     proxy_local.as_ref(),
                     #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
                     pf.as_deref(),
+                    #[cfg(not(all(target_os = "macos", feature = "transparent-macos")))]
+                    None::<&()>,
                     fixed_remote,
                 ) {
                     Some(addr) => addr,
