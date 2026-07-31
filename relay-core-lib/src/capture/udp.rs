@@ -462,7 +462,7 @@ impl UdpProxy {
 
 /// Resolve UDP destination: PF NAT lookup on macOS, fallthrough to fixed remote.
 #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
-fn resolve_udp_dst(
+pub(crate) fn resolve_udp_dst(
     src: SocketAddr,
     proxy_local: Option<&std::net::SocketAddr>,
     pf: Option<&MacOsOriginalDstProvider>,
@@ -482,6 +482,7 @@ fn resolve_udp_dst(
 }
 
 #[cfg(not(all(target_os = "macos", feature = "transparent-macos")))]
+#[allow(dead_code)]
 fn resolve_udp_dst(
     _src: SocketAddr,
     _proxy_local: Option<&std::net::SocketAddr>,
