@@ -411,7 +411,11 @@ impl UdpProxy {
                     if !self.check_udp_session(&mut flow).await {
                         continue;
                     }
-                    let _ = flow_tx.try_send(FlowUpdate::Full(Box::new(flow)));
+                    let _ = flow_tx
+                        .try_send(FlowUpdate::Full(Box::new(flow)))
+                        .inspect_err(|_| {
+                            crate::metrics::inc_flows_dropped();
+                        });
 
                     let sock_clone = sock.clone();
                     let bytes = session.bytes_transferred.clone();
@@ -565,5 +569,76 @@ mod tests {
         let proxy = UdpProxy::new(sock, Duration::from_secs(60))
             .with_interceptor(Arc::new(DropAllInterceptor));
         assert!(!proxy.check_udp_session(&mut make_udp_flow()).await);
+    }
+
+    // ── resolve_udp_dst ──
+
+    #[test]
+    fn test_resolve_udp_dst_non_macos_returns_fixed() {
+        // On non-macOS, resolve_udp_dst should return the fixed addr directly
+        let fixed = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let result = resolve_udp_dst("127.0.0.1:12345".parse().unwrap(), None, None, Some(fixed));
+        assert_eq!(result, Some(fixed));
+    }
+
+    #[test]
+    fn test_resolve_udp_dst_returns_none_when_all_empty() {
+        let result = resolve_udp_dst("127.0.0.1:12345".parse().unwrap(), None, None, None);
+        assert_eq!(result, None);
+    }
+
+    // ── UDP InterceptionResult fallthrough ──
+
+    struct MockResponseInterceptor;
+    #[async_trait]
+    impl Interceptor for MockResponseInterceptor {
+        async fn on_udp_session(&self, _flow: &mut Flow) -> InterceptionResult {
+            InterceptionResult::MockResponse(relay_core_api::flow::HttpResponse {
+                status: 200,
+                status_text: "OK".to_string(),
+                version: "HTTP/1.1".to_string(),
+                headers: vec![],
+                body: None,
+                timing: relay_core_api::flow::ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
+                cookies: vec![],
+            })
+        }
+        async fn on_request(
+            &self,
+            _flow: &mut Flow,
+            body: HttpBody,
+        ) -> Result<RequestAction, BoxError> {
+            Ok(RequestAction::Continue(body))
+        }
+        async fn on_response(
+            &self,
+            _flow: &mut Flow,
+            body: HttpBody,
+        ) -> Result<ResponseAction, BoxError> {
+            Ok(ResponseAction::Continue(body))
+        }
+        async fn on_websocket_message(
+            &self,
+            _flow: &mut Flow,
+            msg: WebSocketMessage,
+        ) -> Result<WebSocketMessageAction, BoxError> {
+            Ok(WebSocketMessageAction::Continue(msg))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_udp_mock_response_fallthrough_continues() {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let proxy = UdpProxy::new(sock, Duration::from_secs(60))
+            .with_interceptor(Arc::new(MockResponseInterceptor));
+        // MockResponse is nonsensical for UDP — CompositeIterator treats
+        // it as Continue (with a warn log). This test asserts the defensive
+        // default: the session is allowed through.
+        assert!(proxy.check_udp_session(&mut make_udp_flow()).await);
     }
 }

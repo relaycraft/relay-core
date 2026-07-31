@@ -145,6 +145,12 @@ pub fn get_bytes_recv() -> u64 {
 
 /// Per-connection byte counter for deriving per-connection stats.
 /// Snapshots global counters at construction; delta at disconnect.
+///
+/// NOTE: In the presence of concurrent connections, snapshots are
+/// approximate — a connection's reported bytes may include increments
+/// from other connections that ran between `new()` and `snapshot()`.
+/// For exact per-connection accounting, use a dedicated counter per
+/// connection instead of snapshotting globals.
 #[derive(Debug, Clone)]
 pub struct ConnectionMeter {
     bytes_sent_at_start: u64,
@@ -179,17 +185,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bytes_sent_counting() {
-        let before = get_bytes_sent();
-        add_bytes_sent(100);
-        assert!(get_bytes_sent() >= before + 100);
-    }
+    fn test_bytes_sent_recv_direction_mapping() {
+        let before_sent = get_bytes_sent();
+        let before_recv = get_bytes_recv();
 
-    #[test]
-    fn test_bytes_recv_counting() {
-        let before = get_bytes_recv();
+        // Simulate request body flowing upstream (ClientToServer)
+        add_bytes_sent(100);
+        // Simulate response body flowing downstream (ServerToClient)
         add_bytes_recv(200);
-        assert!(get_bytes_recv() >= before + 200);
+
+        assert!(get_bytes_sent() >= before_sent + 100);
+        assert!(get_bytes_recv() >= before_recv + 200);
+
+        // Verify sent/recv are independent counters
+        let sent_delta = get_bytes_sent().saturating_sub(before_sent);
+        let recv_delta = get_bytes_recv().saturating_sub(before_recv);
+        assert_ne!(
+            sent_delta, recv_delta,
+            "sent and recv should be independent"
+        );
     }
 
     #[test]

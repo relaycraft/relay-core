@@ -7,6 +7,12 @@ use tokio::sync::oneshot;
 use tokio::time::{Duration, timeout};
 
 /// Max wait for a UI/agent to resolve an intercepted flow.
+///
+/// Chosen as the midpoint between the prior divergent values:
+/// runtime was 300 s, Tauri adapter was 30 s. 60 s balances UI
+/// responsiveness with enough time for human review. Callers relying
+/// on the old 300 s budget will need to adjust — inspect is a
+/// breakpoint, not a queue, and should not block indefinitely.
 pub const INSPECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub async fn handle_rule_termination(
