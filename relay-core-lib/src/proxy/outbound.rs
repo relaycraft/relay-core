@@ -251,7 +251,7 @@ impl HttpUpstreamConnector {
                 ));
             }
             pos += 1;
-            if pos >= 2 && buf[pos - 2..pos] == [b'\r', b'\n'] {
+            if pos >= 2 && buf[pos - 2..pos] == *b"\r\n" {
                 break;
             }
         }
@@ -279,7 +279,7 @@ impl HttpUpstreamConnector {
                 ));
             }
             total += n;
-            if total >= 4 && header_buf[total - 4..total] == [b'\r', b'\n', b'\r', b'\n'] {
+            if total >= 4 && header_buf[total - 4..total] == *b"\r\n\r\n" {
                 break;
             }
             if total >= header_buf.len() {
