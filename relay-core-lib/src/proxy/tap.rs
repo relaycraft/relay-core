@@ -55,7 +55,12 @@ impl Body for TapBody {
         match Pin::new(&mut self.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
-                    self.total_bytes += data.len() as u64;
+                    let len = data.len() as u64;
+                    self.total_bytes += len;
+                    match self.direction {
+                        Direction::ClientToServer => crate::metrics::add_bytes_sent(len),
+                        Direction::ServerToClient => crate::metrics::add_bytes_recv(len),
+                    }
                     if self.buffer.len() < self.limit {
                         let len = std::cmp::min(data.len(), self.limit - self.buffer.len());
                         self.buffer.extend_from_slice(&data[..len]);

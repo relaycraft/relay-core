@@ -265,6 +265,7 @@ where
 
         let conn_info_2 = conn_info.clone();
         let interceptor_2 = interceptor.clone();
+        let conn_meter = crate::metrics::ConnectionMeter::new();
         tokio::task::spawn(ENGINE_INDEX.scope(engine_index, async move {
             let conn_start = Instant::now();
             let result = http1::Builder::new()
@@ -294,8 +295,9 @@ where
 
             let stats = crate::interceptor::ConnectionStats {
                 duration_ms: conn_start.elapsed().as_millis() as u64,
-                // TODO: populate bytes_sent, bytes_received, flows_count when real-time stats tracking is added
-                ..Default::default()
+                bytes_sent: conn_meter.snapshot_bytes_sent(),
+                bytes_received: conn_meter.snapshot_bytes_recv(),
+                flows_count: 0,
             };
             interceptor_2.on_disconnect(&conn_info_2, &stats).await;
 

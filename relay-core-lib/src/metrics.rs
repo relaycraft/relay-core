@@ -1,7 +1,13 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Total number of flows dropped due to backpressure (channel full)
 pub static FLOWS_DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Total bytes sent to upstream servers across all connections
+pub static PROXY_BYTES_SENT_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total bytes received from upstream servers across all connections
+pub static PROXY_BYTES_RECV_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// O4: Total number of bodies degraded (budget exceeded, rules skipped)
 pub static PROXY_BODY_DEGRADED_TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -115,4 +121,95 @@ pub fn inc_proxy_stream_mode_degrade() {
 /// O4: Get the current count of degraded streams
 pub fn get_proxy_stream_mode_degrade() -> usize {
     PROXY_STREAM_MODE_DEGRADE_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Add bytes sent (client→proxy→upstream direction)
+pub fn add_bytes_sent(n: u64) {
+    PROXY_BYTES_SENT_TOTAL.fetch_add(n, Ordering::Relaxed);
+}
+
+/// Get total bytes sent
+pub fn get_bytes_sent() -> u64 {
+    PROXY_BYTES_SENT_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Add bytes received (upstream→proxy→client direction)
+pub fn add_bytes_recv(n: u64) {
+    PROXY_BYTES_RECV_TOTAL.fetch_add(n, Ordering::Relaxed);
+}
+
+/// Get total bytes received
+pub fn get_bytes_recv() -> u64 {
+    PROXY_BYTES_RECV_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Per-connection byte counter for deriving per-connection stats.
+/// Snapshots global counters at construction; delta at disconnect.
+#[derive(Debug, Clone)]
+pub struct ConnectionMeter {
+    bytes_sent_at_start: u64,
+    bytes_recv_at_start: u64,
+}
+
+impl ConnectionMeter {
+    pub fn new() -> Self {
+        Self {
+            bytes_sent_at_start: get_bytes_sent(),
+            bytes_recv_at_start: get_bytes_recv(),
+        }
+    }
+
+    pub fn snapshot_bytes_sent(&self) -> u64 {
+        get_bytes_sent().saturating_sub(self.bytes_sent_at_start)
+    }
+
+    pub fn snapshot_bytes_recv(&self) -> u64 {
+        get_bytes_recv().saturating_sub(self.bytes_recv_at_start)
+    }
+}
+
+impl Default for ConnectionMeter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bytes_sent_counting() {
+        let before = get_bytes_sent();
+        add_bytes_sent(100);
+        assert_eq!(get_bytes_sent(), before + 100);
+        add_bytes_sent(50);
+        assert_eq!(get_bytes_sent(), before + 150);
+    }
+
+    #[test]
+    fn test_bytes_recv_counting() {
+        let before = get_bytes_recv();
+        add_bytes_recv(200);
+        assert_eq!(get_bytes_recv(), before + 200);
+    }
+
+    #[test]
+    fn test_connection_meter_delta() {
+        let meter = ConnectionMeter::new();
+        add_bytes_sent(300);
+        add_bytes_recv(400);
+        assert_eq!(meter.snapshot_bytes_sent(), 300);
+        assert_eq!(meter.snapshot_bytes_recv(), 400);
+    }
+
+    #[test]
+    fn test_connection_meter_independent_snapshots() {
+        let m1 = ConnectionMeter::new();
+        add_bytes_sent(10);
+        let m2 = ConnectionMeter::new();
+        add_bytes_sent(20);
+        assert_eq!(m1.snapshot_bytes_sent(), 30);
+        assert_eq!(m2.snapshot_bytes_sent(), 20);
+    }
 }

@@ -411,6 +411,8 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).expect("prometheus body should be utf-8");
         assert!(text.contains("relay_core_flows_total "));
         assert!(text.contains("relay_core_audit_events_total "));
+        assert!(text.contains("relay_core_proxy_bytes_sent_total "));
+        assert!(text.contains("relay_core_proxy_bytes_recv_total "));
     }
 
     #[tokio::test]

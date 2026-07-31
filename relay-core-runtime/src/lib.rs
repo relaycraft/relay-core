@@ -112,6 +112,10 @@ pub struct CoreMetrics {
     pub proxy_stream_mode_tap_total: usize,
     /// O4: Total bodies degraded from tap to pass-through
     pub proxy_stream_mode_degrade_total: usize,
+    /// O4: Total bytes transmitted to upstream (client→proxy→server)
+    pub proxy_bytes_sent_total: u64,
+    /// O4: Total bytes received from upstream (server→proxy→client)
+    pub proxy_bytes_recv_total: u64,
 }
 
 impl CoreMetrics {
@@ -138,7 +142,9 @@ relay_core_proxy_invalid_method_total {}\n\
 relay_core_proxy_invalid_status_total {}\n\
 relay_core_proxy_retry_total {}\n\
 relay_core_proxy_stream_mode_tap_total {}\n\
-relay_core_proxy_stream_mode_degrade_total {}\n",
+relay_core_proxy_stream_mode_degrade_total {}\n\
+relay_core_proxy_bytes_sent_total {}\n\
+relay_core_proxy_bytes_recv_total {}\n",
             self.flows_total,
             self.flows_in_memory,
             self.flows_dropped,
@@ -159,6 +165,8 @@ relay_core_proxy_stream_mode_degrade_total {}\n",
             self.proxy_retry_total,
             self.proxy_stream_mode_tap_total,
             self.proxy_stream_mode_degrade_total,
+            self.proxy_bytes_sent_total,
+            self.proxy_bytes_recv_total,
         )
     }
 }
@@ -434,6 +442,8 @@ impl CoreState {
             proxy_stream_mode_tap_total: relay_core_lib::metrics::get_proxy_stream_mode_tap(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(
             ),
+            proxy_bytes_sent_total: relay_core_lib::metrics::get_bytes_sent(),
+            proxy_bytes_recv_total: relay_core_lib::metrics::get_bytes_recv(),
         }
     }
 

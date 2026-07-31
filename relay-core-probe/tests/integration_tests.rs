@@ -126,6 +126,8 @@ async fn get_metrics_has_expected_keys() {
         "intercepts_pending",
         "rule_exec_errors",
         "audit_events_total",
+        "proxy_bytes_sent_total",
+        "proxy_bytes_recv_total",
     ] {
         assert!(json.get(key).is_some(), "missing metrics key: {key}");
     }
