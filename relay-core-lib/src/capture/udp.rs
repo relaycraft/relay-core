@@ -14,6 +14,9 @@ use crate::interceptor::{InterceptionResult, Interceptor};
 #[cfg(target_os = "linux")]
 use crate::capture::linux_tproxy::LinuxTproxy;
 
+#[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+use crate::capture::macos_pf::MacOsOriginalDstProvider;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Key for UDP session (5-tuple)
@@ -192,6 +195,8 @@ pub struct UdpProxy {
     session_manager: Arc<UdpSessionManager>,
     remote_addr: Option<SocketAddr>,
     interceptor: Option<Arc<dyn Interceptor>>,
+    #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+    original_dst_provider: Option<Arc<MacOsOriginalDstProvider>>,
 }
 
 impl UdpProxy {
@@ -201,6 +206,8 @@ impl UdpProxy {
             session_manager: Arc::new(UdpSessionManager::new(idle_timeout)),
             remote_addr: None,
             interceptor: None,
+            #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+            original_dst_provider: None,
         }
     }
 
@@ -211,6 +218,12 @@ impl UdpProxy {
 
     pub fn with_interceptor(mut self, interceptor: Arc<dyn Interceptor>) -> Self {
         self.interceptor = Some(interceptor);
+        self
+    }
+
+    #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+    pub fn with_original_dst_provider(mut self, provider: Arc<MacOsOriginalDstProvider>) -> Self {
+        self.original_dst_provider = Some(provider);
         self
     }
 
@@ -318,27 +331,29 @@ impl UdpProxy {
 
         #[cfg(not(target_os = "linux"))]
         {
-            let remote_addr = match self.remote_addr {
-                Some(addr) => addr,
-                None => {
-                    tracing::warn!(
-                        "UDP proxy started without remote_addr on non-Linux; no forwarding"
-                    );
-                    loop {
-                        match self.socket.recv_from(&mut buf).await {
-                            Ok((_len, _src_addr)) => {}
-                            Err(e) => {
-                                tracing::error!("UDP drain recv error: {}", e);
-                                continue;
-                            }
-                        }
-                    }
-                }
-            };
-
             let sm = self.session_manager.clone();
             let sock = self.socket.clone();
             let flow_tx = on_flow;
+            let proxy_local = sock.local_addr().ok();
+
+            #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+            let pf = self.original_dst_provider.clone();
+            let fixed_remote = self.remote_addr;
+
+            if fixed_remote.is_none()
+                && cfg!(not(all(target_os = "macos", feature = "transparent-macos")))
+            {
+                tracing::warn!("UDP proxy started without remote_addr on non-Linux; no forwarding");
+                loop {
+                    match sock.recv_from(&mut buf).await {
+                        Ok((_len, _src_addr)) => {}
+                        Err(e) => {
+                            tracing::error!("UDP drain recv error: {}", e);
+                            continue;
+                        }
+                    }
+                }
+            }
 
             loop {
                 let (len, src_addr) = match sock.recv_from(&mut buf).await {
@@ -349,8 +364,18 @@ impl UdpProxy {
                     }
                 };
 
-                let (session, is_new) = match sm.get_or_create_session(src_addr, remote_addr).await
-                {
+                let dst_addr = match resolve_udp_dst(
+                    src_addr,
+                    proxy_local.as_ref(),
+                    #[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+                    pf.as_deref(),
+                    fixed_remote,
+                ) {
+                    Some(addr) => addr,
+                    None => continue,
+                };
+
+                let (session, is_new) = match sm.get_or_create_session(src_addr, dst_addr).await {
                     Ok(res) => res,
                     Err(e) => {
                         tracing::warn!("Failed to create UDP session: {}", e);
@@ -366,8 +391,8 @@ impl UdpProxy {
                         network: NetworkInfo {
                             client_ip: src_addr.ip().to_string(),
                             client_port: src_addr.port(),
-                            server_ip: remote_addr.ip().to_string(),
-                            server_port: remote_addr.port(),
+                            server_ip: dst_addr.ip().to_string(),
+                            server_port: dst_addr.port(),
                             protocol: TransportProtocol::UDP,
                             tls: false,
                             tls_version: None,
@@ -391,12 +416,13 @@ impl UdpProxy {
                     let sock_clone = sock.clone();
                     let bytes = session.bytes_transferred.clone();
                     let last = session.last_activity.clone();
+                    let rmt = dst_addr;
                     tokio::spawn(async move {
                         let mut rbuf = [0u8; 65535];
                         loop {
                             match sock_clone.recv_from(&mut rbuf).await {
                                 Ok((n, addr)) => {
-                                    if addr == remote_addr {
+                                    if addr == rmt {
                                         let _ = sock_clone.send_to(&rbuf[..n], src_addr).await;
                                         bytes.fetch_add(n, Ordering::Relaxed);
                                         if let Ok(mut la) = last.try_write() {
@@ -417,17 +443,48 @@ impl UdpProxy {
                     });
                 }
 
-                match sock.send_to(&buf[..len], remote_addr).await {
+                match sock.send_to(&buf[..len], dst_addr).await {
                     Ok(_) => {
                         session.bytes_transferred.fetch_add(len, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        tracing::debug!("UDP send_to {} error: {}", remote_addr, e);
+                        tracing::debug!("UDP send_to {} error: {}", dst_addr, e);
                     }
                 }
             }
         }
     }
+}
+
+/// Resolve UDP destination: PF NAT lookup on macOS, fallthrough to fixed remote.
+#[cfg(all(target_os = "macos", feature = "transparent-macos"))]
+fn resolve_udp_dst(
+    src: SocketAddr,
+    proxy_local: Option<&std::net::SocketAddr>,
+    pf: Option<&MacOsOriginalDstProvider>,
+    fixed: Option<SocketAddr>,
+) -> Option<SocketAddr> {
+    if let (Some(provider), Some(local)) = (pf, proxy_local) {
+        match provider.nat_lookup_udp(src, *local) {
+            Ok(addr) => return Some(addr),
+            Err(e) => {
+                if e.raw_os_error() != Some(libc::ENOENT) {
+                    tracing::warn!("PF NAT lookup failed for UDP {}: {}", src, e);
+                }
+            }
+        }
+    }
+    fixed
+}
+
+#[cfg(not(all(target_os = "macos", feature = "transparent-macos")))]
+fn resolve_udp_dst(
+    _src: SocketAddr,
+    _proxy_local: Option<&std::net::SocketAddr>,
+    _pf: Option<&()>,
+    fixed: Option<SocketAddr>,
+) -> Option<SocketAddr> {
+    fixed
 }
 
 #[cfg(test)]
