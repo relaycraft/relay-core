@@ -52,6 +52,8 @@ relay-core-probe = { path = "./relay-core-probe", version = "0.9.5" }
 relay-core-http = { path = "./relay-core-http", version = "0.9.5" }
 tracing = "0.1"
 secrecy = "0.10"
+base64 = "0.22.1"
+lru = "0.16"
 
 [workspace.metadata.release]
 shared-version = true

@@ -46,6 +46,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::error;
 
 use crate::audit::{AuditActor, AuditEvent, AuditEventKind, AuditOutcome};
+use crate::lifecycle::LifecycleManager;
 use crate::rule::{
     InterceptRule, InterceptRuleConfig, MockResponseRuleConfig, build_intercept_rules,
     build_mock_response_rule,
@@ -59,6 +60,7 @@ use serde_json::json;
 pub mod actors;
 pub mod audit;
 pub mod interceptors;
+pub mod lifecycle;
 mod log_format;
 pub mod modification;
 pub mod paths;
@@ -319,8 +321,7 @@ pub struct CoreState {
     flow_broadcast_tx: broadcast::Sender<FlowUpdate>,
     audit_broadcast_tx: broadcast::Sender<AuditEvent>,
     audit_history: Arc<Mutex<VecDeque<AuditEvent>>>,
-    lifecycle_tx: watch::Sender<RuntimeLifecycle>,
-    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    lifecycle: LifecycleManager,
 }
 
 impl CoreState {
@@ -359,7 +360,6 @@ impl CoreState {
         let (policy_tx, _) = watch::channel(ProxyPolicy::default());
         let (flow_broadcast_tx, _) = broadcast::channel(1000);
         let (audit_broadcast_tx, _) = broadcast::channel(256);
-        let (lifecycle_tx, _) = watch::channel(RuntimeLifecycle::created());
 
         #[cfg(feature = "script")]
         let script_interceptor = ScriptInterceptor::new()
@@ -381,8 +381,7 @@ impl CoreState {
             flow_broadcast_tx,
             audit_broadcast_tx,
             audit_history: Arc::new(Mutex::new(VecDeque::with_capacity(AUDIT_HISTORY_LIMIT))),
-            lifecycle_tx,
-            shutdown_tx: Mutex::new(None),
+            lifecycle: LifecycleManager::new(),
         }
     }
 
@@ -1005,58 +1004,19 @@ impl CoreState {
     }
 
     pub fn lifecycle(&self) -> RuntimeLifecycle {
-        self.lifecycle_tx.borrow().clone()
+        self.lifecycle.snapshot()
     }
 
     pub fn subscribe_lifecycle(&self) -> watch::Receiver<RuntimeLifecycle> {
-        self.lifecycle_tx.subscribe()
+        self.lifecycle.subscribe()
     }
 
     fn prepare_start(&self, port: u16, shutdown_tx: oneshot::Sender<()>) -> Result<(), String> {
-        let current = self.lifecycle();
-        if current.is_active() {
-            return Err(format!(
-                "Proxy is already {} on port {}",
-                current.phase.as_str(),
-                current.port.unwrap_or(port)
-            ));
-        }
-
-        let mut guard = self
-            .shutdown_tx
-            .lock()
-            .map_err(|_| "shutdown state poisoned".to_string())?;
-        *guard = Some(shutdown_tx);
-        drop(guard);
-
-        self.update_lifecycle(RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Starting,
-            port: Some(port),
-            started_at_ms: None,
-            last_error: None,
-        });
-        Ok(())
+        self.lifecycle.prepare_start(port, shutdown_tx)
     }
 
     pub fn stop_proxy(&self) -> Result<ProxyStopResult, String> {
-        let mut guard = self
-            .shutdown_tx
-            .lock()
-            .map_err(|_| "shutdown state poisoned".to_string())?;
-        let Some(tx) = guard.take() else {
-            return Ok(ProxyStopResult::NotRunning);
-        };
-        drop(guard);
-
-        let current = self.lifecycle();
-        self.update_lifecycle(RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Stopping,
-            port: current.port,
-            started_at_ms: current.started_at_ms,
-            last_error: current.last_error,
-        });
-        let _ = tx.send(());
-        Ok(ProxyStopResult::Stopping)
+        self.lifecycle.stop()
     }
 
     pub fn recent_audit_events(&self) -> Vec<AuditEvent> {
@@ -1277,54 +1237,15 @@ impl CoreState {
     }
 
     fn transition_to_running(&self, port: u16) {
-        self.update_lifecycle(RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Running,
-            port: Some(port),
-            started_at_ms: Some(now_unix_ms()),
-            last_error: None,
-        });
+        self.lifecycle.transition_to_running(port);
     }
 
     fn transition_to_stopped(&self) {
-        if let Ok(mut guard) = self.shutdown_tx.lock() {
-            *guard = None;
-        }
-
-        self.update_lifecycle(RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Stopped,
-            port: None,
-            started_at_ms: None,
-            last_error: None,
-        });
+        self.lifecycle.transition_to_stopped();
     }
 
     fn transition_to_failed(&self, port: u16, error: String) {
-        if let Ok(mut guard) = self.shutdown_tx.lock() {
-            *guard = None;
-        }
-
-        self.update_lifecycle(RuntimeLifecycle {
-            phase: RuntimeLifecyclePhase::Failed,
-            port: Some(port),
-            started_at_ms: None,
-            last_error: Some(error),
-        });
-    }
-
-    fn update_lifecycle(&self, lifecycle: RuntimeLifecycle) {
-        let err = lifecycle
-            .last_error
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("-");
-        tracing::info!(
-            target: "relay_core_lifecycle",
-            phase = %lifecycle.phase.as_str(),
-            port = %log_format::opt_u16(lifecycle.port),
-            started_at_ms = %log_format::opt_u64(lifecycle.started_at_ms),
-            last_error = %err,
-        );
-        self.lifecycle_tx.send_replace(lifecycle);
+        self.lifecycle.transition_to_failed(port, error);
     }
 
     pub fn spawn_proxy(
@@ -1458,9 +1379,6 @@ impl CoreState {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(e) => {
-                if let Ok(mut guard) = self.shutdown_tx.lock() {
-                    *guard = None;
-                }
                 let message = format!("Failed to bind to address {}: {}", addr, e);
                 self.transition_to_failed(config.port, message.clone());
                 return Err(message);
@@ -1786,7 +1704,7 @@ impl ProxyConfig {
     }
 }
 
-fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -21,7 +21,7 @@ async-trait = "0.1"
 http-body-util.workspace = true
 bytes.workspace = true
 http.workspace = true
-base64 = "0.22.1"
+base64.workspace = true
 tokio-util = { version = "0.7.18", features = ["io", "io-util"] }
 futures-util = "0.3.32"
 http-body = "1.0.1"
