@@ -8,6 +8,7 @@ use relay_core_lib::interceptor::{
     Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
 };
 use relay_core_lib::proxy::http_utils::mock_to_response;
+use relay_core_lib::rule::stage_guard::mark_stage_executed;
 use std::sync::Arc;
 
 pub struct RuleInterceptor {
@@ -30,6 +31,7 @@ impl Interceptor for RuleInterceptor {
         }
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
+        mark_stage_executed(flow, &RuleStage::RequestHeaders);
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
@@ -49,6 +51,7 @@ impl Interceptor for RuleInterceptor {
         let engine = self.rules.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::RequestBody) {
             let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+            mark_stage_executed(flow, &RuleStage::RequestBody);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result =
                     handle_rule_termination(&self.intercepts, reason, flow, "request_body", None)
@@ -72,6 +75,7 @@ impl Interceptor for RuleInterceptor {
         }
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
+        mark_stage_executed(flow, &RuleStage::ResponseHeaders);
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
                 &self.intercepts,
@@ -94,6 +98,7 @@ impl Interceptor for RuleInterceptor {
         let engine = self.rules.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
             let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
+            mark_stage_executed(flow, &RuleStage::ResponseBody);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result =
                     handle_rule_termination(&self.intercepts, reason, flow, "response_body", None)
@@ -121,6 +126,7 @@ impl Interceptor for RuleInterceptor {
                 ws.messages.push(message.clone());
             }
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
+            mark_stage_executed(flow, &RuleStage::WebSocketMessage);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result = handle_rule_termination(
                     &self.intercepts,

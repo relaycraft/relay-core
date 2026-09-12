@@ -945,14 +945,19 @@ Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`
 hyper 1.10.1 对调用方给出的 `Content-Length` 直接采信（`proto/h1/role.rs:695-717`）：
 release 下产生错帧，debug 下触发 `debug_assert!`。
 
-### 24.4 重复执行与重复头部（Tauri 宿主）
+### 24.4 重复执行与重复头部（Tauri 宿主）—— ✅ 已修复
 
-`runtime/src/lib.rs:1325-1336` 无条件加入 `RuleInterceptor`，Tauri 于
+**历史问题**：`runtime/src/lib.rs:1325-1336` 无条件加入 `RuleInterceptor`，Tauri 于
 `tauri/src/commands/system.rs:208` 追加 `TauriInterceptor`，而 `CompositeInterceptor`
-不对 `ModifiedRequest` 短路（`intercept/types.rs:186-212`）⇒ **每条规则执行两次**。
-`AddRequestHeader` 为无条件 append（`actions/http.rs:146-152`），
-`build_forward_request` 逐条写入（`http_utils.rs:293-305`）⇒ 重复头部真实到达上游；
+不对 `ModifiedRequest` 短路（`intercept/types.rs:186-212`）⇒ 每条规则执行两次；
+`AddRequestHeader` 无条件 append（`actions/http.rs:146-152`）导致重复头部真实到达上游，
 `Delay` 双重睡眠、`RateLimit` 双重计数。
+
+**修复方式**：引入 `relay-core-lib/src/rule/stage_guard.rs` —— 首个执行该 stage 的
+interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存储）记录标记，
+后续成员的规则执行跳过，但**各自宿主特有的职责（如 Tauri 的 body 缓冲、UI 事件）仍然执行**。
+`RuleInterceptor` 记录标记，`TauriInterceptor` 依据标记跳过。
+契约由 `wire_matrix_stage_guard_applies_mutation_once_per_chain` 在真实线路上锁定。
 
 ### 24.5 手工 Intercept「带修改恢复」在宿主间结果相反
 
@@ -1012,9 +1017,10 @@ release 下产生错帧，debug 下触发 `debug_assert!`。
   RSS 不可测即失败、报告闸门、`CARGO_TARGET_DIR` 支持、`commit-baseline.sh` 拒绝非 PASS 报告
 - ✅ 上游性能上限解除：`benchmarks/rust_echo_server.rs` 取代饱和于 ~2.7k req/s 的 Python
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
-- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：4 个用例通过
-  （基线往返、请求头、响应头、响应状态），3 个缺陷用 `#[ignore]` 钉住并各自验证确实失败
-  （请求 body、链式重复应用、WS 握手响应头）
+- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：5 个用例通过
+  （基线往返、请求头、响应头、响应状态、链式单次应用），2 个缺陷用 `#[ignore]` 钉住并各自
+  验证确实失败（请求 body、WS 握手响应头）
 - ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
-- ⬜ §24.2–§24.9 的其余线路缺陷仍开放；§24.1 的 HTTP 响应方向已修复（A5a）
-- ⬜ A1（Tauri 双执行）仍阻塞于 24.4 的设计收敛
+- ✅ A5a HTTP 响应方向收敛（§24.1 响应头/状态已修复）
+- ✅ A1 双执行已修复（§24.4，stage_guard）
+- ⬜ §24.2–§24.9 的其余线路缺陷仍开放

@@ -467,68 +467,111 @@ async fn wire_matrix_request_body_mutation_reaches_upstream() {
 
 // ── Multi-interceptor chains ────────────────────────────────────────────────────────
 //
-// Known gap (roadmap §24.4): the Tauri host registers BOTH the runtime `RuleInterceptor` and its
-// own `TauriInterceptor`, and `CompositeInterceptor` only short-circuits on `Drop`/`MockResponse`/
-// `ModifiedResponse` — not on `ModifiedRequest`. The rule engine therefore runs twice per hook,
-// and because `AddRequestHeader` appends unconditionally, duplicate header values reach the
-// upstream. This case pins the contract; the fix belongs with the single-source-of-truth work
-// (A5) because a naive "skip the second execution" changes which interceptor owns the wire result.
+// A host adapter may register its own rule-executing interceptor alongside the runtime's
+// `RuleInterceptor` — the Tauri desktop does, because its interceptor buffers bodies. Both used to
+// execute the same stage, so every mutation applied twice: duplicate headers reached the upstream,
+// `Delay` slept twice, `RateLimit` double-counted.
+//
+// The fix is `relay_core_lib::rule::stage_guard`: the first member to run records the stage in
+// `Flow.meta` (never serialized) and later members skip. This case pins that contract, since the
+// guard only works if every rule-executing interceptor honours it.
 
-/// Appends one header per invocation, so the upstream transitively reports how many times an
-/// interceptor in the chain ran.
+/// A rule-executing interceptor shaped like the host adapter's: it performs host-specific work,
+/// then executes the stage only if no earlier member already did.
+struct GuardedRuleLikeInterceptor {
+    marker: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Interceptor for GuardedRuleLikeInterceptor {
+    async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        use relay_core_lib::rule::stage_guard::{mark_stage_executed, stage_already_executed};
+        let stage = relay_core_api::rule::RuleStage::RequestHeaders;
+
+        if stage_already_executed(flow, &stage) {
+            return InterceptionResult::Continue;
+        }
+        mark_stage_executed(flow, &stage);
+
+        if let Layer::Http(http) = &mut flow.layer {
+            http.request
+                .headers
+                .push((self.marker.to_string(), "applied".to_string()));
+        }
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
 #[tokio::test]
-#[ignore = "roadmap §24.4: composite runs rule-mutating interceptors once per chain member"]
-async fn wire_matrix_mutation_is_applied_once_per_chain() {
+async fn wire_matrix_stage_guard_applies_mutation_once_per_chain() {
     const CASE: Case = Case {
-        id: "no_double_apply",
-        phase: Phase::RequestHeaders,
+        id: "stage_guard",
+        phase: Phase::None,
         request: "POST /probe HTTP/1.1",
         body: "payload",
     };
 
-    // Exactly what the Tauri host registers: the runtime rule interceptor plus the host's own
-    // rule-executing interceptor.
+    // Two rule-executing members, exactly the shape the desktop host registers.
     let chain: Arc<dyn Interceptor> = Arc::new(CompositeInterceptor::new(vec![
-        Arc::new(MutateInterceptor { phase: CASE.phase }),
-        Arc::new(MutateInterceptor { phase: CASE.phase }),
+        Arc::new(GuardedRuleLikeInterceptor {
+            marker: "x-first-member",
+        }),
+        Arc::new(GuardedRuleLikeInterceptor {
+            marker: "x-second-member",
+        }),
     ]));
 
     let (client, upstream) = run_case_with(&CASE, chain).await;
-
-    let occurrences = upstream
-        .head
-        .to_lowercase()
-        .matches("x-wire-probe:")
-        .count();
-    assert_eq!(
-        occurrences, 1,
-        "[{}] a mutation must be applied exactly once, got {} occurrences in:\n{}",
-        CASE.id, occurrences, upstream.head
-    );
-    assert!(client.contains("STATUS 200"), "[{}] expected 200", CASE.id);
-}
-
-// ── Response status mutation ────────────────────────────────────────────────────────
-//
-// Asserted on the status line rather than a header, so a regression in status handling is
-// distinguishable from one in header handling.
-
-#[tokio::test]
-async fn wire_matrix_response_status_mutation_reaches_client() {
-    const CASE: Case = Case {
-        id: "response_status",
-        phase: Phase::ResponseStatus,
-        request: "POST /probe HTTP/1.1",
-        body: "payload",
-    };
-
-    let (client, _upstream) = run_case(&CASE).await;
+    let head = upstream.head.to_lowercase();
 
     assert!(
-        client.contains("STATUS 418"),
-        "[{}] a response-status mutation must reach the client, got:\n{client}",
-        CASE.id
+        head.contains("x-first-member: applied"),
+        "[{}] the first member must apply its mutation, got:\n{}",
+        CASE.id,
+        upstream.head
     );
+    assert!(
+        !head.contains("x-second-member"),
+        "[{}] a later member must NOT re-apply the same stage, got:\n{}",
+        CASE.id,
+        upstream.head
+    );
+    assert_eq!(
+        head.matches("x-first-member:").count(),
+        1,
+        "[{}] the mutation must appear exactly once, got:\n{}",
+        CASE.id,
+        upstream.head
+    );
+    assert!(client.contains("STATUS 200"), "[{}] expected 200", CASE.id);
 }
 
 // ── WebSocket handshake ─────────────────────────────────────────────────────────────

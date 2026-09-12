@@ -9,6 +9,7 @@ use relay_core_lib::interceptor::{
 };
 use relay_core_lib::proxy::budget::BudgetedBody;
 use relay_core_lib::proxy::http_utils::mock_to_response;
+use relay_core_lib::rule::stage_guard::stage_already_executed;
 use relay_core_lib::rule::{RuleStage, RuleTraceSummary, TerminalReason};
 use relay_core_runtime::interceptors::inspect::INSPECT_TIMEOUT;
 use relay_core_runtime::services::{InterceptService, PolicyService, RuleService};
@@ -30,6 +31,9 @@ pub struct TauriInterceptor<R: Runtime> {
 #[async_trait]
 impl<R: Runtime> Interceptor for TauriInterceptor<R> {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        if stage_already_executed(flow, &RuleStage::RequestHeaders) {
+            return InterceptionResult::Continue;
+        }
         let engine = self.rules.get_rule_engine().await;
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
@@ -67,6 +71,14 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         }
 
         self.update_flow_request_body(flow, &body_bytes);
+
+        // Buffering above is host-specific (it feeds the Flow/UI) and must always run. Rule
+        // execution, however, is shared with the runtime's RuleInterceptor, so exactly one of
+        // them may execute the stage — otherwise mutations apply twice (see stage_guard).
+        if stage_already_executed(flow, &RuleStage::RequestBody) {
+            let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
+            return Ok(RequestAction::Continue(new_body));
+        }
 
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;
 
@@ -111,6 +123,9 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        if stage_already_executed(flow, &RuleStage::ResponseHeaders) {
+            return InterceptionResult::Continue;
+        }
         let engine = self.rules.get_rule_engine().await;
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
@@ -154,6 +169,12 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
 
         self.update_flow_response_body(flow, &body_bytes);
 
+        // See on_request: buffering always runs, rule execution runs once per stage per flow.
+        if stage_already_executed(flow, &RuleStage::ResponseBody) {
+            let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
+            return Ok(ResponseAction::Continue(new_body));
+        }
+
         let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
@@ -193,6 +214,10 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
         message: WebSocketMessage,
     ) -> Result<WebSocketMessageAction, BoxError> {
         let engine = self.rules.get_rule_engine().await;
+
+        if stage_already_executed(flow, &RuleStage::WebSocketMessage) {
+            return Ok(WebSocketMessageAction::Continue(message));
+        }
 
         if let Layer::WebSocket(ws) = &mut flow.layer {
             ws.messages.push(message.clone());
