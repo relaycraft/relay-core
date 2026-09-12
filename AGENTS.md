@@ -30,6 +30,10 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 *   **Archived**: everything under `.ai/archived/**` (including `full-roadmap-2026.md`) is background
     only and is not a delivery target. Where archived docs disagree with the roadmap, the roadmap wins.
     See [`.ai/README.md`](./.ai/README.md).
+*   **Key decisions**: externally visible decisions are recorded in
+    [`docs/decisions/`](./docs/decisions/README.md) (numbered, append-only; supersede rather than
+    edit). Exploratory or internal discussion stays in `.ai/`, which is gitignored. Archive by
+    **moving, never deleting**.
 *   **Local build note**: global `~/.cargo/config.toml` may set `target-dir` outside the repo.
     If `cargo` fails with `Operation not permitted`, re-run with
     `CARGO_TARGET_DIR="$PWD/target-dsh"` (gitignored).
