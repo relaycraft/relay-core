@@ -1022,6 +1022,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   已双向验证：不重新编码时该测试必失败。
 - ⬜ 仍未实现：`br` / `zstd` 解码与重编码；请求方向的 `Content-Encoding` 处理；
   规则匹配响应体时仍未对 compress 后的 body 做「解压→匹配→重编码」全链路（当前仅重写路径生效）
+- 📊 **mitmproxy 12.2.3 实测对标**见 [`mitmproxy-policy-benchmark.md`](./mitmproxy-policy-benchmark.md)：
+  mitmproxy 支持 gzip/deflate/**br**/**zstd** 且读写自动重编码（header 与字节始终一致）；
+  但其**默认全量缓冲** body，流式与可读性互斥。RelayCore 的默认流式 + 有界前缀观察是更优取舍，
+  而 **br/zstd 能力缺口是真实差距**，应按该文档 §3.3 补齐
 
 ### 24.10 验证体系基线
 
