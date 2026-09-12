@@ -26,8 +26,50 @@ if [ ! -f "$latest_md" ]; then
   exit 1
 fi
 
+# A baseline is a promise about performance, so refuse to promote a report whose DoD did not pass.
+# Without this check a FAIL-status run (e.g. 0 req/s from a dead proxy) became the official baseline.
+dod_failures="$(
+  python3 - "$latest_json" <<'PY'
+import json, sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception as exc:  # unreadable report is itself a failure
+    print(f"unreadable ({exc})")
+    sys.exit(0)
+
+dod = data.get("dod") or data.get("status") or {}
+bad = []
+for key, value in dod.items():
+    if key == "regression" or value == "WARN":
+        continue
+    if str(value).upper() not in ("PASS", "OK", "SKIP"):
+        bad.append(f"{key}={value}")
+
+if not dod:
+    bad.append("no DoD status block found")
+
+print(", ".join(bad))
+PY
+)"
+
+if [ -n "$dod_failures" ]; then
+  echo "error: refusing to promote a report that did not pass its DoD checks:" >&2
+  echo "       $dod_failures" >&2
+  echo "       report: $latest_json" >&2
+  echo "       Re-run: ./benchmarks/bench_minimal.sh release --version ${VERSION} --strict ..." >&2
+  exit 1
+fi
+
 dest_json="$RESULTS/baseline_v${VERSION}.json"
 dest_md="$RESULTS/baseline_v${VERSION}.md"
+
+# Never silently overwrite an existing baseline.
+if [ -f "$dest_json" ]; then
+  echo "error: $dest_json already exists — bump the version or remove it deliberately" >&2
+  exit 1
+fi
 
 cp "$latest_json" "$dest_json"
 cp "$latest_md" "$dest_md"

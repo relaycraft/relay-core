@@ -27,7 +27,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
-PROXY_BIN="$REPO_ROOT/target/release/relay-core-cli"
+
+# Honour CARGO_TARGET_DIR (and cargo's config/default) instead of assuming $REPO_ROOT/target.
+# `~/.cargo/config.toml` may redirect target-dir outside the repo, in which case the old
+# hardcoded path silently pointed at a binary that was never built there.
+cargo_target_dir() {
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    echo "$CARGO_TARGET_DIR"
+    return
+  fi
+  local configured
+  configured="$(
+    cargo metadata --format-version 1 --no-deps 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("target_directory",""))' 2>/dev/null
+  )"
+  if [[ -n "$configured" ]]; then
+    echo "$configured"
+  else
+    echo "$REPO_ROOT/target"
+  fi
+}
+
+TARGET_DIR="$(cargo_target_dir)"
+PROXY_BIN="${RELAY_CORE_BIN:-$TARGET_DIR/release/relay-core-cli}"
 
 PROXY_PORT="${PROXY_PORT:-18080}"
 TARGET_PORT="${TARGET_PORT:-19000}"
@@ -50,10 +72,19 @@ STRICT=0
 # Apple Silicon (M-series) uses 16KB pages (vs 4KB on x86), inflating RSS ~1.5x.
 # P99 is conservative for same-machine (oha + proxy + echo compete for CPU);
 # isolated-setup measurements typically achieve <5ms.
+#
+# ⚠️ UPSTREAM CEILING — the throughput DoD below is NOT currently measurable with this harness.
+# `benchmarks/echo_server.py` is a single-threaded Python HTTP server and saturates at roughly
+# 2.7k req/s on an M4 Max, far below the 10k req/s DoD. Any run therefore measures the upstream,
+# not the proxy: a throughput "FAIL" here is a harness limitation, not a proxy regression.
+# RelayCore itself sustains >=80k req/s against a fast upstream on the same machine.
+# Tracked in docs/l7-first-engine-evolution-roadmap.md §15-1.
 DOD_STARTUP=200
 DOD_IDLE_MB=85
 DOD_QPS=10000
 DOD_P99=20
+# Minimum share of responses that must be 2xx/3xx for a run to count as a valid measurement.
+DOD_SUCCESS_RATE=99.0
 
 # color helpers
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -187,7 +218,23 @@ start_target() {
     PORT="$TARGET_PORT" python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
   fi
   TARGET_PID=$!
-  sleep 0.3
+}
+
+# Is anything already listening on this port?
+port_in_use() {
+  python3 "$SCRIPT_DIR/port_probe.py" "$1" 2>/dev/null
+}
+
+# The readiness probe cannot tell OUR proxy apart from whatever else answers on that port, so a
+# stale or foreign listener previously made a dead proxy look healthy — and silently served the
+# load (observed: OrbStack holding 18080 turned a 55k req/s run into 1.2k req/s "PASS").
+require_port_free() {
+  local port="$1" label="$2"
+  if port_in_use "$port"; then
+    fail "$label port $port is already in use — stop the process holding it, or set a different port"
+    return 1
+  fi
+  return 0
 }
 
 start_proxy() {
@@ -198,6 +245,25 @@ start_proxy() {
     --ca-key "$CA_KEY" \
     >/tmp/relay_bench_proxy.log 2>&1 &
   PROXY_PID=$!
+
+  # Catch "the binary exited immediately" (port conflict, bad CA, bad args) instead of waiting
+  # for the whole readiness window to time out.
+  local waited=0
+  while [[ "$waited" -lt 20 ]]; do
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+      fail "Proxy process exited immediately during startup"
+      [[ -f /tmp/relay_bench_proxy.log ]] && tail -n 5 /tmp/relay_bench_proxy.log >&2
+      return 1
+    fi
+    if port_in_use "$PROXY_PORT"; then
+      return 0
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  fail "Proxy did not start listening on $PROXY_PORT"
+  [[ -f /tmp/relay_bench_proxy.log ]] && tail -n 5 /tmp/relay_bench_proxy.log >&2
+  return 1
 }
 
 stop_proxy() {
@@ -205,12 +271,48 @@ stop_proxy() {
   PROXY_PID=""
 }
 
+# Verify the proxy process is alive; a dead proxy previously scored RSS=0MB, which PASSED the
+# idle-memory DoD (`0 -le 85`), producing a meaningless "valid" report.
+require_proxy_alive() {
+  if [[ -z "$PROXY_PID" ]] || ! kill -0 "$PROXY_PID" 2>/dev/null; then
+    fail "Proxy process is not running (see /tmp/relay_bench_proxy.log)"
+    return 1
+  fi
+  return 0
+}
+
+# Same for the echo target: it was previously started and used after a bare `sleep 0.3`.
+wait_target_ready() {
+  local ready=0
+  for _ in $(seq 1 50); do
+    if port_in_use "$TARGET_PORT"; then
+      ready=1
+      break
+    fi
+    if [[ -n "${TARGET_PID:-}" ]] && ! kill -0 "$TARGET_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$ready" -ne 1 ]]; then
+    fail "Echo target did not become ready on port $TARGET_PORT (see /tmp/relay_bench_target.log)"
+    return 1
+  fi
+  return 0
+}
+
+# Readiness must mean "the proxy answered a proxied request successfully", not merely
+# "something returned an HTTP status": a 502/500 previously counted as ready because curl was
+# invoked without --fail.
 poll_proxy_ready() {
   local target_url="$1"
   local ready=0
   for _ in $(seq 1 50); do
-    if curl -s -k -x "http://127.0.0.1:$PROXY_PORT" "$target_url" --connect-timeout 0.2 -o /dev/null 2>/dev/null; then
+    if curl -s -f -k -x "http://127.0.0.1:$PROXY_PORT" "$target_url" --connect-timeout 0.2 -o /dev/null 2>/dev/null; then
       ready=1
+      break
+    fi
+    if [[ -n "${PROXY_PID:-}" ]] && ! kill -0 "$PROXY_PID" 2>/dev/null; then
       break
     fi
     sleep 0.1
@@ -221,13 +323,32 @@ poll_proxy_ready() {
 measure_idle_rss_mb() {
   if [[ "$(uname)" == "Darwin" ]]; then
     local rss_kb
-    rss_kb=$(ps -o rss= -p "$PROXY_PID" 2>/dev/null | tr -d ' ' || echo 0)
+    rss_kb=$(ps -o rss= -p "$PROXY_PID" 2>/dev/null | tr -d ' ')
+    if [[ -z "$rss_kb" ]]; then
+      echo "unknown"
+      return
+    fi
     echo $((rss_kb / 1024))
   else
     local rss_kb
-    rss_kb=$(awk '/VmRSS/{print $2}' "/proc/$PROXY_PID/status" 2>/dev/null || echo 0)
+    rss_kb=$(awk '/VmRSS/{print $2}' "/proc/$PROXY_PID/status" 2>/dev/null)
+    if [[ -z "$rss_kb" ]]; then
+      echo "unknown"
+      return
+    fi
     echo $((rss_kb / 1024))
   fi
+}
+
+# An unreadable RSS used to be reported as 0MB, which PASSED the `< 85MB` DoD and silently
+# certified a dead or unreadable proxy. A measurement we cannot take must FAIL, not pass.
+assert_rss_measurable() {
+  local rss="$1"
+  if ! [[ "$rss" =~ ^[0-9]+$ ]]; then
+    fail "Idle RSS could not be measured for pid ${PROXY_PID:-?} (got '${rss}')"
+    return 1
+  fi
+  return 0
 }
 
 extract_oha_rps() {
@@ -259,6 +380,51 @@ print(round(p99, 2))
 ' 2>/dev/null || echo 0
 }
 
+# Success rate over all status codes oha observed. Without this, a run where every request
+# returned 502 was indistinguishable from a healthy one.
+extract_oha_success_rate() {
+  python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("0.00")
+    sys.exit(0)
+dist = d.get("statusCodeDistribution") or {}
+total = 0
+ok = 0
+for code, count in dist.items():
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        continue
+    total += n
+    try:
+        c = int(code)
+    except (TypeError, ValueError):
+        continue
+    if 200 <= c < 400:
+        ok += n
+if total == 0:
+    print("0.00")
+else:
+    print(round(ok * 100.0 / total, 2))
+' 2>/dev/null || echo "0.00"
+}
+
+extract_oha_errors() {
+  python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("")
+    sys.exit(0)
+dist = d.get("errorDistribution") or {}
+print("; ".join(f"{k} x{v}" for k, v in dist.items()))
+' 2>/dev/null || echo ""
+}
+
 run_load() {
   local scenario="$1"
   local payload_kb="$2"
@@ -275,25 +441,44 @@ run_load() {
 
   local throughput=0
   local p99_ms=0
+  local success_rate="0.00"
+  local errors=""
   local tool_raw=""
 
   info "[$scenario] oha ${DURATION}s, ${CONNECTIONS} connections, payload ${payload_kb}KB${tls_label}" >&2
   # oha 1.14 rejects NO_COLOR=1 (expects true/false); unset before invoking.
-  tool_raw=$(env -u NO_COLOR oha \
+  # NOTE: oha failures are deliberately NOT masked with `|| echo "{}"` — that turned a totally
+  # failed run into a silent 0 req/s entry that still produced a "valid" report.
+  if ! tool_raw=$(env -u NO_COLOR oha \
     -z "${DURATION}s" \
     -c "$CONNECTIONS" \
     --no-tui \
     --output-format json \
     $oha_tls_flag \
     -x "$proxy_url" \
-    "$target_url" 2>/dev/null || echo "{}")
+    "$target_url" 2>/dev/null); then
+    fail "    oha failed to run against $target_url via $proxy_url"
+    return 1
+  fi
+  if [[ -z "$tool_raw" ]]; then
+    fail "    oha produced no output for $scenario"
+    return 1
+  fi
+
   throughput=$(echo "$tool_raw" | extract_oha_rps)
   p99_ms=$(echo "$tool_raw" | extract_oha_p99_ms)
+  success_rate=$(echo "$tool_raw" | extract_oha_success_rate)
+  errors=$(echo "$tool_raw" | extract_oha_errors)
 
   throughput="${throughput:-0}"
   p99_ms="${p99_ms:-0}"
 
-  echo "${throughput}|${p99_ms}"
+  if [[ "$success_rate" == "0.00" && "$throughput" == "0" ]]; then
+    fail "    no successful responses (errors: ${errors:-none})"
+    return 1
+  fi
+
+  echo "${throughput}|${p99_ms}|${success_rate}|${errors}"
 }
 
 measure_http_ms() {
@@ -407,7 +592,9 @@ run_release_mode() {
   local WARMUP_RUNS="${3:-3}"
   local COLD_START_VALS RSS_VALS cs rss
   local cs_mean rss_mean round ready
-  local TPUT_VALS P99_VALS tput p99 tput_mean p99_mean
+  local TPUT_VALS P99_VALS SUCCESS_VALS tput p99 tput_mean p99_mean
+  local success_rate success_mean
+  local SUCCESS_STATUS="PASS"
 
   echo "=== relay-core Release Benchmark (${TIMESTAMP}) ==="
   echo ""
@@ -451,7 +638,12 @@ run_release_mode() {
     "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
   fi
 
+  require_port_free "$PROXY_PORT" "PROXY" || return 1
+  require_port_free "$API_PORT" "API" || return 1
+  require_port_free "$TARGET_PORT" "TARGET" || return 1
+
   start_target
+  wait_target_ready || return 1
 
   # ── Phase 1: Cold start + idle RSS (N rounds, fresh proxy each time) ──
   echo "### Phase 1/3: Cold start + Idle RSS (${RUNS} rounds)"
@@ -459,7 +651,10 @@ run_release_mode() {
 
   # Throwaway warmup round — macOS code-signing / dyld cache warm on first launch
   info "  Throwaway warmup round (OS-level, discarded)"
-  start_proxy
+  if ! start_proxy; then
+    stop_proxy
+    return 1
+  fi
   poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1" > /dev/null
   stop_proxy
   sleep 0.3
@@ -467,11 +662,22 @@ run_release_mode() {
   for round in $(seq 1 "$RUNS"); do
     local start_ms end_ms
     start_ms=$(now_ms)
-    start_proxy
+    if ! start_proxy; then
+      stop_proxy
+      return 1
+    fi
     ready="$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")"
     end_ms=$(now_ms)
     cs=$((end_ms - start_ms))
+    if ! require_proxy_alive; then
+      stop_proxy
+      return 1
+    fi
     rss="$(measure_idle_rss_mb)"
+    if ! assert_rss_measurable "$rss"; then
+      stop_proxy
+      return 1
+    fi
     stop_proxy
     sleep 0.3
 
@@ -507,7 +713,10 @@ run_release_mode() {
   echo ""
 
   info "Starting proxy for load testing..."
-  start_proxy
+  if ! start_proxy; then
+    stop_proxy
+    return 1
+  fi
   ready=$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")
   if [[ "$ready" -ne 1 ]]; then
     fail "Proxy not ready for load testing"
@@ -535,24 +744,38 @@ run_release_mode() {
 
     TPUT_VALS=""
     P99_VALS=""
+    SUCCESS_VALS=""
     info "    Measurement: ${RUNS} round(s)"
     for round in $(seq 1 "$RUNS"); do
       local metrics
-      metrics="$(run_load "$scenario" "$payload_kb")"
-      tput="${metrics%%|*}"
-      p99="${metrics##*|}"
+      if ! metrics="$(run_load "$scenario" "$payload_kb")"; then
+        fail "    Measurement round ${round}/${RUNS} failed"
+        return 1
+      fi
+      IFS='|' read -r tput p99 success_rate _errors <<< "$metrics"
       TPUT_VALS+="${tput}"$'\n'
       P99_VALS+="${p99}"$'\n'
-      info "      Round ${round}/${RUNS}: ${tput} req/s, P99=${p99}ms"
+      SUCCESS_VALS+="${success_rate}"$'\n'
+      info "      Round ${round}/${RUNS}: ${tput} req/s, P99=${p99}ms, success=${success_rate}%"
     done
 
-    local tput_stats p99_stats
+    local tput_stats p99_stats success_stats
     tput_stats="$(echo "$TPUT_VALS" | calc_stats "throughput_${scenario}")"
     p99_stats="$(echo "$P99_VALS" | calc_stats "p99_${scenario}")"
+    success_stats="$(echo "$SUCCESS_VALS" | calc_stats "success_rate_${scenario}")"
     tput_mean="$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
     p99_mean="$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
+    success_mean="$(echo "$success_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['mean'])")"
 
     local row_qps_status="INFO" row_lat_status="INFO"
+
+    if (( $(python3 -c "print(1 if ${success_mean} >= ${DOD_SUCCESS_RATE} else 0)") )); then
+      pass "    Success rate: mean=${success_mean}% (DoD: >=${DOD_SUCCESS_RATE}%)"
+      SUCCESS_STATUS="PASS"
+    else
+      fail "    Success rate: mean=${success_mean}% (DoD: >=${DOD_SUCCESS_RATE}%)"
+      SUCCESS_STATUS="FAIL"
+    fi
 
     if [[ "$scenario" == "S1" ]]; then
       if (( $(python3 -c "print(1 if ${tput_mean} >= ${DOD_QPS} else 0)") )); then
@@ -620,6 +843,7 @@ run_release_mode() {
   Idle RSS:         ${rss_mean}MB ±$(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])")   [${RSS_STATUS}]
   Throughput (S1):  ${tput_mean} req/s    [${QPS_STATUS}]
   Latency P99 (S1): ${p99_mean}ms        [${LAT_STATUS}]
+  Success rate:     ${success_mean}%           [${SUCCESS_STATUS}]
   API flows query:  ${flows_query_ms}ms
   API flow detail:  ${flow_detail_ms}ms [${flow_detail_status}]
   API SSE first:    ${sse_first_ms}ms [${sse_status}]
@@ -660,6 +884,7 @@ EOF
 | Cold start | ${cs_mean}ms | ±$(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")ms | $(echo "$CS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")ms | <${DOD_STARTUP}ms | ${CS_STATUS} |
 | Idle RSS | ${rss_mean}MB | ±$(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")MB | $(echo "$RSS_STATS" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")MB | <${DOD_IDLE_MB}MB | ${RSS_STATUS} |
 | Throughput | ${tput_mean} req/s | ±$(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])") | $(echo "$tput_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])") | >${DOD_QPS} req/s | ${QPS_STATUS} |
+| Success rate | ${success_mean}% | ±$(echo "$success_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$success_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")% | $(echo "$success_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")% | >=${DOD_SUCCESS_RATE}% | ${SUCCESS_STATUS} |
 | P99 Latency | ${p99_mean}ms | ±$(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['stddev'])") | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['min'])")ms | $(echo "$p99_stats" | python3 -c "import json,sys; print(json.load(sys.stdin)['max'])")ms | <${DOD_P99}ms | ${LAT_STATUS} |
 
 ### Scenario Results
@@ -725,11 +950,22 @@ REPORT
     "idle_rss": "${RSS_STATUS}",
     "throughput_s1": "${QPS_STATUS}",
     "latency_p99_s1": "${LAT_STATUS}",
+    "success_rate_s1": "${SUCCESS_STATUS}",
     "api_flow_detail": "${flow_detail_status}",
     "api_sse": "${sse_status}"
   }
 }
 JSON
+
+  # Gate BEFORE announcing/reporting: a run whose DoD failed must not be treated as a valid
+  # report (previously `--strict` was unreachable in release mode because of the early exit).
+  if [[ "$CS_STATUS" == "FAIL" || "$RSS_STATUS" == "FAIL" || "$QPS_STATUS" == "FAIL" || "$LAT_STATUS" == "FAIL" || "$SUCCESS_STATUS" == "FAIL" ]]; then
+    fail "Release run produced a FAIL DoD status; report written for diagnosis only: $OUT_MD"
+    if [[ "$STRICT" -eq 1 ]]; then
+      fail "Strict mode: DoD check failed"
+      return 1
+    fi
+  fi
 
   pass "Markdown report: $OUT_MD"
   pass "JSON report:    $OUT_JSON"
@@ -777,20 +1013,21 @@ run_ramp_mode() {
   fi
 
   start_target
+  wait_target_ready || return 1
   info "Starting proxy..."
-  start_proxy
-  sleep 1
+  start_proxy || return 1
+  require_proxy_alive || return 1
   ready=$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")
   if [[ "$ready" -ne 1 ]]; then
-    fail "Proxy not ready"
+    fail "Proxy not ready (no successful proxied response)"
     return 1
   fi
 
   echo ""
-  printf "%-6s %12s %10s\n" "Conn" "QPS" "P99(ms)"
-  printf "%-6s %12s %10s\n" "------" "------------" "----------"
+  printf "%-6s %12s %10s %10s\n" "Conn" "QPS" "P99(ms)" "Success%"
+  printf "%-6s %12s %10s %10s\n" "------" "------------" "----------" "--------"
 
-  local ramp_csv="Conn,QPS,P99_ms"
+  local ramp_csv="Conn,QPS,P99_ms,Success_pct"
   local first_row=1
 
   for conn in "${CONCURRENCY_LEVELS[@]}"; do
@@ -808,11 +1045,15 @@ run_ramp_mode() {
 
     # Measurement pass
     local metrics
-    metrics="$(run_load "RAMP" "$payload_kb")"
-    local tput="${metrics%%|*}"
-    local p99="${metrics##*|}"
-    printf "%-6s %12s %10s\n" "$conn" "$tput" "$p99"
-    ramp_csv+=$'\n'"${conn},${tput},${p99}"
+    if ! metrics="$(run_load "RAMP" "$payload_kb")"; then
+      fail "Ramp step ${conn} connections failed"
+      CONNECTIONS="$saved_conn"
+      return 1
+    fi
+    local tput p99 success_rate ramp_errors
+    IFS='|' read -r tput p99 success_rate ramp_errors <<< "$metrics"
+    printf "%-6s %12s %10s %10s\n" "$conn" "$tput" "$p99" "$success_rate"
+    ramp_csv+=$'\n'"${conn},${tput},${p99},${success_rate}"
 
     CONNECTIONS="$saved_conn"
   done
@@ -842,7 +1083,9 @@ info "Load generator: ${TOOL}"
 info "Mode: ${MODE}, duration=${DURATION}s"
 
 if [[ "$MODE" == "release" ]]; then
-  run_release_mode "$DURATION" "$RUNS" "$WARMUP_RUNS"
+  if ! run_release_mode "$DURATION" "$RUNS" "$WARMUP_RUNS"; then
+    exit 1
+  fi
   exit 0
 fi
 
@@ -875,11 +1118,16 @@ if [[ ! -f "$CA_CERT" ]]; then
   "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
 fi
 
+require_port_free "$PROXY_PORT" "PROXY" || exit 1
+require_port_free "$API_PORT" "API" || exit 1
+require_port_free "$TARGET_PORT" "TARGET" || exit 1
+
 start_target
+wait_target_ready || exit 1
 
 echo "### Benchmark 1/3: Cold start time"
 START_MS=$(now_ms)
-start_proxy
+start_proxy || exit 1
 READY=$(poll_proxy_ready "http://127.0.0.1:$TARGET_PORT/payload/1")
 END_MS=$(now_ms)
 STARTUP_MS=$((END_MS - START_MS))
@@ -898,7 +1146,9 @@ fi
 echo ""
 echo "### Benchmark 2/3: Idle memory (RSS)"
 RSS_MB="$(measure_idle_rss_mb)"
-if [[ "$RSS_MB" -le "$DOD_IDLE_MB" ]]; then
+if ! assert_rss_measurable "$RSS_MB"; then
+  MEMORY_STATUS="FAIL"
+elif [[ "$RSS_MB" -le "$DOD_IDLE_MB" ]]; then
   pass "Idle RSS: ${RSS_MB}MB (DoD: < ${DOD_IDLE_MB}MB)"
   MEMORY_STATUS="PASS"
 else
@@ -915,13 +1165,20 @@ S1_QPS=0
 S1_P99=0
 QPS_STATUS="SKIP"
 LAT_STATUS="FAIL"
+SUCCESS_STATUS="FAIL"
+SUCCESS_RATE="0.00"
+SCENARIO_ERRORS=""
+REPORT_ABORTED=0
 
 for pair in "${SCENARIOS[@]}"; do
   SCENARIO="${pair%%:*}"
   PAYLOAD_KB="${pair##*:}"
-  METRICS="$(run_load "$SCENARIO" "$PAYLOAD_KB")"
-  THROUGHPUT="${METRICS%%|*}"
-  P99_MS="${METRICS##*|}"
+  if ! METRICS="$(run_load "$SCENARIO" "$PAYLOAD_KB")"; then
+    fail "[$SCENARIO] measurement failed"
+    REPORT_ABORTED=1
+    break
+  fi
+  IFS='|' read -r THROUGHPUT P99_MS SUCCESS_RATE SCENARIO_ERRORS <<< "$METRICS"
 
   ROW_QPS_STATUS="INFO"
   ROW_LAT_STATUS="INFO"
@@ -929,7 +1186,7 @@ for pair in "${SCENARIOS[@]}"; do
   if [[ "$SCENARIO" == "S1" ]]; then
     S1_QPS="$THROUGHPUT"
     S1_P99="$P99_MS"
-    if [[ "$THROUGHPUT" -ge "$DOD_QPS" ]]; then
+    if [[ "$THROUGHPUT" -ge "$DOD_QPS" && "$(python3 -c "print(1 if ${SUCCESS_RATE:-0} > 0 else 0)")" == "1" ]]; then
       QPS_STATUS="PASS"
       ROW_QPS_STATUS="PASS"
       pass "[S1] Throughput: ${THROUGHPUT} req/s (DoD: > ${DOD_QPS} req/s)"
@@ -949,12 +1206,21 @@ for pair in "${SCENARIOS[@]}"; do
       ROW_LAT_STATUS="FAIL"
       fail "[S1] Latency P99: ${P99_MS}ms (DoD: < ${DOD_P99}ms)"
     fi
+
+    # A throughput number is only meaningful if the responses actually succeeded.
+    if (( $(python3 -c "print(1 if ${SUCCESS_RATE:-0} >= ${DOD_SUCCESS_RATE} else 0)") )); then
+      SUCCESS_STATUS="PASS"
+      pass "[S1] Success rate: ${SUCCESS_RATE}% (DoD: >= ${DOD_SUCCESS_RATE}%)"
+    else
+      SUCCESS_STATUS="FAIL"
+      fail "[S1] Success rate: ${SUCCESS_RATE}% (DoD: >= ${DOD_SUCCESS_RATE}%)"
+    fi
   else
-    info "[$SCENARIO] Throughput: ${THROUGHPUT} req/s, P99: ${P99_MS}ms"
+    info "[$SCENARIO] Throughput: ${THROUGHPUT} req/s, P99: ${P99_MS}ms, success: ${SUCCESS_RATE}%"
   fi
 
   SCENARIO_ROWS_MD+=$'\n'"| ${SCENARIO} | ${PAYLOAD_KB}KB | ${THROUGHPUT} | ${P99_MS} | ${ROW_QPS_STATUS} | ${ROW_LAT_STATUS} |"
-  SCENARIO_ROWS_JSON+=$'{"id":"'"${SCENARIO}"'","payload_kb":'"${PAYLOAD_KB}"',"throughput_rps":'"${THROUGHPUT}"',"latency_p99_ms":'"${P99_MS}"',"qps_status":"'"${ROW_QPS_STATUS}"'","latency_status":"'"${ROW_LAT_STATUS}"'"},'
+  SCENARIO_ROWS_JSON+=$'{"id":"'"${SCENARIO}"'","payload_kb":'"${PAYLOAD_KB}"',"throughput_rps":'"${THROUGHPUT}"',"latency_p99_ms":'"${P99_MS}"',"success_rate_pct":'"${SUCCESS_RATE:-0}"',"qps_status":"'"${ROW_QPS_STATUS}"'","latency_status":"'"${ROW_LAT_STATUS}"'"},'
 done
 SCENARIO_ROWS_JSON="[${SCENARIO_ROWS_JSON%,}]"
 
@@ -1095,6 +1361,7 @@ cat >"$OUT_JSON" <<JSON
     "idle_rss_mb": ${RSS_MB},
     "throughput_rps": ${S1_QPS},
     "latency_p99_ms": ${S1_P99},
+    "success_rate_pct": ${SUCCESS_RATE},
     "api_flows_query_ms": ${FLOWS_QUERY_MS},
     "api_flow_detail_ms": ${FLOW_DETAIL_MS},
     "api_sse_first_event_ms": ${SSE_FIRST_EVENT_MS}
@@ -1104,6 +1371,7 @@ cat >"$OUT_JSON" <<JSON
     "idle_rss": "${MEMORY_STATUS}",
     "throughput_s1": "${QPS_STATUS}",
     "latency_p99_s1": "${LAT_STATUS}",
+    "success_rate_s1": "${SUCCESS_STATUS}",
     "api_flow_detail": "${FLOW_DETAIL_STATUS}",
     "api_sse": "${SSE_STATUS}",
     "regression": "${REGRESSION_STATUS}"
@@ -1118,10 +1386,16 @@ cat >"$OUT_JSON" <<JSON
 JSON
 
 info "Markdown report: $OUT_MD"
-info "JSON report: $OUT_JSON"
+info "JSON report:    $OUT_JSON"
+
+# A report is emitted for diagnosis, but a FAILED run must not look successful.
+if [[ "$REPORT_ABORTED" -eq 1 ]]; then
+  fail "Measurement aborted (oha or proxy failure); report is diagnostic only"
+  exit 1
+fi
 
 if [[ "$STRICT" -eq 1 ]]; then
-  if [[ "$STARTUP_STATUS" == "FAIL" || "$MEMORY_STATUS" == "FAIL" || "$QPS_STATUS" == "FAIL" || "$LAT_STATUS" == "FAIL" ]]; then
+  if [[ "$STARTUP_STATUS" == "FAIL" || "$MEMORY_STATUS" == "FAIL" || "$QPS_STATUS" == "FAIL" || "$LAT_STATUS" == "FAIL" || "$SUCCESS_STATUS" == "FAIL" ]]; then
     fail "Strict mode: DoD check failed"
     exit 1
   fi
