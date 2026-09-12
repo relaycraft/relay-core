@@ -205,33 +205,76 @@ pub fn create_error_response(status: StatusCode, message: impl Into<Bytes>) -> R
         })
 }
 
-pub fn mock_to_response(mock: HttpResponse) -> Response<HttpBody> {
-    let mut builder =
-        Response::builder().status(StatusCode::from_u16(mock.status).unwrap_or(StatusCode::OK));
+/// Build the client-facing response directly from a `relay-core-api` `HttpResponse`.
+///
+/// Used by the proxy wiring for terminal/mock/modified results, so it must produce the SAME
+/// framing as [`build_client_response_from_flow`]: transport-level headers from a stale upstream
+/// response must never leak onto a locally-constructed body, and `BodyData.encoding` must be
+/// honoured.
+pub fn build_response_from_flow_response(
+    response: &HttpResponse,
+) -> Result<Response<HttpBody>, String> {
+    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK);
+    let mut builder = Response::builder().status(status);
 
-    for (k, v) in mock.headers {
+    let body_bytes = body_data_to_bytes(response.body.as_ref());
+
+    // `content-encoding` is derived from (not declared by) the body: honour it only while the
+    // bytes are still encoded, and drop it once we send a decoded payload.
+    let keep_content_encoding = response
+        .body
+        .as_ref()
+        .is_some_and(|b| b.encoding != "base64");
+
+    for (k, v) in &response.headers {
+        // Framing headers describe the ORIGINAL body being replaced; letting them through
+        // produces a mis-framed response (hyper writes a caller-supplied Content-Length verbatim).
+        if k.eq_ignore_ascii_case("content-length")
+            || k.eq_ignore_ascii_case("transfer-encoding")
+            || k.eq_ignore_ascii_case("connection")
+        {
+            continue;
+        }
+        if k.eq_ignore_ascii_case("content-encoding") && !keep_content_encoding {
+            continue;
+        }
+
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),
-            HeaderValue::from_str(&v),
+            HeaderValue::from_str(v),
         ) {
             builder = builder.header(name, val);
         }
     }
 
-    let body = if let Some(b) = mock.body {
-        Bytes::from(b.content)
-    } else {
-        Bytes::new()
-    };
-
     builder
-        .body(Full::new(body).map_err(|e| e.into()).boxed())
-        .unwrap_or_else(|_| {
+        .body(Full::new(body_bytes).map_err(|e| e.into()).boxed())
+        .map_err(|e| format!("Failed to build response: {}", e))
+}
+
+fn body_data_to_bytes(body: Option<&BodyData>) -> Bytes {
+    match body {
+        Some(b) if b.encoding == "base64" => match BASE64.decode(b.content.as_bytes()) {
+            Ok(bytes) => Bytes::from(bytes),
+            // Not valid base64: send the raw content rather than silently dropping the body.
+            Err(_) => Bytes::from(b.content.clone()),
+        },
+        Some(b) => Bytes::from(b.content.clone()),
+        None => Bytes::new(),
+    }
+}
+
+pub fn mock_to_response(mock: HttpResponse) -> Response<HttpBody> {
+    match build_response_from_flow_response(&mock) {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::error!("Failed to build mock response: {}", e);
             create_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to build mock response",
             )
-        })
+        }
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -484,17 +527,114 @@ pub fn build_client_response_from_flow(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_client_response_from_flow, parse_request_meta};
+    use super::{build_client_response_from_flow, mock_to_response, parse_request_meta};
     use chrono::Utc;
     use http_body_util::BodyExt;
     use hyper::{Request, StatusCode, Version};
     use relay_core_api::flow::{
-        Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
+        BodyData, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
         TransportProtocol,
     };
     use std::collections::HashMap;
     use url::Url;
     use uuid::Uuid;
+
+    fn sample_response_with(
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Option<BodyData>,
+    ) -> HttpResponse {
+        HttpResponse {
+            status,
+            status_text: "X".to_string(),
+            version: "HTTP/1.1".to_string(),
+            headers,
+            cookies: vec![],
+            body,
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+        }
+    }
+
+    /// A `BodySource::Base64` mock must put the DECODED bytes on the wire, and the framing
+    /// headers must describe those bytes — not the upstream response they were lifted from.
+    #[tokio::test]
+    async fn test_mock_to_response_decodes_base64_and_reframes() {
+        let decoded = b"hello".to_vec();
+        let mock = sample_response_with(
+            200,
+            vec![
+                (
+                    "content-type".to_string(),
+                    "application/octet-stream".to_string(),
+                ),
+                ("content-encoding".to_string(), "gzip".to_string()),
+                ("transfer-encoding".to_string(), "chunked".to_string()),
+                // Deliberately wrong: describes the upstream body, not the mock body.
+                ("content-length".to_string(), "999".to_string()),
+            ],
+            Some(BodyData {
+                encoding: "base64".to_string(),
+                content: data_encoding::BASE64.encode(&decoded),
+                size: decoded.len() as u64,
+            }),
+        );
+
+        let resp = mock_to_response(mock);
+        let (parts, body) = resp.into_parts();
+        let bytes = body.collect().await.expect("collect body").to_bytes();
+
+        assert_eq!(
+            bytes.as_ref(),
+            decoded.as_slice(),
+            "base64 mock body must be decoded, not sent as base64 text"
+        );
+        assert_eq!(
+            parts
+                .headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok()),
+            None,
+            "stale upstream content-length must not be copied onto the mock response"
+        );
+        assert!(
+            !parts.headers.contains_key("transfer-encoding"),
+            "transfer-encoding must be stripped: the mock body is a known-length buffer"
+        );
+        assert!(
+            !parts.headers.contains_key("content-encoding"),
+            "content-encoding must be dropped when it no longer describes the body"
+        );
+        assert_eq!(
+            parts
+                .headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/octet-stream"),
+            "unrelated headers must survive"
+        );
+    }
+
+    /// A body-less mock must not advertise a compressed body it does not have.
+    #[tokio::test]
+    async fn test_mock_to_response_without_body_drops_content_encoding() {
+        let mock = sample_response_with(
+            204,
+            vec![("content-encoding".to_string(), "br".to_string())],
+            None,
+        );
+
+        let resp = mock_to_response(mock);
+        let (parts, body) = resp.into_parts();
+        let bytes = body.collect().await.expect("collect body").to_bytes();
+
+        assert!(bytes.is_empty());
+        assert!(!parts.headers.contains_key("content-encoding"));
+    }
 
     fn sample_flow_with_response(status: u16) -> Flow {
         Flow {
