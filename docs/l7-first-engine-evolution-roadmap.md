@@ -929,7 +929,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`tauri/src/interceptor.rs:123-128`），
 但其代价见 24.4。
 
-### 24.2 Body-stage 规则在非 Tauri 宿主无法匹配 —— 🟡 请求方向已修复
+### 24.2 Body-stage 规则在非 Tauri 宿主无法匹配 —— ✅ 已修复
 
 **历史问题**：`RuleInterceptor::on_request`/`on_response` 在 body 被 poll 之前执行 body 阶段
 引擎，而 body 过滤器读取 `flow.layer.*.body`，该字段此刻恒为 `None`；TapBody 抓取到的 body
@@ -941,8 +941,14 @@ Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`
 超预算时打 `rule_skipped:body_truncated` 标签而**不**让规则在前缀上匹配。
 契约由 `wire_matrix_body_stage_rule_matches_on_the_body` 在真实线路上锁定。
 
-**响应方向仍开放**：响应 body 在到达时是流，且 body 阶段决策需要发生在 `on_response_headers`
-之前，因此需要「先缓冲有界前缀、决策后按需缓冲全部」的两阶段方案，尚未实现。
+**响应方向已修复**：响应 body 阶段在 header 时刻执行，而 body 此时尚未读取，因此规则
+interceptor 在**请求阶段**就把「需要响应 body」及预算写入 `Flow.meta`
+（`stage_guard::request_response_body`）；代理据此在 header 投影**之后**、header 阶段**之前**
+按预算保留响应 body 并写入 Flow；未声明需求时响应保持流式。
+契约由 `wire_matrix_response_body_rule_matches_on_the_body` 锁定（同时断言 body 未被消费仍送达客户端）。
+
+**顺序陷阱（已记录）**：`update_flow_with_response_headers` 会整体替换 `HttpResponse`，
+因此保留必须发生在其**之后**，否则刚记录的 body 会被丢弃。
 
 ### 24.3 响应构造器 framing 不安全
 
@@ -1054,7 +1060,8 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ `buffer_body_within_budget`：决策发生在转发之前的场景用物化（按帧读取、到预算即停），
   与 `buffer_prefix`（观察场景，仅保留流过的字节）职责分离。
 - ✅ `RuleInterceptor::on_request` 已接线 BodyPlan，请求方向 body 阶段规则可匹配（§24.2 请求侧关闭）。
-- ⬜ 响应方向 body 阶段仍开放（见 §24.2）；Tauri 宿主仍自行缓冲，尚未统一。
+- ✅ 响应方向接线完成（§24.2 关闭）：请求阶段声明意图 → 代理在 header 投影后按预算保留 → header 阶段匹配。
+- ⬜ Tauri 宿主仍自行缓冲，尚未统一到 BodyPlan（会重复物化）。
 
 **修复进度（2026-09-12）**
 

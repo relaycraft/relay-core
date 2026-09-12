@@ -39,6 +39,30 @@ pub fn mark_stage_executed(flow: &mut Flow, stage: &RuleStage) {
     flow.meta.insert(marker_key(stage), "1".to_string());
 }
 
+/// `flow.meta` key carrying the response-body inspection budget for this flow.
+pub const RESPONSE_BODY_BUDGET_KEY: &str = "response_body_inspect_budget";
+
+/// `flow.meta` key marking that something will need the response body.
+///
+/// The proxy must know this **before** it forwards the response: a body-stage rule can only match a
+/// body that was retained, and by the time the response-header stage runs the body stream has
+/// already been handed on. The rule interceptor therefore publishes the intent during the
+/// request-header stage, when it can see which stages have rules.
+pub const NEEDS_RESPONSE_BODY_KEY: &str = "needs_response_body";
+
+/// Declare that the response body must be retainable, with `budget` bytes.
+pub fn request_response_body(flow: &mut Flow, budget: usize) {
+    flow.meta
+        .insert(NEEDS_RESPONSE_BODY_KEY.to_string(), budget.to_string());
+}
+
+/// How many bytes of response body should be retained, or `None` to keep streaming.
+pub fn response_body_budget(flow: &Flow) -> Option<usize> {
+    flow.meta
+        .get(NEEDS_RESPONSE_BODY_KEY)
+        .and_then(|v| v.parse::<usize>().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{mark_stage_executed, stage_already_executed};
@@ -80,6 +104,28 @@ mod tests {
         assert!(stage_already_executed(&flow, &RuleStage::RequestHeaders));
         // Marking one stage must not suppress another.
         assert!(!stage_already_executed(&flow, &RuleStage::ResponseHeaders));
+    }
+
+    #[test]
+    fn response_body_request_is_absent_until_asked_for() {
+        let mut flow = flow();
+        assert_eq!(super::response_body_budget(&flow), None);
+
+        super::request_response_body(&mut flow, 4096);
+        assert_eq!(super::response_body_budget(&flow), Some(4096));
+    }
+
+    #[test]
+    fn response_body_request_never_serializes_into_flow_json() {
+        let mut flow = flow();
+        super::request_response_body(&mut flow, 4096);
+
+        let json = serde_json::to_value(&flow).expect("serialize flow");
+        assert_eq!(
+            json.get("meta"),
+            None,
+            "Flow.meta must stay in-process only"
+        );
     }
 
     #[test]

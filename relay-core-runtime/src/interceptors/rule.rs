@@ -74,6 +74,15 @@ async fn finish_request_stage(
 impl Interceptor for RuleInterceptor {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
         let engine = self.rules.get_rule_engine().await;
+
+        // The proxy has to know whether the response body will be inspected *before* it forwards
+        // the response, because a body-stage rule can only match a body that was retained. Declare
+        // the intent here, where the rule set is visible; streaming is kept when nothing needs it.
+        if engine.stage_consumes_body(RuleStage::ResponseBody) {
+            let budget = body_plan_inputs(true, flow).budget;
+            relay_core_lib::rule::stage_guard::request_response_body(flow, budget);
+        }
+
         if !engine.has_rules_for_stage(RuleStage::RequestHeaders) {
             return InterceptionResult::Continue;
         }

@@ -189,8 +189,11 @@ struct UpstreamCapture {
 
 /// Start a recording upstream. It reads one request head (+ declared body), then replies with a
 /// `200` whose body echoes the received head so the test can observe both directions.
-async fn spawn_recording_upstream() -> (SocketAddr, tokio::sync::oneshot::Receiver<UpstreamCapture>)
-{
+/// Recording upstream. It echoes the received request head unless `reply_body` is given, so one
+/// harness serves both "what did the upstream receive" and "what did it answer" assertions.
+async fn spawn_recording_upstream_with_reply(
+    reply_body: Option<&'static str>,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<UpstreamCapture>) {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .expect("bind upstream");
@@ -235,18 +238,21 @@ async fn spawn_recording_upstream() -> (SocketAddr, tokio::sync::oneshot::Receiv
         }
 
         let head = String::from_utf8_lossy(&received[..head_end.min(received.len())]).to_string();
-        let head_len = head.len();
         let _ = tx.send(UpstreamCapture {
             head: head.clone(),
             _body: body,
         });
 
+        let payload: Vec<u8> = match reply_body {
+            Some(body) => body.as_bytes().to_vec(),
+            None => head.as_bytes().to_vec(),
+        };
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-Upstream: recording\r\nConnection: close\r\n\r\n",
-            head_len
+            payload.len()
         );
         let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(&payload).await;
         let _ = socket.flush().await;
     });
 
@@ -316,9 +322,18 @@ async fn run_case_with(
     case: &Case,
     interceptor: Arc<dyn Interceptor>,
 ) -> (String, UpstreamCapture) {
+    run_case_full(case, interceptor, None).await
+}
+
+/// Full control: interceptor plus an optional fixed upstream reply body.
+async fn run_case_full(
+    case: &Case,
+    interceptor: Arc<dyn Interceptor>,
+    reply_body: Option<&'static str>,
+) -> (String, UpstreamCapture) {
     init_crypto();
 
-    let (upstream_addr, upstream_rx) = spawn_recording_upstream().await;
+    let (upstream_addr, upstream_rx) = spawn_recording_upstream_with_reply(reply_body).await;
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -792,4 +807,97 @@ async fn wire_matrix_body_stage_rule_matches_on_the_body() {
         CASE.id
     );
     assert!(client.contains("STATUS 200"), "[{}] expected 200", CASE.id);
+}
+
+// ── Response-body stage rules can see the body (§24.2 / A6) ─────────────────────────
+//
+// The response body is a stream, and the body stage runs at the response-header moment — before the
+// body has been read. A rule that inspects it therefore needs the proxy to retain the body *before*
+// forwarding, which it can only know if the interceptor declared the intent during the request
+// phase. This case drives that declaration, the retention, and the match end to end.
+
+/// Mimics the rule interceptor: declares the need for the response body up front, then matches it.
+struct ResponseBodyRuleLikeInterceptor;
+
+#[async_trait::async_trait]
+impl Interceptor for ResponseBodyRuleLikeInterceptor {
+    async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        // The rule set has a ResponseBody rule that reads the body, so ask for retention.
+        relay_core_lib::rule::stage_guard::request_response_body(flow, 64 * 1024);
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        // Evaluate the "rule" against the retained body.
+        let matched = match &flow.layer {
+            Layer::Http(http) => http
+                .response
+                .as_ref()
+                .and_then(|r| r.body.as_ref())
+                .is_some_and(|b| b.content.contains("needle")),
+            _ => false,
+        };
+
+        if matched
+            && let Layer::Http(http) = &mut flow.layer
+            && let Some(res) = &mut http.response
+        {
+            res.headers
+                .push(("x-body-rule".to_string(), "matched".to_string()));
+        }
+
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_response_body_rule_matches_on_the_body() {
+    const CASE: Case = Case {
+        id: "response_body_match",
+        phase: Phase::None,
+        request: "GET /probe HTTP/1.1",
+        body: "",
+    };
+
+    let (client, _upstream) = run_case_full(
+        &CASE,
+        Arc::new(ResponseBodyRuleLikeInterceptor),
+        Some("a-body-with-a-needle-inside"),
+    )
+    .await;
+
+    assert!(
+        client.to_lowercase().contains("x-body-rule: matched"),
+        "[{}] a response-body rule must be able to match the response body, got:\n{client}",
+        CASE.id
+    );
+    assert!(
+        client.contains("a-body-with-a-needle-inside"),
+        "[{}] inspecting the body must not consume it, got:\n{client}",
+        CASE.id
+    );
 }

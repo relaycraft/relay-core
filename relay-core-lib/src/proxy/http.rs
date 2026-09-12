@@ -7,6 +7,9 @@ use crate::capture::loop_detection::LoopDetector;
 use crate::interceptor::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
 };
+use crate::proxy::body_plan::{
+    buffer_body_within_budget, headers_for_direction, record_body_on_flow,
+};
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
     build_client_response_head, build_forward_request, build_request_body_from_flow,
@@ -391,6 +394,11 @@ where
     // Phase 3: Response Headers Interception
     let (mut res_parts, res_body) = res.into_parts();
 
+    let mut res_body: HttpBody = res_body
+        .map_frame(|f| f.map_data(|d| d))
+        .map_err(|e| e.into())
+        .boxed();
+
     // Apply QUIC Downgrade
     apply_quic_downgrade(&mut res_parts, &mut flow, &policy);
 
@@ -400,6 +408,41 @@ where
         res_parts.version,
         &res_parts.headers,
     );
+
+    // The response-body stage runs at this header moment, before the body has been read, so a rule
+    // that inspects the body can only match one the proxy retained in advance. The rule engine
+    // declares that need during the request phase; without the declaration the body keeps streaming
+    // and the common case pays nothing (roadmap §22).
+    if let Some(budget) = crate::rule::stage_guard::response_body_budget(&flow) {
+        let taken = std::mem::replace(
+            &mut res_body,
+            Full::new(Bytes::new())
+                .map_err(|e| -> BoxError { e.into() })
+                .boxed(),
+        );
+        match buffer_body_within_budget(taken, budget).await {
+            Ok((snapshot, forwarded)) => {
+                if snapshot.truncated {
+                    flow.tags.push("rule_skipped:body_truncated".to_string());
+                } else {
+                    let headers = headers_for_direction(&flow, Direction::ServerToClient);
+                    record_body_on_flow(
+                        &mut flow,
+                        Direction::ServerToClient,
+                        &snapshot.bytes,
+                        snapshot.total_bytes,
+                        &headers,
+                    );
+                }
+                res_body = forwarded;
+            }
+            Err(e) => {
+                // Never let inspection failure break traffic; the bytes were consumed while being
+                // read, so the honest outcome is an empty body plus a warning.
+                tracing::warn!("Failed to retain response body for rule inspection: {}", e);
+            }
+        }
+    }
 
     let ttfbs_ms = upstream_start.elapsed().as_millis() as u64;
     if let Layer::Http(http) = &mut flow.layer
@@ -434,12 +477,7 @@ where
         _ => {}
     }
 
-    // Phase 4: Response Body Streaming & Interception
-    let res_body: HttpBody = res_body
-        .map_frame(|f| f.map_data(|d| d))
-        .map_err(|e| e.into())
-        .boxed();
-
+    // Phase 4: Response Body Streaming & Interception (body boxed and retained in Phase 3)
     // Wrap in TapBody for streaming visualization BEFORE interception
     let res_headers = if let Layer::Http(http) = &flow.layer {
         http.response
