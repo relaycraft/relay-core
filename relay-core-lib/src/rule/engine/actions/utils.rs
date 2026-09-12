@@ -245,6 +245,7 @@ mod tests {
             state_store: Arc::new(InMemoryRuleStateStore::new()),
             throttle_bytes_per_sec: None,
             connect_override: None,
+            mutations: vec![],
         }
     }
 

@@ -9,6 +9,7 @@
 //! Both directions now go through this module, and a round-trip test over every variant keeps the
 //! two ends from drifting apart again.
 
+use crate::event::FlowEvent;
 use crate::flow::{BodyData, Direction, Flow, FlowUpdate, WebSocketMessage};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -26,6 +27,8 @@ pub mod event_name {
     pub const HTTP_BODY: &str = "http-body";
     /// A body that exceeded the inspection budget.
     pub const BODY_BUDGET_EXCEEDED: &str = "body-budget-exceeded";
+    /// A typed flow lifecycle transition (roadmap §4-4).
+    pub const FLOW_EVENT: &str = "flow-event";
 }
 
 /// One SSE frame: the `event:` name plus its `data:` payload, already serialised.
@@ -177,10 +180,38 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
     }
 }
 
+impl FlowEvent {
+    /// Encode this lifecycle event as the SSE frame that carries it.
+    ///
+    /// `FlowEvent` is additive to `FlowUpdate` (§4-5): snapshots stay on `event: flow`, and the
+    /// transitions a consumer would otherwise have to infer by diffing snapshots travel separately.
+    pub fn to_sse(&self) -> Result<SseFrame, SseEncodeError> {
+        Ok(SseFrame {
+            event: event_name::FLOW_EVENT,
+            data: serde_json::to_string(self).map_err(SseEncodeError)?,
+        })
+    }
+}
+
+/// Decode one `event: flow-event` frame.
+///
+/// `None` for other event names and for payloads that do not parse, matching [`parse_update`].
+pub fn parse_flow_event(event: &str, data: &str) -> Option<FlowEvent> {
+    if event != event_name::FLOW_EVENT {
+        return None;
+    }
+    serde_json::from_str(data).ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BodyBudgetExceededFrame, HttpBodyFrame, WsMessageFrame, event_name, parse_update};
+    use super::{
+        BodyBudgetExceededFrame, HttpBodyFrame, WsMessageFrame, event_name, parse_flow_event,
+        parse_update,
+    };
+    use crate::event::{CloseReason, FlowEvent};
     use crate::flow::{BodyData, Direction, FlowUpdate, WebSocketMessage};
+    use uuid::Uuid;
 
     fn body(content: &str) -> BodyData {
         BodyData {
@@ -323,5 +354,118 @@ mod tests {
         // A body frame missing its direction is exactly the drift this module removes: reject it
         // instead of inventing a direction.
         assert!(parse_update(event_name::HTTP_BODY, r#"{"flow_id":"f"}"#).is_none());
+    }
+
+    fn every_flow_event() -> Vec<FlowEvent> {
+        let flow_id = Uuid::new_v4();
+        vec![
+            FlowEvent::Started {
+                flow_id,
+                at: chrono::Utc::now(),
+            },
+            FlowEvent::HeadersReceived {
+                flow_id,
+                direction: Direction::ClientToServer,
+            },
+            FlowEvent::BodyChunk {
+                flow_id,
+                direction: Direction::ServerToClient,
+                observed_bytes: 4096,
+                truncated: true,
+            },
+            FlowEvent::MessageReceived {
+                flow_id,
+                direction: Direction::ServerToClient,
+            },
+            FlowEvent::MutationApplied {
+                flow_id,
+                direction: Direction::ClientToServer,
+                actor: "rule:rewrite-url".to_string(),
+                fields: vec!["request.url".to_string()],
+            },
+            FlowEvent::InterceptPaused {
+                flow_id,
+                phase: "request_headers".to_string(),
+            },
+            FlowEvent::InterceptResolved {
+                flow_id,
+                phase: "request_headers".to_string(),
+                mutated: true,
+            },
+            FlowEvent::Completed {
+                flow_id,
+                at: chrono::Utc::now(),
+            },
+            FlowEvent::Errored {
+                flow_id,
+                reason: CloseReason::Timeout {
+                    kind: "idle".to_string(),
+                },
+                at: chrono::Utc::now(),
+            },
+        ]
+    }
+
+    /// Lifecycle events travel on their own frame name, so a consumer can dispatch on one field
+    /// instead of guessing from which `Flow` fields happen to be populated.
+    #[test]
+    fn every_flow_event_round_trips_through_its_frame() {
+        for event in every_flow_event() {
+            let frame = event.to_sse().expect("event should encode");
+            assert_eq!(frame.event, event_name::FLOW_EVENT);
+
+            let decoded = parse_flow_event(frame.event, &frame.data)
+                .unwrap_or_else(|| panic!("frame should decode: {}", frame.data));
+
+            assert_eq!(
+                serde_json::to_value(&decoded).expect("decoded should serialise"),
+                serde_json::to_value(&event).expect("original should serialise"),
+                "{event:?} did not survive the round trip"
+            );
+        }
+    }
+
+    /// A lifecycle frame must never be mistaken for a snapshot, nor the reverse: they decode through
+    /// different entry points, and a consumer routes on the event name alone.
+    #[test]
+    fn lifecycle_and_snapshot_frames_do_not_decode_as_each_other() {
+        let event = FlowEvent::Completed {
+            flow_id: Uuid::new_v4(),
+            at: chrono::Utc::now(),
+        };
+        let frame = event.to_sse().expect("event should encode");
+
+        assert!(parse_update(frame.event, &frame.data).is_none());
+        assert!(parse_flow_event(event_name::FLOW, "{}").is_none());
+
+        let update = FlowUpdate::BodyBudgetExceeded {
+            flow_id: "flow-budget".to_string(),
+            direction: Direction::ClientToServer,
+        }
+        .to_sse()
+        .expect("update should encode");
+        assert!(parse_flow_event(update.event, &update.data).is_none());
+    }
+
+    /// The actor and the fields it changed are the whole point of the mutation event: without them
+    /// a consumer can only say "something changed".
+    #[test]
+    fn mutation_event_names_its_actor_and_fields_on_the_wire() {
+        let event = FlowEvent::MutationApplied {
+            flow_id: Uuid::new_v4(),
+            direction: Direction::ClientToServer,
+            actor: "rule:rewrite-url".to_string(),
+            fields: vec!["request.url".to_string(), "request.headers".to_string()],
+        };
+        let frame = event.to_sse().expect("event should encode");
+
+        let decoded = parse_flow_event(frame.event, &frame.data).expect("frame should decode");
+        match decoded {
+            FlowEvent::MutationApplied { actor, fields, .. } => {
+                assert_eq!(actor, "rule:rewrite-url");
+                assert_eq!(fields, vec!["request.url", "request.headers"]);
+            }
+            other => panic!("expected a mutation event, got {other:?}"),
+        }
     }
 }

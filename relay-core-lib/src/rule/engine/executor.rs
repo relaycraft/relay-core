@@ -31,6 +31,18 @@ impl ConnectOverride {
     }
 }
 
+/// One rule's wire-visible effect from a stage.
+///
+/// `RuleTraceSummary::Modified` says *that* rules executed; this says what each of them changed, so
+/// a `MutationApplied` event (§4-4) can explain a change without re-reading the rule set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleMutation {
+    /// The rule that caused the change.
+    pub rule_id: String,
+    /// Fields it changed, named as they appear in a `Flow`.
+    pub fields: Vec<String>,
+}
+
 pub struct ExecutionContext {
     pub trace: Vec<RuleExecutionEvent>,
     pub variables: HashMap<String, String>,
@@ -43,6 +55,9 @@ pub struct ExecutionContext {
     pub throttle_bytes_per_sec: Option<u64>,
     /// RE1: Connect-stage override for L3/L4 transparent proxy actions.
     pub connect_override: Option<ConnectOverride>,
+    /// Per-rule wire-visible effects, in application order. Only actions that were actually
+    /// applied are recorded; a failed or skipped action contributes nothing.
+    pub mutations: Vec<RuleMutation>,
 }
 
 impl ExecutionContext {
@@ -149,6 +164,7 @@ impl RuleEngine {
             state_store: self.state_store.clone(),
             throttle_bytes_per_sec: None,
             connect_override: None,
+            mutations: vec![],
         };
 
         let mut terminated = false;
@@ -209,11 +225,17 @@ impl RuleEngine {
                 let action_execution = async {
                     let mut rule_outcome = RuleOutcome::MatchedAndExecuted;
                     let mut rule_terminated = false;
+                    let mut fields: Vec<String> = Vec::new();
 
                     for action in &rule.actions {
                         match actions::execute_action(action, flow, &mut ctx).await {
-                            actions::ActionOutcome::Continue => {}
+                            // Applied: record what it touched. A field named by two actions of the
+                            // same rule is one change, so the list stays a set of fields.
+                            actions::ActionOutcome::Continue => {
+                                record_fields(&mut fields, action);
+                            }
                             actions::ActionOutcome::Terminated(reason) => {
+                                record_fields(&mut fields, action);
                                 rule_outcome = RuleOutcome::MatchedAndTerminated;
                                 ctx.summary = RuleTraceSummary::Terminated {
                                     rule_id: rule.id.clone(),
@@ -222,16 +244,17 @@ impl RuleEngine {
                                 rule_terminated = true;
                                 break;
                             }
+                            // Not applied: it changed nothing, so it names nothing.
                             actions::ActionOutcome::Failed(err) => {
                                 rule_outcome = RuleOutcome::Failed(err);
                                 break;
                             }
                         }
                     }
-                    (rule_outcome, rule_terminated)
+                    (rule_outcome, rule_terminated, fields)
                 };
 
-                let (rule_outcome, rule_terminated) = if let Some(ms) = timeout_ms {
+                let (rule_outcome, rule_terminated, fields) = if let Some(ms) = timeout_ms {
                     match tokio::time::timeout(
                         std::time::Duration::from_millis(ms),
                         action_execution,
@@ -242,11 +265,19 @@ impl RuleEngine {
                         Err(_) => (
                             RuleOutcome::Failed(format!("Rule execution timed out after {}ms", ms)),
                             false,
+                            Vec::new(),
                         ),
                     }
                 } else {
                     action_execution.await
                 };
+
+                if !fields.is_empty() {
+                    ctx.mutations.push(RuleMutation {
+                        rule_id: rule.id.clone(),
+                        fields,
+                    });
+                }
 
                 if rule_terminated {
                     terminated = true;
@@ -305,6 +336,15 @@ impl RuleEngine {
         flow.matched_rules = modified_rules.clone();
 
         ctx
+    }
+}
+
+/// Add the fields an applied action touched, keeping first-seen order and no duplicates.
+fn record_fields(fields: &mut Vec<String>, action: &Action) {
+    for field in actions::mutated_fields(action) {
+        if !fields.iter().any(|existing| existing == field) {
+            fields.push((*field).to_string());
+        }
     }
 }
 
@@ -375,6 +415,108 @@ mod tests {
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
         }
+    }
+
+    /// A rule that changed the wire must say what it changed. `RuleTraceSummary::Modified` only
+    /// reports *that* rules ran, which is not enough to explain a change to a UI or an agent (§4-4).
+    #[tokio::test]
+    async fn applied_actions_record_which_fields_the_rule_changed() {
+        let rule = Rule {
+            id: "rewrite-url".to_string(),
+            name: "Rewrite URL".to_string(),
+            active: true,
+            stage: RuleStage::RequestHeaders,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter: Filter::All,
+            actions: vec![
+                Action::SetRequestUrl {
+                    url: "https://example.com/rewritten".to_string(),
+                },
+                // Two actions touching the same field must collapse to one entry.
+                Action::AddRequestHeader {
+                    name: "x-a".to_string(),
+                    value: "1".to_string(),
+                },
+                Action::UpdateRequestHeader {
+                    name: "x-a".to_string(),
+                    value: "2".to_string(),
+                    add_if_missing: true,
+                },
+                // Bookkeeping only: names no field.
+                Action::SetVariable {
+                    name: "seen".to_string(),
+                    value: "1".to_string(),
+                },
+            ],
+            constraints: None,
+        };
+
+        let engine = RuleEngine::new(vec![rule], vec![], None, None);
+        let mut flow = create_test_flow();
+        let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
+
+        assert_eq!(
+            ctx.mutations,
+            vec![RuleMutation {
+                rule_id: "rewrite-url".to_string(),
+                fields: vec!["request.url".to_string(), "request.headers".to_string()],
+            }],
+            "the mutation should name the fields this rule actually changed"
+        );
+    }
+
+    /// A rule that matched but failed changed nothing, so it must not appear as a mutation —
+    /// reporting it would tell a consumer to look for a change that never happened.
+    #[tokio::test]
+    async fn failed_actions_are_not_reported_as_mutations() {
+        let rule = Rule {
+            id: "throttle".to_string(),
+            name: "Throttle".to_string(),
+            active: true,
+            stage: RuleStage::RequestHeaders,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter: Filter::All,
+            // `Throttle` rejects 0 kbps, so the action fails instead of applying.
+            actions: vec![Action::Throttle { kbps: 0 }],
+            constraints: None,
+        };
+
+        let engine = RuleEngine::new(vec![rule], vec![], None, None);
+        let mut flow = create_test_flow();
+        let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
+
+        assert!(matches!(ctx.trace[0].outcome, RuleOutcome::Failed(_)));
+        assert!(
+            ctx.mutations.is_empty(),
+            "a failed action changed nothing, got {:?}",
+            ctx.mutations
+        );
+    }
+
+    /// A stage that matched nothing must not report a mutation at all.
+    #[tokio::test]
+    async fn stages_without_a_match_report_no_mutation() {
+        let rule = Rule {
+            id: "get-only".to_string(),
+            name: "GET only".to_string(),
+            active: true,
+            stage: RuleStage::RequestHeaders,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter: Filter::Method(StringMatcher::Exact("POST".to_string())),
+            actions: vec![Action::SetRequestUrl {
+                url: "https://example.com/other".to_string(),
+            }],
+            constraints: None,
+        };
+
+        let engine = RuleEngine::new(vec![rule], vec![], None, None);
+        let mut flow = create_test_flow();
+        let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
+
+        assert!(ctx.mutations.is_empty(), "got {:?}", ctx.mutations);
     }
 
     #[tokio::test]

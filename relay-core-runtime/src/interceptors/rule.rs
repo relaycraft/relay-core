@@ -1,7 +1,8 @@
 use crate::interceptors::inspect::handle_rule_termination;
-use crate::services::{InterceptService, RuleService};
+use crate::services::{FlowEventSink, InterceptService, RuleService};
 use async_trait::async_trait;
 use relay_core_api::body_plan::{BodyObservation, BodyPlan, BodyPlanInputs, decide};
+use relay_core_api::event::FlowEvent;
 use relay_core_api::flow::{Direction, Flow, Layer};
 use relay_core_api::rule::{RuleStage, RuleTraceSummary};
 use relay_core_lib::interceptor::{
@@ -19,11 +20,20 @@ use std::sync::Arc;
 pub struct RuleInterceptor {
     rules: Arc<dyn RuleService>,
     intercepts: Arc<dyn InterceptService>,
+    events: Arc<dyn FlowEventSink>,
 }
 
 impl RuleInterceptor {
-    pub fn new(rules: Arc<dyn RuleService>, intercepts: Arc<dyn InterceptService>) -> Self {
-        Self { rules, intercepts }
+    pub fn new(
+        rules: Arc<dyn RuleService>,
+        intercepts: Arc<dyn InterceptService>,
+        events: Arc<dyn FlowEventSink>,
+    ) -> Self {
+        Self {
+            rules,
+            intercepts,
+            events,
+        }
     }
 }
 
@@ -57,12 +67,14 @@ const DEFAULT_BODY_INSPECT_BUDGET: usize = 1024 * 1024;
 /// Map a completed request-body stage result onto the wire action.
 async fn finish_request_stage(
     intercepts: &Arc<dyn InterceptService>,
+    events: &Arc<dyn FlowEventSink>,
     flow: &mut Flow,
     ctx: relay_core_lib::rule::engine::ExecutionContext,
     forwarded: HttpBody,
 ) -> Result<RequestAction, BoxError> {
     if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-        let result = handle_rule_termination(intercepts, reason, flow, "request_body", None).await;
+        let result =
+            handle_rule_termination(intercepts, events, reason, flow, "request_body", None).await;
         return Ok(match result {
             InterceptionResult::Drop => RequestAction::Drop,
             InterceptionResult::MockResponse(res) => {
@@ -149,6 +161,27 @@ fn stage_debug(stage: &RuleStage) -> String {
     format!("{stage:?}")
 }
 
+/// Publish what this stage changed, per rule.
+///
+/// Roadmap §4-4: `RuleTraceSummary::Modified` says rules ran, which is not enough for a UI or an
+/// agent to explain a change. Each applied rule becomes one event naming the fields it touched;
+/// a stage that changed nothing publishes nothing.
+fn publish_mutations(
+    events: &Arc<dyn FlowEventSink>,
+    flow: &Flow,
+    direction: &Direction,
+    ctx: &relay_core_lib::rule::engine::ExecutionContext,
+) {
+    for mutation in &ctx.mutations {
+        events.publish_flow_event(FlowEvent::MutationApplied {
+            flow_id: flow.id,
+            direction: direction.clone(),
+            actor: format!("rule:{}", mutation.rule_id),
+            fields: mutation.fields.clone(),
+        });
+    }
+}
+
 /// Expose what a stage actually decided.
 ///
 /// `ExecutionContext.trace` is discarded by every production caller, so before this a stage that
@@ -211,11 +244,13 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::RequestHeaders, &ctx);
+        publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestHeaders);
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
                 &self.intercepts,
+                &self.events,
                 reason,
                 flow,
                 "request_headers",
@@ -248,14 +283,16 @@ impl Interceptor for RuleInterceptor {
             // exists to preserve, so the stage simply runs against metadata and streams on.
             BodyPlan::Capture { .. } => {
                 let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+                publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
                 mark_stage_executed(flow, &RuleStage::RequestBody);
-                return finish_request_stage(&self.intercepts, flow, ctx, body).await;
+                return finish_request_stage(&self.intercepts, &self.events, flow, ctx, body).await;
             }
             BodyPlan::PassThrough => {
                 // Nothing here needs the bytes: run the stage against metadata only and stream on.
                 let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+                publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
                 mark_stage_executed(flow, &RuleStage::RequestBody);
-                return finish_request_stage(&self.intercepts, flow, ctx, body).await;
+                return finish_request_stage(&self.intercepts, &self.events, flow, ctx, body).await;
             }
         };
 
@@ -292,8 +329,9 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::RequestBody, &ctx);
+        publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestBody);
-        finish_request_stage(&self.intercepts, flow, ctx, forwarded).await
+        finish_request_stage(&self.intercepts, &self.events, flow, ctx, forwarded).await
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
@@ -304,10 +342,12 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::ResponseHeaders, &ctx);
+        publish_mutations(&self.events, flow, &Direction::ServerToClient, &ctx);
         mark_stage_executed(flow, &RuleStage::ResponseHeaders);
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
                 &self.intercepts,
+                &self.events,
                 reason,
                 flow,
                 "response_headers",
@@ -328,11 +368,18 @@ impl Interceptor for RuleInterceptor {
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
             let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
             report_stage_outcome(&self.rules, &RuleStage::ResponseBody, &ctx);
+            publish_mutations(&self.events, flow, &Direction::ServerToClient, &ctx);
             mark_stage_executed(flow, &RuleStage::ResponseBody);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-                let result =
-                    handle_rule_termination(&self.intercepts, reason, flow, "response_body", None)
-                        .await;
+                let result = handle_rule_termination(
+                    &self.intercepts,
+                    &self.events,
+                    reason,
+                    flow,
+                    "response_body",
+                    None,
+                )
+                .await;
                 return Ok(match result {
                     InterceptionResult::Drop => ResponseAction::Drop,
                     InterceptionResult::MockResponse(res) => {
@@ -367,6 +414,7 @@ impl Interceptor for RuleInterceptor {
             }
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
             report_stage_outcome(&self.rules, &RuleStage::WebSocketMessage, &ctx);
+            publish_mutations(&self.events, flow, &message.direction, &ctx);
             mark_stage_executed(flow, &RuleStage::WebSocketMessage);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 // `Action::MockWebSocketMessage` replaces the frame with the one the rule produced,
@@ -381,6 +429,7 @@ impl Interceptor for RuleInterceptor {
 
                 let result = handle_rule_termination(
                     &self.intercepts,
+                    &self.events,
                     reason,
                     flow,
                     "ws_msg",
@@ -504,6 +553,7 @@ mod stage_outcome_tests {
             ),
             throttle_bytes_per_sec: None,
             connect_override: None,
+            mutations: vec![],
         }
     }
 
@@ -547,7 +597,9 @@ mod stage_outcome_tests {
 #[cfg(test)]
 mod intercept_resolution_tests {
     use super::finish_request_stage;
+    use crate::services::{FlowEventSink, RecordingFlowEventSink};
     use async_trait::async_trait;
+    use relay_core_api::event::FlowEvent;
     use relay_core_api::flow::{
         BodyData, Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
     };
@@ -652,6 +704,7 @@ mod intercept_resolution_tests {
             ),
             throttle_bytes_per_sec: None,
             connect_override: None,
+            mutations: vec![],
         }
     }
 
@@ -687,7 +740,10 @@ mod intercept_resolution_tests {
                 },
             ));
 
-        let action = finish_request_stage(&intercepts, &mut flow, terminated_ctx(), body)
+        let events: Arc<dyn crate::services::FlowEventSink> =
+            Arc::new(crate::services::RecordingFlowEventSink::default());
+
+        let action = finish_request_stage(&intercepts, &events, &mut flow, terminated_ctx(), body)
             .await
             .expect("intercept resolution should not error");
 
@@ -704,6 +760,99 @@ mod intercept_resolution_tests {
                 );
             }
             other => panic!("a resumed body breakpoint must continue, got {other:?}"),
+        }
+    }
+    /// A breakpoint that pauses is a state change a consumer must learn about: `event: intercept`
+    /// was documented as this signal and had no producer, so a UI could only poll the intercept list.
+    #[tokio::test]
+    async fn a_paused_breakpoint_publishes_pause_and_resolution_events() {
+        let events = Arc::new(RecordingFlowEventSink::default());
+        let sink: Arc<dyn FlowEventSink> = events.clone();
+        let intercepts: Arc<dyn crate::services::InterceptService> =
+            Arc::new(ResolvingIntercepts {
+                resolution: InterceptionResult::Continue,
+            });
+
+        let mut flow = flow_with_request_body();
+        let flow_id = flow.id;
+        let body: relay_core_lib::interceptor::HttpBody =
+            http_body_util::BodyExt::boxed(http_body_util::BodyExt::map_err(
+                http_body_util::Full::new(bytes::Bytes::from_static(b"original")),
+                |e: std::convert::Infallible| -> relay_core_lib::interceptor::BoxError {
+                    match e {}
+                },
+            ));
+
+        let _ = finish_request_stage(&intercepts, &sink, &mut flow, terminated_ctx(), body).await;
+
+        let recorded = events.recorded();
+        assert_eq!(
+            recorded.len(),
+            2,
+            "expected a pause and a resolution: {recorded:?}"
+        );
+
+        match &recorded[0] {
+            FlowEvent::InterceptPaused { flow_id: id, phase } => {
+                assert_eq!(*id, flow_id, "the pause must name the flow it is holding");
+                assert_eq!(phase, "request_body");
+            }
+            other => panic!("expected InterceptPaused first, got {other:?}"),
+        }
+
+        match &recorded[1] {
+            FlowEvent::InterceptResolved {
+                flow_id: id,
+                phase,
+                mutated,
+            } => {
+                assert_eq!(*id, flow_id);
+                assert_eq!(phase, "request_body");
+                assert!(!mutated, "an unmodified continue must not claim a mutation");
+            }
+            other => panic!("expected InterceptResolved second, got {other:?}"),
+        }
+    }
+
+    /// Resuming with an edit is a mutation, and the event has to say so — otherwise a consumer
+    /// cannot distinguish "the user changed something" from "the user clicked continue".
+    #[tokio::test]
+    async fn a_breakpoint_resumed_with_an_edit_reports_a_mutation() {
+        let events = Arc::new(RecordingFlowEventSink::default());
+        let sink: Arc<dyn FlowEventSink> = events.clone();
+        let intercepts: Arc<dyn crate::services::InterceptService> =
+            Arc::new(ResolvingIntercepts {
+                resolution: InterceptionResult::ModifiedRequest(HttpRequest {
+                    method: "POST".to_string(),
+                    url: url::Url::parse("http://example.com/").expect("url"),
+                    version: "HTTP/1.1".to_string(),
+                    headers: vec![],
+                    cookies: vec![],
+                    query: vec![],
+                    body: Some(BodyData {
+                        encoding: "utf-8".to_string(),
+                        content: "EDITED-BY-USER".to_string(),
+                        size: 14,
+                    }),
+                }),
+            });
+
+        let mut flow = flow_with_request_body();
+        let body: relay_core_lib::interceptor::HttpBody =
+            http_body_util::BodyExt::boxed(http_body_util::BodyExt::map_err(
+                http_body_util::Full::new(bytes::Bytes::from_static(b"original")),
+                |e: std::convert::Infallible| -> relay_core_lib::interceptor::BoxError {
+                    match e {}
+                },
+            ));
+
+        let _ = finish_request_stage(&intercepts, &sink, &mut flow, terminated_ctx(), body).await;
+
+        match events.recorded().last() {
+            Some(FlowEvent::InterceptResolved { mutated, .. }) => {
+                assert!(*mutated, "an edited resume must be reported as a mutation");
+            }
+            other => panic!("expected a resolution event, got {other:?}"),
         }
     }
 }

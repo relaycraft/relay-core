@@ -634,7 +634,7 @@ async fn test_rule_interceptor_mock_websocket_message_replaces_frame() {
     };
     state.set_rules(vec![rule]).await;
 
-    let interceptor = RuleInterceptor::new(state.clone(), state.clone());
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone(), state.clone());
     let mut flow = create_test_flow("http://example.com/ws", "GET");
     // A WebSocket flow: handshake response present but with the default status the tunnel leaves.
     flow.layer = Layer::WebSocket(WebSocketLayer {
@@ -704,7 +704,7 @@ async fn test_rule_interceptor_applies_request_header_rule() {
     };
     state.set_rules(vec![rule]).await;
 
-    let interceptor = RuleInterceptor::new(state.clone(), state.clone());
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone(), state.clone());
     let mut flow = create_test_flow("http://example.com/ri", "GET");
 
     let result = interceptor.on_request_headers(&mut flow).await;
@@ -726,5 +726,93 @@ async fn test_rule_interceptor_applies_request_header_rule() {
     assert!(
         flow.matched_rules.contains(&"ri-rule".to_string()),
         "flow.matched_rules should contain ri-rule after execution"
+    );
+}
+
+/// A rule that changes the wire must publish what it changed, through the real channel.
+///
+/// `subscribe_flow_updates` re-sends the whole `Flow`, so a consumer could see *that* something
+/// changed but not which rule changed it nor which field — `FlowEvent::MutationApplied` exists to
+/// answer exactly that, and nothing produced it.
+#[tokio::test]
+async fn a_matching_rule_publishes_a_mutation_event() {
+    let state = Arc::new(CoreState::new(None).await);
+    let mut events = state.subscribe_flow_events();
+
+    let rule = Rule {
+        id: "rewrite-url".to_string(),
+        name: "Rewrite URL".to_string(),
+        active: true,
+        stage: RuleStage::RequestHeaders,
+        priority: 0,
+        termination: RuleTermination::Continue,
+        filter: Filter::All,
+        actions: vec![Action::SetRequestUrl {
+            url: "https://example.com/rewritten".to_string(),
+        }],
+        constraints: None,
+    };
+    state.set_rules(vec![rule]).await;
+
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone(), state.clone());
+    let mut flow = create_test_flow("http://example.com/original", "GET");
+    let flow_id = flow.id;
+
+    let result = interceptor.on_request_headers(&mut flow).await;
+    assert!(matches!(result, InterceptionResult::Continue));
+
+    let event = events
+        .try_recv()
+        .expect("a matching rule must publish a mutation event");
+
+    match event {
+        relay_core_api::event::FlowEvent::MutationApplied {
+            flow_id: id,
+            direction,
+            actor,
+            fields,
+        } => {
+            assert_eq!(id, flow_id);
+            assert_eq!(direction, Direction::ClientToServer);
+            assert_eq!(actor, "rule:rewrite-url");
+            assert_eq!(fields, vec!["request.url".to_string()]);
+        }
+        other => panic!("expected a mutation event, got {other:?}"),
+    }
+}
+
+/// A stage with no matching rule must stay silent: an event claiming a change that did not happen
+/// is worse than no event at all.
+#[tokio::test]
+async fn a_stage_that_matches_nothing_publishes_no_event() {
+    let state = Arc::new(CoreState::new(None).await);
+    let mut events = state.subscribe_flow_events();
+
+    let rule = Rule {
+        id: "post-only".to_string(),
+        name: "POST only".to_string(),
+        active: true,
+        stage: RuleStage::RequestHeaders,
+        priority: 0,
+        termination: RuleTermination::Continue,
+        filter: Filter::Method(relay_core_api::rule::StringMatcher::Exact(
+            "POST".to_string(),
+        )),
+        actions: vec![Action::SetRequestUrl {
+            url: "https://example.com/rewritten".to_string(),
+        }],
+        constraints: None,
+    };
+    state.set_rules(vec![rule]).await;
+
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone(), state.clone());
+    let mut flow = create_test_flow("http://example.com/original", "GET");
+
+    let result = interceptor.on_request_headers(&mut flow).await;
+    assert!(matches!(result, InterceptionResult::Continue));
+
+    assert!(
+        events.try_recv().is_err(),
+        "a non-matching stage must not report a mutation"
     );
 }

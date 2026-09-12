@@ -20,6 +20,7 @@
 //! use relay_core_runtime::audit::AuditActor;
 //! ```
 
+use relay_core_api::event::FlowEvent;
 use relay_core_api::flow::{BodyData, Direction, Flow, FlowUpdate, Layer, WebSocketMessage};
 use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch, RedactionPolicy};
 #[cfg(all(target_os = "linux", feature = "transparent-linux"))]
@@ -333,6 +334,9 @@ pub struct CoreState {
     audit_events_lagged_total: Arc<AtomicUsize>,
     /// 内部广播 channel：Tauri、Probe 等多个消费者均可订阅
     flow_broadcast_tx: broadcast::Sender<FlowUpdate>,
+    /// Typed lifecycle transitions (roadmap §4-4). Additive to the snapshot channel above: a
+    /// consumer that needs "what just happened" no longer has to diff successive snapshots.
+    flow_event_broadcast_tx: broadcast::Sender<FlowEvent>,
     audit_broadcast_tx: broadcast::Sender<AuditEvent>,
     audit_history: Arc<Mutex<VecDeque<AuditEvent>>>,
     lifecycle: LifecycleManager,
@@ -376,6 +380,7 @@ impl CoreState {
 
         let (policy_tx, _) = watch::channel(ProxyPolicy::default());
         let (flow_broadcast_tx, _) = broadcast::channel(1000);
+        let (flow_event_broadcast_tx, _) = broadcast::channel(1000);
         let (audit_broadcast_tx, _) = broadcast::channel(256);
 
         #[cfg(feature = "script")]
@@ -401,6 +406,7 @@ impl CoreState {
             flow_events_lagged_total: Arc::new(AtomicUsize::new(0)),
             audit_events_lagged_total: Arc::new(AtomicUsize::new(0)),
             flow_broadcast_tx,
+            flow_event_broadcast_tx,
             audit_broadcast_tx,
             audit_history: Arc::new(Mutex::new(VecDeque::with_capacity(AUDIT_HISTORY_LIMIT))),
             lifecycle: LifecycleManager::new(),
@@ -1209,6 +1215,20 @@ impl CoreState {
         self.flow_broadcast_tx.subscribe()
     }
 
+    /// Subscribe to typed lifecycle events. Independent receiver per consumer; a lagging consumer
+    /// skips ahead rather than stalling the producer.
+    pub fn subscribe_flow_events(&self) -> broadcast::Receiver<FlowEvent> {
+        self.flow_event_broadcast_tx.subscribe()
+    }
+
+    /// Publish one lifecycle event.
+    ///
+    /// Never blocks and never fails the caller: with no subscribers this is a no-op, which keeps a
+    /// headless run from paying for a channel nobody reads.
+    pub fn publish_flow_event(&self, event: FlowEvent) {
+        let _ = self.flow_event_broadcast_tx.send(event);
+    }
+
     pub fn subscribe_audit_events(&self) -> broadcast::Receiver<AuditEvent> {
         self.audit_broadcast_tx.subscribe()
     }
@@ -1537,6 +1557,7 @@ impl CoreState {
         let mut interceptors: Vec<Arc<dyn Interceptor>> = vec![];
 
         interceptors.push(Arc::new(interceptors::rule::RuleInterceptor::new(
+            self.clone(),
             self.clone(),
             self.clone(),
         )));

@@ -46,6 +46,7 @@ fn event_stream(
     ctx: Arc<HttpApiContext>,
 ) -> impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>> {
     let flow_rx = ctx.events.subscribe_flow_updates();
+    let flow_event_rx = ctx.events.subscribe_flow_events();
     let audit_rx = ctx.audit.subscribe_audit_events();
     let lifecycle_rx = ctx.status.subscribe_lifecycle();
 
@@ -70,6 +71,26 @@ fn event_stream(
                 .data("some events were dropped")))
         }
     });
+
+    // Lifecycle transitions (`event: flow-event`) travel alongside snapshots rather than replacing
+    // them: a consumer that wants "what just happened" no longer has to diff successive snapshots,
+    // and one that only wants current state keeps reading `event: flow`.
+    let lifecycle_events = ctx.events.clone();
+    let typed_stream = BroadcastStream::new(flow_event_rx).filter_map(move |res| match res {
+        Ok(event) => match event.to_sse() {
+            Ok(frame) => Some(Ok(sse_event(frame))),
+            Err(error) => {
+                tracing::error!("dropping flow event that could not be serialised: {error}");
+                None
+            }
+        },
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
+            lifecycle_events.record_flow_events_lagged(skipped);
+            Some(Ok(Event::default()
+                .event("lagged")
+                .data("some events were dropped")))
+        }
+    });
     let audit_svc = ctx.audit.clone();
     let audit_stream = BroadcastStream::new(audit_rx).filter_map(move |res| match res {
         Ok(event) => {
@@ -88,7 +109,10 @@ fn event_stream(
             .unwrap_or_default();
         Ok(Event::default().event("lifecycle").data(data))
     });
-    flow_stream.merge(audit_stream).merge(lifecycle_stream)
+    flow_stream
+        .merge(typed_stream)
+        .merge(audit_stream)
+        .merge(lifecycle_stream)
 }
 
 #[cfg(test)]
@@ -111,11 +135,16 @@ mod tests {
     /// exactly the updates under test instead of whatever a live proxy happens to produce.
     struct DrivableHub {
         tx: broadcast::Sender<FlowUpdate>,
+        event_tx: broadcast::Sender<relay_core_api::event::FlowEvent>,
     }
 
     impl FlowEventHub for DrivableHub {
         fn subscribe_flow_updates(&self) -> broadcast::Receiver<FlowUpdate> {
             self.tx.subscribe()
+        }
+
+        fn subscribe_flow_events(&self) -> broadcast::Receiver<relay_core_api::event::FlowEvent> {
+            self.event_tx.subscribe()
         }
 
         fn redact_flow_update_for_output(&self, update: FlowUpdate) -> FlowUpdate {
@@ -129,9 +158,20 @@ mod tests {
     type Wire = axum::body::BodyDataStream;
 
     async fn open_stream(tx: &broadcast::Sender<FlowUpdate>) -> Wire {
+        let (event_tx, _) = broadcast::channel(16);
+        open_stream_with_events(tx, &event_tx).await
+    }
+
+    async fn open_stream_with_events(
+        tx: &broadcast::Sender<FlowUpdate>,
+        event_tx: &broadcast::Sender<relay_core_api::event::FlowEvent>,
+    ) -> Wire {
         let state = Arc::new(CoreState::new(None).await);
         let mut ctx = HttpApiContext::new(state);
-        ctx.events = Arc::new(DrivableHub { tx: tx.clone() });
+        ctx.events = Arc::new(DrivableHub {
+            tx: tx.clone(),
+            event_tx: event_tx.clone(),
+        });
 
         let response = super::router(Arc::new(ctx))
             .oneshot(
@@ -255,5 +295,66 @@ mod tests {
             second.is_some(),
             "stream should emit audit event after policy update"
         );
+    }
+
+    /// Typed lifecycle transitions must reach consumers on their own frame, so a UI or agent can
+    /// react to "this exchange is paused" without diffing snapshots. `event: intercept` was
+    /// documented for exactly this and never emitted.
+    #[tokio::test]
+    async fn sse_flow_event_frame_carries_the_typed_transition() {
+        let (tx, _) = broadcast::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let mut stream = open_stream_with_events(&tx, &event_tx).await;
+
+        let _ = next_frame(&mut stream).await;
+
+        let flow_id = uuid::Uuid::new_v4();
+        event_tx
+            .send(relay_core_api::event::FlowEvent::InterceptPaused {
+                flow_id,
+                phase: "response_body".to_string(),
+            })
+            .expect("broadcast should have a receiver");
+
+        let frame = next_frame(&mut stream).await;
+
+        assert!(frame.contains("event: flow-event"), "frame was {frame:?}");
+        assert!(
+            frame.contains("intercept_paused"),
+            "the transition kind must survive serialisation, frame was {frame:?}"
+        );
+        assert!(
+            frame.contains(&flow_id.to_string()),
+            "the flow must be identifiable, frame was {frame:?}"
+        );
+        assert!(
+            frame.contains("response_body"),
+            "the phase must survive serialisation, frame was {frame:?}"
+        );
+    }
+
+    /// A mutation frame has to name its actor and fields; that is the whole reason it exists.
+    #[tokio::test]
+    async fn sse_mutation_frame_names_actor_and_fields() {
+        let (tx, _) = broadcast::channel(16);
+        let (event_tx, _) = broadcast::channel(16);
+        let mut stream = open_stream_with_events(&tx, &event_tx).await;
+
+        let _ = next_frame(&mut stream).await;
+
+        event_tx
+            .send(relay_core_api::event::FlowEvent::MutationApplied {
+                flow_id: uuid::Uuid::new_v4(),
+                direction: Direction::ClientToServer,
+                actor: "rule:rewrite-url".to_string(),
+                fields: vec!["request.url".to_string()],
+            })
+            .expect("broadcast should have a receiver");
+
+        let frame = next_frame(&mut stream).await;
+
+        assert!(frame.contains("mutation_applied"), "frame was {frame:?}");
+        assert!(frame.contains("rule:rewrite-url"), "frame was {frame:?}");
+        assert!(frame.contains("request.url"), "frame was {frame:?}");
     }
 }

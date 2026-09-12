@@ -1,5 +1,6 @@
 use crate::RelayCoreState;
 use crate::transport::{FlowDetail, FlowIndex};
+use relay_core_api::event::FlowEvent;
 use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
 use relay_core_api::modification::FlowModification;
 use relay_core_runtime::audit::AuditActor;
@@ -13,6 +14,28 @@ pub struct TauriFlowSink<R: Runtime> {
 }
 
 impl<R: Runtime> TauriFlowSink<R> {
+    /// Forward typed lifecycle transitions to the webview as `flow-event`.
+    ///
+    /// Snapshots on `flow-update` cannot say "a rule changed this field" or "this exchange is
+    /// paused", which is what the desktop UI needs to explain or act on a change (roadmap §4-4).
+    pub async fn run_events(self, mut rx: tokio::sync::broadcast::Receiver<FlowEvent>) {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Err(e) = self.app_handle.emit("flow-event", event) {
+                        eprintln!("Failed to emit flow-event: {}", e);
+                    }
+                }
+                // Lagging means transitions were skipped, not that the stream ended; the UI stays
+                // consistent because every snapshot still arrives on `flow-update`.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("flow-event subscriber lagged, dropped {} events", skipped);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+
     pub async fn run(self, mut rx: mpsc::Receiver<FlowUpdate>) {
         while let Some(update) = rx.recv().await {
             match update {

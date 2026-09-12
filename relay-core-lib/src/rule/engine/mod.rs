@@ -18,4 +18,4 @@ pub mod matcher;
 pub mod state;
 pub mod validator;
 
-pub use executor::{ExecutionContext, RuleEngine};
+pub use executor::{ExecutionContext, RuleEngine, RuleMutation};

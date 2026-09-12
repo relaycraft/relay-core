@@ -2,6 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+use relay_core_api::event::FlowEvent;
 use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
 use relay_core_runtime::audit::AuditEventKind;
@@ -146,10 +147,31 @@ impl ProbeServer {
     /// Used by Stdio transport (single peer).
     pub async fn run_subscription_loop(ctx: Arc<ProbeContext>, peer: rmcp::Peer<RoleServer>) {
         let mut flow_rx: broadcast::Receiver<FlowUpdate> = ctx.flow_events.subscribe_flow_updates();
+        let mut typed_rx: broadcast::Receiver<FlowEvent> = ctx.flow_events.subscribe_flow_events();
         let mut audit_rx = ctx.audit.subscribe_audit_events();
 
         loop {
             tokio::select! {
+                typed_event = typed_rx.recv() => {
+                    match typed_event {
+                        // Pausing and resuming a breakpoint changes `intercepts_pending`, which an
+                        // agent reads from `proxy://status`. Nothing else announced a *new* pause:
+                        // only resolution is audited, so an agent waiting on a breakpoint had to
+                        // poll. The typed lifecycle channel is where that signal actually exists.
+                        Ok(FlowEvent::InterceptPaused { .. } | FlowEvent::InterceptResolved { .. }) => {
+                            let _ = peer.notify_resource_updated(
+                                ResourceUpdatedNotificationParam::new("proxy://status".to_string()),
+                            ).await;
+                        }
+                        // The remaining transitions are already announced by the snapshot stream
+                        // below; announcing them twice would only add noise.
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("probe flow-event subscriber lagged, dropped {} events", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
                 flow_event = flow_rx.recv() => {
                     match flow_event {
                         Ok(FlowUpdate::Full(flow)) => {

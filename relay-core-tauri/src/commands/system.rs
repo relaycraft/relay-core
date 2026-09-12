@@ -205,6 +205,16 @@ pub async fn start_core_proxy<R: Runtime>(
         sink.run(proxy_rx).await;
     });
 
+    // Lifecycle transitions travel on their own channel, so the webview can react to a mutation or
+    // a paused breakpoint instead of diffing successive flow snapshots.
+    let event_forwarder = TauriFlowSink {
+        app_handle: app.clone(),
+    };
+    let event_rx = state.core.subscribe_flow_events();
+    tokio::spawn(async move {
+        event_forwarder.run_events(event_rx).await;
+    });
+
     // The desktop UI shows request and response bodies, matching mitmproxy's default of buffering
     // them (see docs/mitmproxy-policy-benchmark.md §1.3). Declaring it here means the proxy retains
     // bodies itself and the interceptor below does not have to read the stream a second time.
