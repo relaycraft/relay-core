@@ -51,9 +51,12 @@ cargo_target_dir() {
 TARGET_DIR="$(cargo_target_dir)"
 PROXY_BIN="${RELAY_CORE_BIN:-$TARGET_DIR/release/relay-core-cli}"
 
-PROXY_PORT="${PROXY_PORT:-18080}"
-TARGET_PORT="${TARGET_PORT:-19000}"
-API_PORT="${API_PORT:-18082}"
+# Defaults deliberately avoid the crowded 18xxx development range: 18080 is a popular app port
+# and is already published by a local dev container on some machines, which previously let a
+# foreign listener silently serve the benchmark load. Override with PROXY_PORT/API_PORT/TARGET_PORT.
+PROXY_PORT="${PROXY_PORT:-18880}"
+TARGET_PORT="${TARGET_PORT:-19100}"
+API_PORT="${API_PORT:-18882}"
 CONNECTIONS="${CONNECTIONS:-100}"
 
 CA_CERT="$REPO_ROOT/benchmarks/.bench_ca_cert.pem"
@@ -64,6 +67,8 @@ DURATION=60
 RUNS=5
 WARMUP_RUNS=3
 TLS_MODE=0
+# Upstream implementation: "rust" (fast, plaintext only) or "python" (slow, supports --tls).
+UPSTREAM="${UPSTREAM:-rust}"
 REPORT_VERSION=""
 BASELINE_JSON=""
 STRICT=0
@@ -73,12 +78,11 @@ STRICT=0
 # P99 is conservative for same-machine (oha + proxy + echo compete for CPU);
 # isolated-setup measurements typically achieve <5ms.
 #
-# ⚠️ UPSTREAM CEILING — the throughput DoD below is NOT currently measurable with this harness.
-# `benchmarks/echo_server.py` is a single-threaded Python HTTP server and saturates at roughly
-# 2.7k req/s on an M4 Max, far below the 10k req/s DoD. Any run therefore measures the upstream,
-# not the proxy: a throughput "FAIL" here is a harness limitation, not a proxy regression.
-# RelayCore itself sustains >=80k req/s against a fast upstream on the same machine.
-# Tracked in docs/l7-first-engine-evolution-roadmap.md §15-1.
+# Upstream note: the default upstream is `benchmarks/rust_echo_server.rs` (~100k req/s direct on an
+# M4 Max), so these numbers describe the proxy. `UPSTREAM=python` or `--tls` falls back to
+# `echo_server.py`, which saturates near 2.7k req/s — below the DoD — and will show throughput
+# FAIL for upstream-bound reasons. Measured reference (M4 Max, 100 connections, 1KB payload):
+# direct upstream ~104k req/s, through RelayCore ~43k req/s.
 DOD_STARTUP=200
 DOD_IDLE_MB=85
 DOD_QPS=10000
@@ -201,8 +205,33 @@ now_ms() {
   python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
+# Build the fast Rust upstream once. The Python echo server saturates near 2.7k req/s, so any
+# throughput number measured against it described the upstream rather than the proxy.
+UPSTREAM_BIN="$SCRIPT_DIR/.bin/rust_echo_server"
+build_upstream() {
+  if [[ "$UPSTREAM" == "python" ]]; then
+    return 0
+  fi
+  if [[ -x "$UPSTREAM_BIN" && "$UPSTREAM_BIN" -nt "$SCRIPT_DIR/rust_echo_server.rs" ]]; then
+    return 0
+  fi
+  if ! command -v rustc >/dev/null 2>&1; then
+    info "rustc not found; falling back to the Python upstream (~2.7k req/s ceiling)"
+    UPSTREAM="python"
+    return 0
+  fi
+  mkdir -p "$SCRIPT_DIR/.bin"
+  info "Building Rust upstream (one-off)..."
+  if ! rustc -O -o "$UPSTREAM_BIN" "$SCRIPT_DIR/rust_echo_server.rs" 2>/tmp/relay_bench_upstream_build.log; then
+    info "Rust upstream build failed; falling back to Python (~2.7k req/s ceiling)"
+    UPSTREAM="python"
+    return 0
+  fi
+  return 0
+}
+
 start_target() {
-  local tls_env=""
+  # TLS mode still uses the Python server: the Rust upstream speaks plaintext only.
   if [[ "$TLS_MODE" -eq 1 ]]; then
     local tls_cert="$SCRIPT_DIR/.tls/echo-cert.pem"
     local tls_key="$SCRIPT_DIR/.tls/echo-key.pem"
@@ -212,8 +241,13 @@ start_target() {
         -keyout "$tls_key" -out "$tls_cert" -days 365 -nodes \
         -subj "/CN=localhost" 2>/dev/null
     fi
-    tls_env="TLS_PORT=$TARGET_PORT TLS_CERT=$tls_cert TLS_KEY=$tls_key"
-    PORT="$TARGET_PORT" $tls_env python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
+    if [[ "$UPSTREAM" == "rust" ]]; then
+      info "TLS mode requires the Python upstream; throughput will reflect the upstream ceiling"
+    fi
+    PORT="$TARGET_PORT" TLS_PORT="$TARGET_PORT" TLS_CERT="$tls_cert" TLS_KEY="$tls_key" \
+      python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
+  elif [[ "$UPSTREAM" == "rust" && -x "$UPSTREAM_BIN" ]]; then
+    PORT="$TARGET_PORT" "$UPSTREAM_BIN" >/tmp/relay_bench_target.log 2>&1 &
   else
     PORT="$TARGET_PORT" python3 "$SCRIPT_DIR/echo_server.py" >/tmp/relay_bench_target.log 2>&1 &
   fi
@@ -642,6 +676,8 @@ run_release_mode() {
   require_port_free "$API_PORT" "API" || return 1
   require_port_free "$TARGET_PORT" "TARGET" || return 1
 
+  build_upstream
+  info "Upstream: $UPSTREAM"
   start_target
   wait_target_ready || return 1
 
@@ -1012,6 +1048,8 @@ run_ramp_mode() {
     "$PROXY_BIN" ca generate --ca-cert "$CA_CERT" --ca-key "$CA_KEY" >/dev/null 2>&1 || true
   fi
 
+  build_upstream
+  info "Upstream: $UPSTREAM"
   start_target
   wait_target_ready || return 1
   info "Starting proxy..."
@@ -1122,6 +1160,8 @@ require_port_free "$PROXY_PORT" "PROXY" || exit 1
 require_port_free "$API_PORT" "API" || exit 1
 require_port_free "$TARGET_PORT" "TARGET" || exit 1
 
+build_upstream
+info "Upstream: $UPSTREAM"
 start_target
 wait_target_ready || exit 1
 

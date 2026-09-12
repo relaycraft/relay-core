@@ -82,6 +82,7 @@ ca_cert.json
 
 # Benchmarks artifacts
 benchmarks/__pycache__/
+benchmarks/.bin/
 benchmarks/bench_*.json
 benchmarks/bench_*.md
 benchmarks/*.csv
