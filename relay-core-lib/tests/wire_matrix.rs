@@ -145,11 +145,20 @@ impl Interceptor for MutateInterceptor {
         if self.phase != Phase::ResponseHeaders {
             return InterceptionResult::Continue;
         }
-        if let Layer::Http(http) = &mut flow.layer
-            && let Some(res) = &mut http.response
-        {
-            res.headers
-                .push(("x-wire-probe".to_string(), "from-interceptor".to_string()));
+        match &mut flow.layer {
+            Layer::Http(http) => {
+                if let Some(res) = &mut http.response {
+                    res.headers
+                        .push(("x-wire-probe".to_string(), "from-interceptor".to_string()));
+                }
+            }
+            // A WebSocket flow carries its handshake response separately.
+            Layer::WebSocket(ws) => {
+                ws.handshake_response
+                    .headers
+                    .push(("x-wire-probe".to_string(), "from-interceptor".to_string()));
+            }
+            _ => {}
         }
         InterceptionResult::Continue
     }
@@ -575,13 +584,10 @@ async fn wire_matrix_stage_guard_applies_mutation_once_per_chain() {
 
 // ── WebSocket handshake ─────────────────────────────────────────────────────────────
 //
-// Known gap: the WebSocket path builds the client's `101 Switching Protocols` response straight
-// from the upstream `Parts` (`proxy/websocket.rs:293-299`) and never calls
-// `Interceptor::on_response_headers` — it is the only hook the WS path skips. So handshake
-// response-header mutations cannot reach the client, and `flow.handshake_response` is never
-// updated (see the comment at `proxy/websocket.rs:314-318`).
-//
-// Un-ignore together with the WebSocket response-head convergence work.
+// Fixed in A5c: the WS path now records the upstream handshake response on the live Flow, runs
+// `Interceptor::on_response_headers` (previously the only hook it skipped), and builds the client's
+// 101 from the Flow — so handshake response-header mutations reach the client and
+// `flow.handshake_response` is finally populated for observation.
 
 /// Upstream that accepts a WebSocket upgrade so RelayCore has a real 101 to relay.
 async fn spawn_ws_upstream() -> SocketAddr {
@@ -603,7 +609,6 @@ async fn spawn_ws_upstream() -> SocketAddr {
 }
 
 #[tokio::test]
-#[ignore = "roadmap §24.1: WS handshake response headers are never interceptable"]
 async fn wire_matrix_ws_handshake_response_header_reaches_client() {
     init_crypto();
 

@@ -4,6 +4,7 @@ use crate::intercept::types::{
 };
 use crate::proxy::http_utils::{
     create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
+    update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use chrono::Utc;
@@ -290,12 +291,80 @@ where
                     }
                 });
 
-                let mut client_resp_builder = Response::builder()
-                    .status(StatusCode::SWITCHING_PROTOCOLS)
-                    .version(parts.version);
+                // Record the upstream handshake response on the live Flow so it is observable,
+                // then let interceptors act on it. This is the only point where the WS path can
+                // run the response-header stage; it previously skipped it entirely and built the
+                // client's 101 straight from the upstream Parts, so WS handshake response-header
+                // mutations could never reach the client.
+                update_flow_with_response_headers(
+                    &mut flow,
+                    parts.status,
+                    parts.version,
+                    &parts.headers,
+                );
 
-                for (k, v) in parts.headers.iter() {
-                    client_resp_builder = client_resp_builder.header(k, v);
+                match interceptor.on_response_headers(&mut flow).await {
+                    InterceptionResult::Drop => {
+                        if on_flow
+                            .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+                            .is_err()
+                        {
+                            crate::metrics::inc_flows_dropped();
+                        }
+                        return Ok(create_error_response(
+                            StatusCode::FORBIDDEN,
+                            "WebSocket handshake response dropped by policy",
+                        ));
+                    }
+                    InterceptionResult::MockResponse(mock) => {
+                        if on_flow
+                            .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+                            .is_err()
+                        {
+                            crate::metrics::inc_flows_dropped();
+                        }
+                        return Ok(mock_to_response(mock));
+                    }
+                    InterceptionResult::ModifiedResponse(resp) => {
+                        if on_flow
+                            .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+                            .is_err()
+                        {
+                            crate::metrics::inc_flows_dropped();
+                        }
+                        return Ok(mock_to_response(resp));
+                    }
+                    _ => {}
+                }
+
+                // Build the client's 101 from the Flow so interceptor changes are what the client
+                // sees. Framing headers are omitted: this response carries no body, and the upgrade
+                // continues on the raw socket.
+                let handshake = match &flow.layer {
+                    Layer::WebSocket(ws) => Some(&ws.handshake_response),
+                    _ => None,
+                };
+                let status = handshake
+                    .and_then(|h| StatusCode::from_u16(h.status).ok())
+                    .unwrap_or(StatusCode::SWITCHING_PROTOCOLS);
+
+                let mut client_resp_builder =
+                    Response::builder().status(status).version(parts.version);
+
+                if let Some(handshake) = handshake {
+                    for (k, v) in &handshake.headers {
+                        if k.eq_ignore_ascii_case("content-length")
+                            || k.eq_ignore_ascii_case("transfer-encoding")
+                        {
+                            continue;
+                        }
+                        if let (Ok(name), Ok(val)) = (
+                            HeaderName::from_bytes(k.as_bytes()),
+                            HeaderValue::from_str(v),
+                        ) {
+                            client_resp_builder = client_resp_builder.header(name, val);
+                        }
+                    }
                 }
 
                 let client_resp = match client_resp_builder
@@ -311,11 +380,12 @@ where
                     }
                 };
 
-                // Update handshake response in flow (but we don't send update here as flow is moved/cloned)
-                // Ideally we should send an update here for the handshake response
-                // But `flow` variable is local.
-                // We can construct a partial update? Or just ignore.
-                // The tunnel will send messages.
+                if on_flow
+                    .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+                    .is_err()
+                {
+                    crate::metrics::inc_flows_dropped();
+                }
 
                 Ok(client_resp)
             } else {

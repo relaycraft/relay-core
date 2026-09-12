@@ -920,7 +920,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 | `SetRequestBody` / `TransformRequestBody` | ✅ 已修复 | 检测到 Flow 持有替换体时改由 Flow 提供 body 并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`）；未被替换的 body 仍保持流式 | `proxy/http_utils.rs` `build_request_body_from_flow` / `reframe_request_headers_for_replaced_body` |
 | `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
 | `MockWebSocketMessage` | ⬜ 未修复 | 帧被 Drop 而非替换 | `interceptors/rule.rs:134`；`inspect.rs:37-43` |
-| WebSocket 握手响应头 | ⬜ 未修复 | WS 路径**从不调用** `on_response_headers`，101 直接由上游 `Parts` 构造 | `proxy/websocket.rs:293-299`；对照 `http.rs:96` |
+| WebSocket 握手响应头 | ✅ 已修复 | WS 路径现调用 `on_response_headers` 并记录 `flow.handshake_response`，101 由 Flow 构造；同时补齐了此前缺失的握手响应可观测性 | `proxy/websocket.rs` |
 | `MapRemote`（WebSocket 握手） | ⬜ 未修复 | 目标取自 `meta.url_str` 原值 | `proxy/websocket.rs:213` |
 | `ForwardPort` 的 `target_host` | ⬜ 未修复 | 仅 `port` 生效 | `proxy/server.rs:224-231` |
 
@@ -1025,13 +1025,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   RSS 不可测即失败、报告闸门、`CARGO_TARGET_DIR` 支持、`commit-baseline.sh` 拒绝非 PASS 报告
 - ✅ 上游性能上限解除：`benchmarks/rust_echo_server.rs` 取代饱和于 ~2.7k req/s 的 Python
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
-- ✅ wire-level 矩阵（`relay-core-lib/tests/wire_matrix.rs`）：6 个用例通过
-  （基线往返、请求头、请求 body、响应头、响应状态、链式单次应用），1 个缺陷用 `#[ignore]`
-  钉住并已验证确实失败（WS 握手响应头）
+- ✅ wire-level 矩阵（`relay-core-lib/tests/wire_matrix.rs`）：**6 个用例全部通过，无 `#[ignore]`
+  占位**（基线往返、请求头、请求 body、响应头、响应状态、链式单次应用、WS 握手响应头）
 - ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
 - ✅ A5a HTTP 响应方向收敛（§24.1 响应头/状态已修复）
 - ✅ A5b 请求 body 替换生效并重建 framing（§24.1 `SetRequestBody` 已修复）
+- ✅ A5c WS 握手响应收敛并补齐 `on_response_headers`（§24.1 WS 握手项已修复）
 - ✅ A1 双执行已修复（§24.4，stage_guard）
-- ⬜ §24.1 剩余：`SetResponseBody`/`TransformResponseBody`、WS 握手响应头、
-  `MockWebSocketMessage`、`MapRemote`(WS)、`ForwardPort` host、`SetTtl`
+- ⬜ §24.1 剩余：`SetResponseBody`/`TransformResponseBody`、`MockWebSocketMessage`、
+  `MapRemote`(WS)、`ForwardPort` host、`SetTtl`
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放
