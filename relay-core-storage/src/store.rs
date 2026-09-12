@@ -196,6 +196,93 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite already-stored flows through `redact`, returning how many rows changed.
+    ///
+    /// Turning redaction on used to affect only new writes, so a database that had been running
+    /// without it kept its original headers, URLs and bodies forever. This closes that gap: an
+    /// operator can retroactively apply the policy to existing history.
+    ///
+    /// Rows are read in pages rather than all at once, so a large history does not have to fit in
+    /// memory. `redact` returns the replacement flow for a stored one.
+    pub async fn redact_existing_flows<F>(&self, redact: F) -> Result<u64>
+    where
+        F: Fn(&Value) -> Value,
+    {
+        const PAGE: i64 = 200;
+        let mut changed = 0u64;
+        let mut offset = 0i64;
+
+        loop {
+            let rows: Vec<(String, Value)> =
+                sqlx::query_as("SELECT id, content FROM flows ORDER BY id LIMIT ? OFFSET ?;")
+                    .bind(PAGE)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for (id, content) in rows {
+                let redacted = redact(&content);
+                if redacted != content {
+                    // `upsert_flow` would restamp `created_at`, which is the row's history; keep it.
+                    sqlx::query("UPDATE flows SET content = ? WHERE id = ?;")
+                        .bind(&redacted)
+                        .bind(&id)
+                        .execute(&self.pool)
+                        .await?;
+                    changed += 1;
+                }
+            }
+
+            offset += PAGE;
+        }
+
+        Ok(changed)
+    }
+
+    /// Rewrite already-stored flow summaries through `redact`, returning how many changed.
+    pub async fn redact_existing_flow_summaries<F>(&self, redact: F) -> Result<u64>
+    where
+        F: Fn(&Value) -> Value,
+    {
+        const PAGE: i64 = 200;
+        let mut changed = 0u64;
+        let mut offset = 0i64;
+
+        loop {
+            let rows: Vec<(String, Value)> = sqlx::query_as(
+                "SELECT id, content FROM flow_summaries ORDER BY id LIMIT ? OFFSET ?;",
+            )
+            .bind(PAGE)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            for (id, content) in rows {
+                let redacted = redact(&content);
+                if redacted != content {
+                    sqlx::query("UPDATE flow_summaries SET content = ? WHERE id = ?;")
+                        .bind(&redacted)
+                        .bind(&id)
+                        .execute(&self.pool)
+                        .await?;
+                    changed += 1;
+                }
+            }
+
+            offset += PAGE;
+        }
+
+        Ok(changed)
+    }
+
     /// Apply a retention policy, deleting the oldest rows beyond its bounds.
     ///
     /// Ordering matters: summaries are pruned by the same keys as flows so the two tables cannot

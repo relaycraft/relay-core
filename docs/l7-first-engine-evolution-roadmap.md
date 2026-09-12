@@ -1024,6 +1024,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   此前脱敏只存在于输出路径，因此开启策略后**磁盘上仍是原始 headers/URL/body**——
   文件里正是 API 正在隐藏的那些秘密。契约由直接读取数据库文件的测试锁定
   （绕过所有输出路径脱敏），已双向验证。
+- ✅ **历史数据可追溯脱敏**：`CoreState::redact_stored_history` + `Store::redact_existing_flows`
+  / `redact_existing_flow_summaries`。此前开启脱敏只影响**新写入**，因此之前落盘的秘密会
+  **永久留在磁盘上**；现在可按需对既有历史重写（分页读取，避免把整库读进内存，
+  且不改动 `created_at`/索引时间戳）。策略关闭时为空操作。2 个测试覆盖：
+  开启后重写历史（已双向验证）、关闭时不动任何行。
 
 ### 24.9 协议与压缩
 

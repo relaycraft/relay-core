@@ -826,6 +826,65 @@ impl CoreState {
             .unwrap_or_else(|_| Arc::new(RuleEngine::new(Vec::new(), Vec::new(), None, None)))
     }
 
+    /// Retroactively apply the current redaction policy to history already on disk.
+    ///
+    /// Enabling redaction used to affect only new writes, so a database that had run without it kept
+    /// its original secrets indefinitely. Returns how many rows were rewritten, and does nothing when
+    /// redaction is disabled — a pass that would change nothing is not worth the IO.
+    pub async fn redact_stored_history(&self) -> Option<u64> {
+        let url = self.db_url.clone()?;
+        let policy = self.current_redaction_policy();
+        if !policy.enabled {
+            return Some(0);
+        }
+
+        let store = match Store::connect(&url).await {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!("Retroactive redaction: could not open the store: {}", e);
+                return None;
+            }
+        };
+
+        // Reuse the exact helpers the output and persistence paths use, so the three cannot diverge.
+        let flows = store
+            .redact_existing_flows(|value| {
+                match serde_json::from_value::<Flow>(value.clone()) {
+                    Ok(flow) => {
+                        serde_json::to_value(redact_flow(flow, &policy)).unwrap_or_default()
+                    }
+                    // Unreadable row: leave it untouched rather than replacing it with null.
+                    Err(_) => value.clone(),
+                }
+            })
+            .await;
+
+        let summaries = store
+            .redact_existing_flow_summaries(|value| {
+                match serde_json::from_value::<FlowSummary>(value.clone()) {
+                    Ok(summary) => serde_json::to_value(redact_flow_summary(summary, &policy))
+                        .unwrap_or_default(),
+                    Err(_) => value.clone(),
+                }
+            })
+            .await;
+
+        match (flows, summaries) {
+            (Ok(flows), Ok(summaries)) => {
+                tracing::info!(
+                    "Retroactive redaction rewrote {} flows and {} summaries",
+                    flows,
+                    summaries
+                );
+                Some(flows + summaries)
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::error!("Retroactive redaction failed: {}", e);
+                None
+            }
+        }
+    }
+
     /// Set how much history the store keeps, and start pruning in the background.
     ///
     /// The policy is opt-in: the default keeps everything, so an existing deployment is unaffected
@@ -2588,6 +2647,79 @@ mod tests {
         assert!(text.contains("relay_core_audit_events_lagged_total 4"));
         assert!(text.contains("relay_core_oldest_intercept_age_ms 0"));
         assert!(text.contains("relay_core_oldest_ws_message_age_ms 0"));
+    }
+
+    /// History written while redaction was off must be rewritten when it is turned on.
+    ///
+    /// Enabling redaction previously only affected new writes, so secrets persisted earlier stayed on
+    /// disk for the life of the database.
+    #[tokio::test]
+    async fn enabling_redaction_rewrites_history_already_on_disk() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+
+        // Persist while redaction is off, so the raw secret really is written.
+        let mut flow = sample_http_flow("api.example.com", "/old", "GET", 200, 1_700_000_030_000);
+        if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
+            http.request.headers.push((
+                "authorization".to_string(),
+                "Bearer legacy-secret".to_string(),
+            ));
+        }
+        state.upsert_flow(Box::new(flow.clone()));
+        sleep(Duration::from_millis(80)).await;
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        let before = store
+            .load_flow(&flow.id.to_string())
+            .await
+            .expect("load")
+            .expect("row");
+        assert!(
+            before.to_string().contains("legacy-secret"),
+            "precondition: the secret is on disk before redaction is enabled"
+        );
+
+        // Now turn redaction on and ask for a retroactive pass.
+        state.update_policy(ProxyPolicy {
+            redaction: RedactionPolicy {
+                enabled: true,
+                sensitive_header_names: vec!["authorization".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let changed = state
+            .redact_stored_history()
+            .await
+            .expect("retroactive pass should report");
+        assert!(
+            changed > 0,
+            "at least one stored row should have been rewritten"
+        );
+
+        let after = store
+            .load_flow(&flow.id.to_string())
+            .await
+            .expect("load")
+            .expect("row");
+        assert!(
+            !after.to_string().contains("legacy-secret"),
+            "history persisted before redaction was enabled must be rewritten"
+        );
+    }
+
+    /// With redaction off, a retroactive pass must not touch anything.
+    #[tokio::test]
+    async fn retroactive_redaction_is_a_no_op_when_disabled() {
+        let state = CoreState::new(Some(sqlite_url())).await;
+        assert_eq!(
+            state.redact_stored_history().await,
+            Some(0),
+            "a disabled policy must not rewrite history"
+        );
     }
 
     /// Persisting flows with a bound set must actually evict old rows through the runtime, not just
