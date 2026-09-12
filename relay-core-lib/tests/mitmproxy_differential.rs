@@ -312,23 +312,30 @@ async fn spawn_relay_core(
     (addr, handle)
 }
 
-/// Start mitmproxy with an addon that rewrites the response body, mirroring the RelayCore fixture.
+/// Start mitmproxy, optionally with an addon.
+///
+/// An empty `addon` means "no addon": writing a zero-byte file and pointing `--scripts` at it makes
+/// mitmproxy fail to load and serve nothing, which previously made the baseline fixtures fail rather
+/// than test anything.
 fn spawn_mitmproxy(addon: &str) -> Option<(SocketAddr, ProxyProcess)> {
     let port = free_port()?;
-    let script = write_addon(addon)?;
 
-    let child = Command::new("mitmdump")
+    let mut command = Command::new("mitmdump");
+    command
         .arg("--quiet")
         .arg("--listen-host")
         .arg("127.0.0.1")
         .arg("--listen-port")
         .arg(port.to_string())
-        .arg("--scripts")
-        .arg(&script)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+
+    if !addon.is_empty() {
+        let script = write_addon(addon)?;
+        command.arg("--scripts").arg(&script);
+    }
+
+    let child = command.spawn().ok()?;
 
     Some((
         SocketAddr::from(([127, 0, 0, 1], port)),
@@ -351,9 +358,26 @@ fn write_addon(body: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// Is the proxy accepting connections?
 async fn wait_for_proxy(addr: SocketAddr) -> bool {
     for _ in 0..60 {
         if TcpStream::connect(addr).await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// Wait until the proxy *behaves* as the fixture expects, not merely until its port is open.
+///
+/// mitmproxy accepts connections before it has finished loading addons, so a request sent as soon as
+/// the port opens can pass through unrewritten. Probing for the expected effect removes that race
+/// instead of relying on a sleep long enough to usually win it.
+async fn wait_until_rewrite_is_active(addr: SocketAddr, upstream: SocketAddr) -> bool {
+    for _ in 0..60 {
+        let observed = observe_through_proxy(addr, upstream, "/plain").await;
+        if observed.decoded_body == REWRITE_TARGET {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -452,6 +476,9 @@ async fn differential_untouched_gzip_matches_mitmproxy() {
 
 /// Addon that rewrites the response body the same way the RelayCore fixture does, so the two
 /// implementations can be compared on the bytes a client receives.
+/// What the rewriting addon and the RelayCore interceptor both produce.
+const REWRITE_TARGET: &str = "REWRITTEN-BY-PROXY";
+
 const REWRITE_ADDON: &str = r#"
 from mitmproxy import http
 
@@ -483,6 +510,10 @@ async fn differential_rewritten_gzip_matches_mitmproxy() {
     assert!(
         wait_for_proxy(mitm_addr).await,
         "mitmproxy did not start listening"
+    );
+    assert!(
+        wait_until_rewrite_is_active(mitm_addr, upstream).await,
+        "mitmproxy never applied its addon, so there is nothing to compare against"
     );
     let mitm = observe_through_proxy(mitm_addr, upstream, "/gzip").await;
 
