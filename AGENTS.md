@@ -23,6 +23,16 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
 
 ## 3. Documentation Standards
 *   **Bilingual**: All major documentation should be in English and Chinese (where possible/practical).
+*   **Alignment source**: engine scope, priority and acceptance criteria live in
+    [`docs/l7-first-engine-evolution-roadmap.md`](./docs/l7-first-engine-evolution-roadmap.md).
+    Its §24 lists **known wire-level gaps** — capabilities present in code but not effective on the
+    wire. Do not mark such a capability `Stable`, and do not advertise it, until it is fixed.
+*   **Archived**: everything under `.ai/archived/**` (including `full-roadmap-2026.md`) is background
+    only and is not a delivery target. Where archived docs disagree with the roadmap, the roadmap wins.
+    See [`.ai/README.md`](./.ai/README.md).
+*   **Local build note**: global `~/.cargo/config.toml` may set `target-dir` outside the repo.
+    If `cargo` fails with `Operation not permitted`, re-run with
+    `CARGO_TARGET_DIR="$PWD/target-dsh"` (gitignored).
 
 ## 4. Architecture Overview
 *   **`relay-core-lib`**: The packet/connection engine (capture, proxy, MITM, protocol parsing, interception hooks).

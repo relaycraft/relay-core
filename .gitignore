@@ -59,6 +59,9 @@ target/
 tmp/
 temp/
 
+# Session-local cargo target dir (used when the global target-dir is outside the repo)
+target-dsh/
+
 # AI tool directories and local docs
 .ai/
 .kilo/
