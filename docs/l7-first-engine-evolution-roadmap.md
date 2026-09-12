@@ -1015,7 +1015,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   flows 与 summaries 按同一排序键裁剪以免两表漂移；audit 独立设界（合规记录不应被流量历史
   挤掉）。若未接入调用方则不会自动生效——**接线到 runtime 仍待做**。
   4 个测试覆盖：无界不删、按数量保留最新、按时间只删过期、audit 独立界不影响流量。
-- ⬜ 脱敏只在输出路径（`runtime/src/lib.rs:1501-1564`），`persist_flow` 落盘为原始 Flow——待做
+- ✅ **落盘前脱敏已修复**：`FlowStoreActor` 持有与 `CoreState` **共享**的 `RedactionPolicy`
+  （`update_policy_from` 同步更新），`persist_flow` 在序列化**之前**对 Flow 与 Summary 脱敏。
+  此前脱敏只存在于输出路径，因此开启策略后**磁盘上仍是原始 headers/URL/body**——
+  文件里正是 API 正在隐藏的那些秘密。契约由直接读取数据库文件的测试锁定
+  （绕过所有输出路径脱敏），已双向验证。
 
 ### 24.9 协议与压缩
 

@@ -320,6 +320,8 @@ pub struct CoreState {
     #[cfg(feature = "script")]
     pub script_interceptor: Arc<ScriptInterceptor>,
     pub policy_tx: watch::Sender<ProxyPolicy>,
+    /// Redaction view used when persisting, kept in step with `policy_tx`'s redaction section.
+    pub(crate) redaction_handle: Arc<std::sync::RwLock<RedactionPolicy>>,
     pub flows_dropped: Arc<AtomicUsize>,
     audit_events_total: Arc<AtomicUsize>,
     audit_events_failed: Arc<AtomicUsize>,
@@ -354,7 +356,10 @@ impl CoreState {
         };
 
         let (flow_tx, flow_rx) = mpsc::channel(10000);
-        let flow_actor = FlowStoreActor::new(flow_rx, store.clone());
+        // Persistence-time redaction. Seeded from the default policy and updated by
+        // `update_policy_from`, which is the single place a policy change is applied.
+        let redaction_handle = Arc::new(std::sync::RwLock::new(RedactionPolicy::default()));
+        let flow_actor = FlowStoreActor::new(flow_rx, store.clone(), redaction_handle.clone());
         tokio::spawn(flow_actor.run());
 
         let (intercept_tx, intercept_rx) = mpsc::channel(1000);
@@ -381,6 +386,7 @@ impl CoreState {
             #[cfg(feature = "script")]
             script_interceptor: Arc::new(script_interceptor),
             policy_tx,
+            redaction_handle,
             flows_dropped: Arc::new(AtomicUsize::new(0)),
             audit_events_total: Arc::new(AtomicUsize::new(0)),
             audit_events_failed: Arc::new(AtomicUsize::new(0)),
@@ -836,6 +842,10 @@ impl CoreState {
             "redact_bodies": policy.redaction.redact_bodies
         });
 
+        // Keep the persistence-time redaction view in step with the output-time view.
+        if let Ok(mut current) = self.redaction_handle.write() {
+            *current = policy.redaction.clone();
+        }
         self.policy_tx.send_replace(policy);
         self.record_audit_event(AuditEvent::new(
             actor,
@@ -1523,7 +1533,7 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
     }
 }
 
-fn redact_flow(mut flow: Flow, redaction: &RedactionPolicy) -> Flow {
+pub(crate) fn redact_flow(mut flow: Flow, redaction: &RedactionPolicy) -> Flow {
     if !redaction.enabled {
         return flow;
     }
@@ -1574,7 +1584,10 @@ fn flow_url_method(flow: &Flow) -> (String, String) {
     }
 }
 
-fn redact_flow_summary(mut summary: FlowSummary, redaction: &RedactionPolicy) -> FlowSummary {
+pub(crate) fn redact_flow_summary(
+    mut summary: FlowSummary,
+    redaction: &RedactionPolicy,
+) -> FlowSummary {
     if !redaction.enabled {
         return summary;
     }
@@ -2477,6 +2490,69 @@ mod tests {
         assert!(text.contains("relay_core_audit_events_lagged_total 4"));
         assert!(text.contains("relay_core_oldest_intercept_age_ms 0"));
         assert!(text.contains("relay_core_oldest_ws_message_age_ms 0"));
+    }
+
+    /// A configured redaction policy must apply **before** persistence, not only on output.
+    ///
+    /// Redaction used to exist solely on the read path, so `persist_flow` wrote raw headers, URLs and
+    /// bodies to disk: the file contained exactly the secrets the API was busy hiding. This reads the
+    /// database directly — bypassing every output-path redaction — so it cannot pass by accident.
+    #[tokio::test]
+    async fn persisted_flow_is_redacted_when_the_policy_says_so() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+
+        let policy = ProxyPolicy {
+            redaction: RedactionPolicy {
+                enabled: true,
+                sensitive_header_names: vec!["authorization".to_string()],
+                redact_bodies: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        state.update_policy(policy);
+
+        let mut flow =
+            sample_http_flow("api.example.com", "/secret", "GET", 200, 1_700_000_010_000);
+        if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
+            http.request.headers.push((
+                "authorization".to_string(),
+                "Bearer super-secret-token".to_string(),
+            ));
+            http.request.body = Some(relay_core_api::flow::BodyData {
+                encoding: "utf-8".to_string(),
+                content: "top-secret-payload".to_string(),
+                size: 18,
+            });
+        }
+
+        state.upsert_flow(Box::new(flow.clone()));
+
+        // Read straight from the file, so no output-path redaction can mask a raw write.
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("connect to the same database");
+        let raw = loop {
+            if let Some(value) = store
+                .load_flow(&flow.id.to_string())
+                .await
+                .expect("load persisted flow")
+            {
+                break value;
+            }
+            sleep(Duration::from_millis(20)).await;
+        };
+        let serialized = raw.to_string();
+
+        assert!(
+            !serialized.contains("super-secret-token"),
+            "a sensitive header value must never reach disk, found: {serialized}"
+        );
+        assert!(
+            !serialized.contains("top-secret-payload"),
+            "a redacted body must never reach disk, found: {serialized}"
+        );
     }
 
     #[tokio::test]

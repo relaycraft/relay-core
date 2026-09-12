@@ -1,8 +1,10 @@
 use lru::LruCache;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer, ResilienceTrace, WebSocketMessage};
 use relay_core_api::modification::{FlowQuery, FlowSummary, flow_matches_query};
+use relay_core_api::policy::RedactionPolicy;
 use relay_core_storage::store::Store;
 use std::num::NonZeroUsize;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
@@ -38,25 +40,50 @@ pub struct FlowStoreActor {
     receiver: mpsc::Receiver<FlowStoreMessage>,
     store: Option<Store>,
     total_processed: usize,
+    /// Redaction is applied **before** the bytes reach the database.
+    ///
+    /// Redaction used to exist only on the output path, so a configured policy still wrote raw
+    /// headers, URLs and bodies to disk: the file held secrets the API was busy hiding. The handle
+    /// is shared with `CoreState`, so a runtime policy change applies to subsequent writes without
+    /// restarting the actor.
+    redaction: Arc<RwLock<RedactionPolicy>>,
 }
 
 impl FlowStoreActor {
-    pub fn new(receiver: mpsc::Receiver<FlowStoreMessage>, store: Option<Store>) -> Self {
+    pub fn new(
+        receiver: mpsc::Receiver<FlowStoreMessage>,
+        store: Option<Store>,
+        redaction: Arc<RwLock<RedactionPolicy>>,
+    ) -> Self {
         Self {
             flows: LruCache::new(NonZeroUsize::new(200).expect("cache size > 0")),
             receiver,
             store,
             total_processed: 0,
+            redaction,
         }
+    }
+
+    /// Apply the current redaction policy to a flow before it is written.
+    fn redact(&self, flow: &Flow) -> Flow {
+        let policy = self.redaction.read().map(|p| p.clone()).unwrap_or_default();
+        crate::redact_flow(flow.clone(), &policy)
+    }
+
+    fn redaction_policy(&self) -> RedactionPolicy {
+        self.redaction.read().map(|p| p.clone()).unwrap_or_default()
     }
 
     async fn persist_flow(&self, flow: &Flow) {
         if let Some(store) = &self.store {
-            let flow_json = serde_json::to_value(flow).unwrap_or_default();
+            // Never write what the policy says must be hidden.
+            let flow = self.redact(flow);
+            let flow_json = serde_json::to_value(&flow).unwrap_or_default();
             if let Err(e) = store.upsert_flow(&flow.id.to_string(), &flow_json).await {
                 tracing::error!("Failed to persist flow {}: {}", flow.id, e);
             }
-            let summary = flow_to_summary(flow);
+            let summary =
+                crate::redact_flow_summary(flow_to_summary(&flow), &self.redaction_policy());
             if let Err(e) = store.upsert_flow_summary(&summary).await {
                 tracing::error!("Failed to persist flow summary {}: {}", flow.id, e);
             }
