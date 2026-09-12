@@ -57,7 +57,18 @@ PROXY_BIN="${RELAY_CORE_BIN:-$TARGET_DIR/release/relay-core-cli}"
 PROXY_PORT="${PROXY_PORT:-18880}"
 TARGET_PORT="${TARGET_PORT:-19100}"
 API_PORT="${API_PORT:-18882}"
-CONNECTIONS="${CONNECTIONS:-100}"
+# Concurrency for the load generator.
+#
+# 100 was unusable: RelayCore answers with `Connection: close`, so oha cannot reuse connections and
+# every request needs a fresh client port. At 100 connections over a 20s round that exhausts the
+# macOS ephemeral range (`Can't assign requested address (os error 49)`, tens of thousands of
+# failures) and the success rate collapses to 0-30% while the proxy is healthy — a pure load
+# generator artifact, now detected and reported as INVALID instead of as a regression.
+#
+# 25 connections sustains >=45k req/s with ~1% variance and 100% success, so it measures the proxy
+# rather than the harness. Raise it deliberately (with a shorter --duration) if a run needs higher
+# concurrency; expect port exhaustion beyond roughly 50.
+CONNECTIONS="${CONNECTIONS:-25}"
 
 CA_CERT="$REPO_ROOT/benchmarks/.bench_ca_cert.pem"
 CA_KEY="$REPO_ROOT/benchmarks/.bench_ca_key.pem"

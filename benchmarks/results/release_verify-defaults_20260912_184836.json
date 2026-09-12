@@ -1,0 +1,39 @@
+{
+  "report_type": "release",
+  "version": "erify-defaults",
+  "commit": "7160d99",
+  "timestamp": "2026-09-12T10:49:10Z",
+  "environment": {
+    "os": "macOS 26.5.2",
+    "cpu": "Apple M4 Max",
+    "cpu_cores": 16,
+    "ram_gb": 64,
+    "rustc": "1.95.0",
+    "load_tool": "oha 1.15.0",
+    "memory_metric": "rss"
+  },
+  "methodology": {
+    "warmup_rounds": 1,
+    "measurement_rounds": 2,
+    "duration_per_round_s": 10,
+    "connections": 25
+  },
+  "results": {
+    "cold_start_ms": {"mean": 136.5, "stddev": 3.54, "min": 134.0, "max": 139.0, "values": [134.0, 139.0], "n": 2},
+    "idle_rss_mb": {"mean": 52.0, "stddev": 0.0, "min": 52.0, "max": 52.0, "values": [52.0, 52.0], "n": 2},
+    "api_flows_query_ms": 3.44,
+    "api_flow_detail_ms": 0.68,
+    "api_sse_first_event_ms": 10.88
+  },
+  "load_errors": "aborted due to deadline x24; aborted due to deadline x23; ",
+  "scenarios": [{"id":"S1","payload_kb":1,"throughput":{"mean": 49881.5, "stddev": 402.34, "min": 49597.0, "max": 50166.0, "values": [50166.0, 49597.0]},"latency_p99":{"mean": 0.86, "stddev": 0.04, "min": 0.84, "max": 0.89, "values": [0.84, 0.89]}}],
+  "dod": {
+    "cold_start": "PASS",
+    "idle_rss": "PASS",
+    "throughput_s1": "PASS",
+    "latency_p99_s1": "PASS",
+    "success_rate_s1": "PASS",
+    "api_flow_detail": "OK",
+    "api_sse": "OK"
+  }
+}

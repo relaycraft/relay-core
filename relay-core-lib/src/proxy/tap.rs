@@ -1,23 +1,22 @@
 use crate::interceptor::{BoxError, HttpBody};
 use crate::proxy::body_codec::process_body;
+use crate::proxy::body_plan::{PrefixBuffer, buffer_prefix};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::Sender;
 
+/// Streaming body observer: forwards every frame untouched while retaining a bounded prefix.
+///
+/// Prefix retention is delegated to [`crate::proxy::body_plan::buffer_prefix`] so this observation
+/// path and [`BodyPlan::Capture`](relay_core_api::body_plan::BodyPlan) share one implementation.
 pub struct TapBody {
-    inner: HttpBody,
+    inner: PrefixBuffer,
     flow_id: String,
     on_flow: Sender<FlowUpdate>,
     direction: Direction,
-    buffer: Vec<u8>,
-    limit: usize,
     headers: Vec<(String, String)>,
-    /// Set to true when accumulated bytes exceed the limit.
-    pub budget_exceeded: bool,
-    /// Total bytes passed through.
-    pub total_bytes: u64,
 }
 
 impl TapBody {
@@ -31,16 +30,22 @@ impl TapBody {
     ) -> Self {
         crate::metrics::inc_proxy_stream_mode_tap();
         Self {
-            inner,
+            inner: buffer_prefix(inner, limit),
             flow_id,
             on_flow,
             direction,
-            buffer: Vec::new(),
-            limit,
             headers,
-            budget_exceeded: false,
-            total_bytes: 0,
         }
+    }
+
+    /// Whether the retention budget was reached, meaning the recorded body is a prefix.
+    pub fn budget_exceeded(&self) -> bool {
+        self.inner.truncated()
+    }
+
+    /// Bytes observed so far.
+    pub fn total_bytes(&self) -> u64 {
+        self.inner.observed_bytes()
     }
 }
 
@@ -56,27 +61,21 @@ impl Body for TapBody {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     let len = data.len() as u64;
-                    self.total_bytes += len;
                     match self.direction {
                         Direction::ClientToServer => crate::metrics::add_bytes_sent(len),
                         Direction::ServerToClient => crate::metrics::add_bytes_recv(len),
-                    }
-                    if self.buffer.len() < self.limit {
-                        let len = std::cmp::min(data.len(), self.limit - self.buffer.len());
-                        self.buffer.extend_from_slice(&data[..len]);
-                    }
-                    if self.buffer.len() >= self.limit {
-                        self.budget_exceeded = true;
                     }
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
-                let (encoding, content) = process_body(&self.buffer, &self.headers);
+                let snapshot = self.inner.snapshot();
+                let (encoding, content) = process_body(&snapshot.bytes, &self.headers);
                 let body_data = BodyData {
                     encoding,
                     content,
-                    size: self.total_bytes, // Report actual transfer size, not truncated buffer
+                    // Report the observed transfer size, not the truncated buffer length.
+                    size: snapshot.total_bytes,
                 };
 
                 let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
@@ -86,7 +85,7 @@ impl Body for TapBody {
                 });
 
                 // P1: Notify budget exceeded for streaming-first pipeline
-                if self.budget_exceeded {
+                if snapshot.truncated {
                     crate::metrics::inc_proxy_body_degraded();
                     crate::metrics::inc_proxy_stream_mode_degrade();
                     let _ = self.on_flow.try_send(FlowUpdate::BodyBudgetExceeded {

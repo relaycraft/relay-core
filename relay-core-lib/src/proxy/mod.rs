@@ -12,6 +12,7 @@
 //! - `outbound`: Outbound connector abstraction (direct / upstream proxy).
 
 pub mod body_codec;
+pub mod body_plan;
 pub mod budget;
 pub mod circuit_breaker;
 pub mod http;

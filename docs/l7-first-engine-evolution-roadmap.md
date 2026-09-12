@@ -1031,6 +1031,20 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   根治需要在 A6（BodyPlan）中统一 body 计划，而不是各处自行缓冲。
 - 未来在 `Flow.meta` 中引入「body 显式替换」标记，可让未被替换的 body 免于该次物化。
 
+**A6 BodyPlan / 类型化事件（进行中）**
+
+- ✅ 新增 `relay-core-api/src/body_plan.rs`：`BodyPlan { PassThrough, Capture{limit}, Buffer{limit} }`
+  与纯决策函数 `decide(BodyPlanInputs)`，含单测（无消费者→PassThrough；仅观察→Capture 保持流式；
+  任一改写方→Buffer；budget=0→不缓冲）。
+- ✅ 新增 `relay-core-lib/src/proxy/body_plan.rs`：`PrefixBuffer` 保留有界前缀且**不改变线路字节**，
+  超预算明确标记 `truncated`（供 body 规则拒绝对前缀做匹配），并有单测覆盖「超限仍完整转发」
+  与「读到上限即停」。
+- ✅ `TapBody` 改为委托 `buffer_prefix`，消除重复实现，原有测试全部通过。
+- ✅ `relay-core-api/src/event.rs` 不再是空文件：补 `FlowEvent`（9 个阶段化变体）与 `CloseReason`
+  枚举（对应 §4-3/§4-4 的缺口），含序列化单测。
+- ⬜ 尚未接线：`RuleInterceptor`/Tauri 尚未按 BodyPlan 决策缓冲，因此 §24.2（body 阶段规则
+  在非 Tauri 宿主无法匹配）仍开放；需要把 `decide()` 接进两个宿主并让 wire 测试覆盖。
+
 **修复进度（2026-09-12）**
 
 - ✅ harness 可信化：就绪探测带 `--fail`、进程与端口预检、oha 成功率 DoD、
