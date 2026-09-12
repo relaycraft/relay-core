@@ -406,7 +406,7 @@ pub fn build_response_from_flow_response(
         .map_err(|e| format!("Failed to build response: {}", e))
 }
 
-fn body_data_to_bytes(body: Option<&BodyData>) -> Bytes {
+pub(crate) fn body_data_to_bytes(body: Option<&BodyData>) -> Bytes {
     match body {
         Some(b) if b.encoding == "base64" => match BASE64.decode(b.content.as_bytes()) {
             Ok(bytes) => Bytes::from(bytes),

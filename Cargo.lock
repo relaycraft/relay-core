@@ -4707,6 +4707,7 @@ dependencies = [
  "cookie",
  "data-encoding",
  "etherparse",
+ "flate2",
  "futures-util",
  "glob",
  "h2",

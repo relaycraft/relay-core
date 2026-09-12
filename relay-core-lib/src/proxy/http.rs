@@ -12,10 +12,10 @@ use crate::proxy::body_plan::{
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
-    build_client_response_head, build_forward_request, build_request_body_from_flow,
-    build_response_body_from_flow, create_error_response, create_initial_flow, mock_to_response,
+    body_data_to_bytes, build_client_response_head, build_forward_request,
+    build_request_body_from_flow, create_error_response, create_initial_flow, mock_to_response,
     parse_request_meta, reframe_response_headers_for_replaced_body, request_body_from_flow_len,
-    response_body_from_flow_len, update_flow_with_response_headers,
+    update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use crate::proxy::tap::TapBody;
@@ -561,8 +561,27 @@ where
         Layer::Http(http) => http.response.as_ref().and_then(|r| r.body.clone()),
         _ => None,
     } {
-        let new_len = response_body_from_flow_len(&flow).unwrap_or(0);
-        current_res_body = build_response_body_from_flow(&body_data);
+        // The replacement is plaintext authored by a rule/script/interceptor, while the upstream
+        // reply may have been compressed. Re-encode to match what the client expects where we can,
+        // and otherwise drop the header — never send plaintext while claiming it is compressed.
+        let original_encoding = res_parts
+            .headers
+            .get(hyper::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let plain = body_data_to_bytes(Some(&body_data));
+        let (wire_bytes, encoding) = crate::proxy::content_encoding::encode_after_rewrite(
+            &plain,
+            original_encoding.as_deref(),
+        );
+        if encoding.is_none() && original_encoding.is_some() {
+            flow.tags.push("body-encoding-dropped".to_string());
+        }
+
+        let new_len = wire_bytes.len();
+        current_res_body = Full::new(Bytes::from(wire_bytes))
+            .map_err(|e| -> BoxError { e.into() })
+            .boxed();
 
         // Rebuild the head so framing describes the replacement rather than the upstream stream.
         let reframed = reframe_response_headers_for_replaced_body(
@@ -586,6 +605,12 @@ where
             ) {
                 headers.insert(name, value);
             }
+        }
+        // State the encoding actually applied, if any.
+        if let Some(encoding) = encoding
+            && let Ok(value) = hyper::header::HeaderValue::from_str(&encoding)
+        {
+            headers.insert(hyper::header::CONTENT_ENCODING, value);
         }
         res_parts.headers = headers;
     }

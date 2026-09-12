@@ -1014,8 +1014,14 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （`proxy/http_utils.rs:238-314`），TLS 上游走 h2 只是 ALPN 的副产物
 - 响应版本从不回传：`build_client_response_from_flow`（`http_utils.rs:437`）带
   `// TODO: Parse version...`，且无生产调用点
-- 压缩：全 Rust workspace 对 `content-encoding|gzip|deflate|brotli|zstd` **0 命中**，
-  无压缩依赖 ⇒ body 重写作用于压缩态字节且不更新 `Content-Encoding`
+- ✅ **部分修复（A7）**：新增 `proxy/content_encoding.rs`。`gzip` / `deflate` 现在会被解码，
+  规则看到的是明文；重写后按原编码**重新编码**，`Content-Encoding` 与所发字节一致。
+  `br` / `zstd` 仍不解码，但重写时会**丢弃**该头并发送明文（而不是继续宣称是压缩数据），
+  同时打 `body-encoding-dropped` 标签使降级可见。未知编码不做猜测。
+  契约由 `wire_matrix_gzip_response_rewrite_stays_decodable` 锁定（客户端按声明的编码解码必须得到替换内容），
+  已双向验证：不重新编码时该测试必失败。
+- ⬜ 仍未实现：`br` / `zstd` 解码与重编码；请求方向的 `Content-Encoding` 处理；
+  规则匹配响应体时仍未对 compress 后的 body 做「解压→匹配→重编码」全链路（当前仅重写路径生效）
 
 ### 24.10 验证体系基线
 

@@ -12,6 +12,8 @@
 //!   so bodies are passed through in whatever encoding they arrived in (roadmap §24.9).
 //! - `body_plan`: Mechanics for carrying out a `BodyPlan` decision — bounded prefix retention for
 //!   observation, and bounded materialization when something must rewrite the body.
+//! - `content_encoding`: Decodes and re-encodes `Content-Encoding` around inspection, so a rule
+//!   sees plaintext and a rewrite is sent with a header that describes what was actually sent.
 //! - `tap`: Tapping body streams for UI updates.
 //! - `outbound`: Outbound connector abstraction (direct / upstream proxy).
 
@@ -19,6 +21,7 @@ pub mod body_codec;
 pub mod body_plan;
 pub mod budget;
 pub mod circuit_breaker;
+pub mod content_encoding;
 pub mod http;
 pub mod http_utils;
 pub mod outbound;
