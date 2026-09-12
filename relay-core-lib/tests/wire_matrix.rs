@@ -1496,3 +1496,84 @@ async fn wire_matrix_gzip_response_rewrite_stays_decodable() {
         "the upstream body must not survive a replacement"
     );
 }
+
+// ── brotli rewriting (§24.3, matching mitmproxy's codec coverage) ───────────────────
+//
+// mitmproxy decodes and re-encodes gzip, deflate, br and zstd (docs/mitmproxy-policy-benchmark.md
+// §1.2). This asserts the same contract for br: a rewritten body must still be valid br with a
+// header that says so.
+
+/// A real brotli frame produced by the `brotli` CLI, so the decoder is exercised against a genuine
+/// stream rather than output produced by the same library.
+const BROTLI_RESPONSE: &[u8] = include_bytes!("fixtures/brotli_payload.br");
+const BROTLI_PLAINTEXT: &str = "brotli-encoded-payload-for-relaycore-tests";
+
+#[tokio::test]
+async fn wire_matrix_brotli_response_rewrite_stays_decodable() {
+    init_crypto();
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let target = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: br\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            BROTLI_RESPONSE.len()
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(BROTLI_RESPONSE).await;
+        let _ = socket.flush().await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(ReplaceResponseBodyInterceptor {
+        replacement: "REWRITTEN-BR-CONTENT",
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (bytes, encoding) = drive_and_read_raw_body(proxy_port, target).await;
+
+    assert_eq!(
+        encoding.as_deref(),
+        Some("br"),
+        "the upstream claimed br, so the rewrite must still be br"
+    );
+
+    // The declared encoding must describe the bytes actually sent.
+    let mut decoded = Vec::new();
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(&bytes[..]), &mut decoded)
+        .expect("declared br encoding must decode the bytes that were sent");
+    let decoded = String::from_utf8(decoded).expect("utf-8");
+    assert_eq!(decoded, "REWRITTEN-BR-CONTENT");
+    assert!(
+        !decoded.contains(BROTLI_PLAINTEXT),
+        "the upstream body must not survive a replacement"
+    );
+}

@@ -50,10 +50,15 @@ glob.workspace = true
 secrecy.workspace = true
 libc = "0.2.182"
 x509-parser = "0.18.1"
-# Content-Encoding handling. `flate2` is already resolved transitively (png, ureq); `miniz_oxide`
-# is its pure-Rust backend, so no C toolchain is required. Brotli/zstd are not handled yet — see
-# docs/l7-first-engine-evolution-roadmap.md §24.3 for what happens when they are encountered.
+# Content-Encoding handling. Both codecs are pure Rust and were already resolved transitively
+# (`flate2`/miniz_oxide via png+ureq, `brotli` via tauri-codegen), so adding them costs no new
+# lockfile entries and needs no C toolchain.
+#
+# `zstd` is NOT handled yet: it is not in the dependency tree and adding it requires a crate
+# download. A rewritten `zstd` body is therefore sent as plaintext with the header dropped, which
+# keeps header and body consistent. Tracked in docs/l7-first-engine-evolution-roadmap.md §24.3.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+brotli = "8"
 hyper-tungstenite = "0.19.0"
 if-addrs = "0.15.0"
 

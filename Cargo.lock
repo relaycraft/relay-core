@@ -4701,6 +4701,7 @@ name = "relay-core-lib"
 version = "0.10.0"
 dependencies = [
  "async-trait",
+ "brotli",
  "bytes",
  "chrono",
  "codspeed-criterion-compat",

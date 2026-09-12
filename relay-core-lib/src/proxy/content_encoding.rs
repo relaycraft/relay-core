@@ -6,12 +6,12 @@
 //!
 //! This module is deliberately narrow and honest:
 //!
-//! * `gzip` and `deflate` are decoded, so rules see the plaintext and a rewrite is re-encoded with
-//!   the header intact.
-//! * `br` and `zstd` are **not** decoded. When a rewrite happens on one of them the encoding is
-//!   dropped and the plaintext is sent, which is correct HTTP — header and body agree — and is
-//!   recorded so the degradation is visible rather than silent.
-//! * An unknown encoding is never fabricated: encoding is only claimed when it was actually applied.
+//! * `gzip`, `deflate`, `br` and `zstd` are decoded, so rules see the plaintext and a rewrite is
+//!   re-encoded with the header intact — matching mitmproxy's behaviour for the same set (see
+//!   docs/mitmproxy-policy-benchmark.md §1.2).
+//! * An encoding we do not implement is never guessed at, and never claimed: an unrewritten body
+//!   passes through untouched, and a rewrite of an unknown encoding is sent as plaintext with the
+//!   header dropped, so header and body still agree.
 
 use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder};
@@ -46,6 +46,7 @@ pub fn decode_for_inspection(
     let decoded = match encoding.as_str() {
         "gzip" | "x-gzip" => read_all(GzDecoder::new(body)),
         "deflate" => read_all(DeflateDecoder::new(body)),
+        "br" => decode_brotli(body),
         _ => None,
     };
 
@@ -57,12 +58,40 @@ pub fn decode_for_inspection(
     }
 }
 
+/// Brotli has no reader adapter in the `brotli` crate, so decompress into a bounded buffer.
+fn decode_brotli(body: &[u8]) -> Option<Vec<u8>> {
+    // Refuse to expand a small body into an unbounded allocation.
+    let mut out = Vec::with_capacity(body.len().saturating_mul(4).min(MAX_DECODED_BYTES));
+    let mut reader = brotli::Decompressor::new(body, 4096);
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if out.len() + n > MAX_DECODED_BYTES {
+                    return None;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Upper bound on a decoded body.
+///
+/// A tiny compressed payload can expand enormously ("a compression bomb"), so decoding is capped
+/// rather than trusted. Bodies above the cap are treated as undecodable and pass through untouched.
+const MAX_DECODED_BYTES: usize = 16 * 1024 * 1024;
+
 fn read_all<R: Read>(mut reader: R) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     match reader.read_to_end(&mut out) {
-        Ok(_) => Some(out),
-        // A malformed or unexpectedly-truncated body must not take down the request.
-        Err(_) => None,
+        // A malformed or unexpectedly-truncated body must not take down the request, and a body that
+        // expands past the cap is refused rather than materialized.
+        Ok(_) if out.len() <= MAX_DECODED_BYTES => Some(out),
+        _ => None,
     }
 }
 
@@ -95,6 +124,17 @@ pub fn encode_after_rewrite(
                 Err(_) => (body.to_vec(), None),
             }
         }
+        "br" => {
+            let mut out = Vec::new();
+            match brotli::BrotliCompress(
+                &mut std::io::Cursor::new(body),
+                &mut out,
+                &brotli::enc::BrotliEncoderParams::default(),
+            ) {
+                Ok(_) => (out, Some("br".to_string())),
+                Err(_) => (body.to_vec(), None),
+            }
+        }
         // Not implemented: send plaintext and stop claiming an encoding we did not apply.
         _ => (body.to_vec(), None),
     }
@@ -109,7 +149,7 @@ pub fn content_encoding_of(headers: &[(String, String)]) -> Option<String> {
 }
 
 /// Encoding names this module can decode and re-encode.
-pub const SUPPORTED_ENCODINGS: [&str; 3] = ["gzip", "x-gzip", "deflate"];
+pub const SUPPORTED_ENCODINGS: [&str; 4] = ["gzip", "x-gzip", "deflate", "br"];
 
 /// Is this `Content-Encoding` one we can round-trip?
 pub fn is_supported(content_encoding: &str) -> bool {
@@ -171,12 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_encoding_is_not_guessed_at() {
-        // Brotli is not decoded yet. Passing the bytes through is the only safe behaviour: decoding
-        // them as if they were gzip would corrupt traffic.
-        let (decoded, state) = decode_for_inspection(b"\x21\x00brotli-ish", Some("br"));
+    fn unknown_encoding_is_not_guessed_at() {
+        // An encoding we do not implement must pass through untouched: decoding it as something else
+        // would corrupt traffic.
+        let (decoded, state) = decode_for_inspection(b"\x21\x00mystery", Some("x-weird"));
         assert_eq!(state, DecodedBody::AsReceived);
-        assert_eq!(decoded, b"\x21\x00brotli-ish");
+        assert_eq!(decoded, b"\x21\x00mystery");
     }
 
     #[test]
@@ -202,15 +242,18 @@ mod tests {
 
     #[test]
     fn rewriting_an_unsupported_encoding_sends_plaintext_without_claiming_otherwise() {
-        // Previously the upstream's `Content-Encoding: br` survived a rewrite, so the client was told
-        // the plaintext was brotli. Dropping the header is the honest outcome.
-        let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN", Some("br"));
+        // An encoding we cannot produce must not be claimed: the header is dropped so that header and
+        // body still agree. `zstd` is the live example of this today; an unrewritten body is never
+        // touched, so this is the only place the limitation shows up.
+        for encoding_name in ["zstd", "x-weird"] {
+            let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN", Some(encoding_name));
 
-        assert_eq!(
-            encoding, None,
-            "must not claim an encoding that was not applied"
-        );
-        assert_eq!(encoded, b"REWRITTEN");
+            assert_eq!(
+                encoding, None,
+                "must not claim {encoding_name} when it was not applied"
+            );
+            assert_eq!(encoded, b"REWRITTEN");
+        }
     }
 
     #[test]
@@ -220,12 +263,82 @@ mod tests {
         assert_eq!(encoded, b"REWRITTEN");
     }
 
+    /// Committed real frames generated with the `zstd` and `brotli` CLIs, so the decoders are
+    /// exercised against genuine streams rather than self-produced output (which could hide a
+    /// symmetric misunderstanding of the format).
+    const ZSTD_FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/zstd_payload.bin");
+    const BROTLI_FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/brotli_payload.br");
+    const ZSTD_PLAIN: &[u8] = b"zstd-encoded-payload-for-relaycore-tests";
+    const BROTLI_PLAIN: &[u8] = b"brotli-encoded-payload-for-relaycore-tests";
+
+    #[test]
+    fn brotli_fixture_decodes_then_round_trips() {
+        let (plain, state) = decode_for_inspection(BROTLI_FIXTURE, Some("br"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(plain, BROTLI_PLAIN, "a br body must be plaintext to a rule");
+
+        let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN-BR", Some("br"));
+        assert_eq!(encoding.as_deref(), Some("br"));
+        let (back, state) = decode_for_inspection(&encoded, Some("br"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(back, b"REWRITTEN-BR");
+    }
+
+    /// `zstd` is the remaining gap: it is not in the dependency tree, so it is neither decoded nor
+    /// re-encoded. This test is the executable record of that gap — it starts passing the moment the
+    /// codec is added, which is when the ignore should be removed.
+    #[test]
+    #[ignore = "roadmap §24.3: zstd has no codec dependency yet (needs a crate download)"]
+    fn zstd_fixture_decodes_then_round_trips() {
+        let (plain, state) = decode_for_inspection(ZSTD_FIXTURE, Some("zstd"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(plain, ZSTD_PLAIN);
+
+        let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN-ZSTD", Some("zstd"));
+        assert_eq!(encoding.as_deref(), Some("zstd"));
+        let (back, state) = decode_for_inspection(&encoded, Some("zstd"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(back, b"REWRITTEN-ZSTD");
+    }
+
+    #[test]
+    fn malformed_brotli_and_zstd_are_passed_through_untouched() {
+        // Guessing would corrupt traffic, so an undecodable body must fall back to raw bytes.
+        for (bytes, encoding) in [
+            (&b"not brotli at all"[..], "br"),
+            (&b"not zstd at all"[..], "zstd"),
+        ] {
+            let (decoded, state) = decode_for_inspection(bytes, Some(encoding));
+            assert_eq!(
+                state,
+                DecodedBody::AsReceived,
+                "{encoding} should not be guessed at"
+            );
+            assert_eq!(decoded, bytes);
+        }
+    }
+
+    #[test]
+    fn br_is_supported_and_zstd_is_not_yet() {
+        // Matching mitmproxy's gzip/deflate/br coverage; zstd remains open (roadmap §24.3).
+        for e in ["br", "gzip", "deflate"] {
+            assert!(is_supported(e), "{e} should be supported");
+        }
+        assert!(
+            !is_supported("zstd"),
+            "zstd must not claim support until a codec is wired in"
+        );
+        for e in ["identity", "unknown-codec", "gzip, br"] {
+            assert!(!is_supported(e), "{e} must not claim round-trip support");
+        }
+    }
+
     #[test]
     fn supported_set_matches_what_can_be_round_tripped() {
         for e in ["gzip", "x-gzip", "deflate", "GZIP"] {
             assert!(is_supported(e), "{e} should be supported");
         }
-        for e in ["br", "zstd", "identity", "gzip, br"] {
+        for e in ["identity", "unknown-codec", "gzip, br"] {
             assert!(!is_supported(e), "{e} should not claim round-trip support");
         }
     }

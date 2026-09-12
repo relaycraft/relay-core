@@ -77,9 +77,9 @@ client body: 未改动，47 字节
 | body 在 header 阶段 | 不可用（推迟到 body hook） | **已可用**（需提前声明意图，代理在 header 投影后保留） |
 | 默认是否缓冲 | **默认全量缓冲** | **默认流式**（`BodyObservation::Off`，零拷贝） |
 | 流式与可读性 | 互斥（流式即不可读） | 不互斥（`Capture` 保留有界前缀且保持流式） |
-| 解码编码集 | gzip / deflate / **br** / **zstd** | gzip / deflate（br、zstd 未解码） |
-| 写回行为 | 自动重编码，`content-length` 同步 | gzip/deflate 重编码；br/zstd **丢弃编码头发明文** |
-| header 与字节一致性 | 始终一致 | gzip/deflate 一致；br/zstd 一致但**能力降级** |
+| 解码编码集 | gzip / deflate / br / zstd | gzip / deflate / **br**（**zstd 未解码**） |
+| 写回行为 | 自动重编码，`content-length` 同步 | gzip/deflate/br 重编码；**zstd 丢弃编码头发明文** |
+| header 与字节一致性 | 始终一致 | 全部一致；zstd 为**能力降级**（非欺骗） |
 | 大 body 内存策略 | 默认全量进内存（含 `max_body_size` 类限制） | 有界前缀 + 预算，超预算打标签 |
 
 ---
@@ -97,9 +97,10 @@ client body: 未改动，47 字节
 
 ### 3.2 明确的能力差距（不应掩饰）
 
-1. **`br` / `zstd` 未解码**：mitmproxy 能解能写回，RelayCore 在改写时会**丢弃 `Content-Encoding`
-   并发明文**。这是**能力降级**，不是等价实现——虽然 header 与 body 一致（不会骗客户端），
-   但与「保持原编码」的预期不符，且对要求 br 的客户端（如某些 CDN 链路）不等价。
+1. ~~**`br` / `zstd` 未解码**~~ → **`br` 已补齐**（与 mitmproxy 的 gzip/deflate/br 覆盖一致，
+   含真实帧 fixture 与 wire 测试）。**`zstd` 仍是能力降级**：改写时丢弃 `Content-Encoding`
+   并发明文。header 与 body 一致（不骗客户端），但与「保持原编码」的预期不符。
+   原因：`zstd` 不在依赖树中，新增需要下载 crate；路线图 §24.3 已用 `#[ignore]` 测试记录。
 2. **压缩 body 上的「匹配」链路不完整**：Roadmap §24.3 记录的
    「解压 → 匹配 → 重编码」目前只在**重写**路径生效；body 过滤器仍可能看到压缩字节。
 3. mitmproxy 的 `raw_content`/`text` **双视图**（wire 字节与语义视图分离）比 RelayCore 更干净：
@@ -109,7 +110,7 @@ client body: 未改动，47 字节
 
 | 项 | 建议 | 理由 |
 |---|---|---|
-| 补 `br` / `zstd` 解码重编码 | **建议做** | 用纯 Rust crate（`brotli`、`zstd`）避免 C 工具链；这是 mitmproxy 有而我们没有的真实能力 |
+| 补 `br` / `zstd` 解码重编码 | **`br` 已完成**；**`zstd` 待做** | `brotli` 已是纯 Rust 且已在依赖树中；`zstd` 需新增依赖（vendored C，有 `cc` 即可） |
 | 引入 raw/wire 与语义双视图 | **建议评估** | 能一次性消除 `BodyData.encoding` 的歧义与相关内容 bug 类 |
 | 把观察默认改为缓冲 | **不建议** | 违背 §22；且 RelayCore 的 `Capture` 已提供更好的第三条路 |
 | 提前声明意图改为推迟到 body hook | **不建议** | 会改变规则的阶段语义（现有用户可见行为） |
