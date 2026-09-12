@@ -7,7 +7,11 @@
 //! - `http`: HTTP-specific handling (request parsing, MITM, request/response modification).
 //! - `tunnel`: HTTP CONNECT tunnel handling (blind TCP forwarding or MITM upgrade).
 //! - `websocket`: WebSocket framing, message interception, and forwarding.
-//! - `body_codec`: Handling of HTTP body streams (decompression, buffering for inspection).
+//! - `body_codec`: Chooses the `BodyData` representation for a body (utf-8 vs base64). It does
+//!   **not** decompress: no gzip/deflate/brotli/zstd handling exists anywhere in the engine yet,
+//!   so bodies are passed through in whatever encoding they arrived in (roadmap §24.9).
+//! - `body_plan`: Mechanics for carrying out a `BodyPlan` decision — bounded prefix retention for
+//!   observation, and bounded materialization when something must rewrite the body.
 //! - `tap`: Tapping body streams for UI updates.
 //! - `outbound`: Outbound connector abstraction (direct / upstream proxy).
 
