@@ -1,5 +1,5 @@
 use anyhow::Result;
-use relay_core_api::flow::{Flow, FlowUpdate};
+use relay_core_api::flow::FlowUpdate;
 use relay_core_api::rule::Rule;
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -122,7 +122,8 @@ impl ApiClient {
 
 /// Parse one SSE frame from `/api/v1/events`.
 ///
-/// The HTTP adapter emits raw [`Flow`] JSON for `event: flow`, not tagged [`FlowUpdate`].
+/// The frame shapes live in [`relay_core_api::sse`], which the server encodes with — decoding them
+/// here by hand is what let `ws-message` and `http-body` silently become unreadable.
 pub fn parse_sse_frame(frame: &str) -> Option<FlowUpdate> {
     let mut event_type = String::new();
     let mut data = String::new();
@@ -142,19 +143,7 @@ pub fn parse_sse_frame(frame: &str) -> Option<FlowUpdate> {
         return None;
     }
 
-    match event_type.as_str() {
-        "flow" => {
-            if let Ok(update) = serde_json::from_str::<FlowUpdate>(&data) {
-                return Some(update);
-            }
-            serde_json::from_str::<Flow>(&data)
-                .ok()
-                .map(|flow| FlowUpdate::Full(Box::new(flow)))
-        }
-        "ws-message" => serde_json::from_str(&data).ok(),
-        "http-body" => None, // TUI only needs full flow snapshots for the list view.
-        _ => None,
-    }
+    relay_core_api::sse::parse_update(&event_type, &data)
 }
 
 #[cfg(test)]
@@ -193,5 +182,85 @@ data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_
             },
             other => panic!("expected full flow update, got {other:?}"),
         }
+    }
+
+    /// Render a frame exactly the way the HTTP adapter writes it.
+    fn wire_frame(update: &FlowUpdate) -> String {
+        let frame = update.to_sse().expect("update should encode");
+        format!("event: {}\ndata: {}\n\n", frame.event, frame.data)
+    }
+
+    /// The TUI feeds its flow list from this decoder, so a frame the adapter emits but the CLI
+    /// cannot read is a silently dead feature. Every variant the adapter can produce must decode.
+    #[test]
+    fn every_adapter_frame_decodes() {
+        let ws_message = FlowUpdate::WebSocketMessage {
+            flow_id: "flow-ws".to_string(),
+            message: relay_core_api::flow::WebSocketMessage {
+                id: uuid::Uuid::new_v4(),
+                timestamp: chrono::Utc::now(),
+                direction: relay_core_api::flow::Direction::ServerToClient,
+                content: relay_core_api::flow::BodyData {
+                    encoding: "utf-8".to_string(),
+                    content: "frame".to_string(),
+                    size: 5,
+                },
+                opcode: "Text".to_string(),
+            },
+        };
+        let http_body = FlowUpdate::HttpBody {
+            flow_id: "flow-body".to_string(),
+            direction: relay_core_api::flow::Direction::ServerToClient,
+            body: relay_core_api::flow::BodyData {
+                encoding: "utf-8".to_string(),
+                content: "streamed".to_string(),
+                size: 8,
+            },
+        };
+
+        // `ws-message` previously never decoded: the adapter wrote `{flow_id, message}` while this
+        // decoder expected a tagged `FlowUpdate`.
+        match parse_sse_frame(&wire_frame(&ws_message)) {
+            Some(FlowUpdate::WebSocketMessage { flow_id, message }) => {
+                assert_eq!(flow_id, "flow-ws");
+                assert_eq!(message.opcode, "Text");
+            }
+            other => panic!("ws-message frame should decode, got {other:?}"),
+        }
+
+        // `http-body` was dropped outright, taking the body and its direction with it.
+        match parse_sse_frame(&wire_frame(&http_body)) {
+            Some(FlowUpdate::HttpBody {
+                flow_id,
+                direction,
+                body,
+            }) => {
+                assert_eq!(flow_id, "flow-body");
+                assert_eq!(direction, relay_core_api::flow::Direction::ServerToClient);
+                assert_eq!(body.content, "streamed");
+            }
+            other => panic!("http-body frame should decode, got {other:?}"),
+        }
+
+        match parse_sse_frame(&wire_frame(&FlowUpdate::BodyBudgetExceeded {
+            flow_id: "flow-budget".to_string(),
+            direction: relay_core_api::flow::Direction::ClientToServer,
+        })) {
+            Some(FlowUpdate::BodyBudgetExceeded { flow_id, direction }) => {
+                assert_eq!(flow_id, "flow-budget");
+                assert_eq!(direction, relay_core_api::flow::Direction::ClientToServer);
+            }
+            other => panic!("body-budget-exceeded frame should decode, got {other:?}"),
+        }
+    }
+
+    /// Frames other producers own must be skipped, not treated as flow updates.
+    #[test]
+    fn frames_from_other_producers_are_skipped() {
+        assert!(parse_sse_frame("event: audit\ndata: {\"actor\":\"http\"}\n\n").is_none());
+        assert!(parse_sse_frame("event: lifecycle\ndata: {\"state\":\"running\"}\n\n").is_none());
+        assert!(parse_sse_frame("event: lagged\ndata: some events were dropped\n\n").is_none());
+        // A comment-only heartbeat must not produce an update either.
+        assert!(parse_sse_frame(": ping\n\n").is_none());
     }
 }

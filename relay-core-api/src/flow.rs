@@ -242,7 +242,7 @@ pub struct WebSocketLayer {
     pub closed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebSocketMessage {
     pub id: Uuid,
     pub timestamp: DateTime<Utc>,
@@ -268,7 +268,7 @@ pub struct TcpLayer {
 
 // --- Shared ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BodyData {
     /// Encoding (e.g., "utf-8", "base64")
     pub encoding: String,

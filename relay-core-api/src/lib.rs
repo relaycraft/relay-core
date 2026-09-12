@@ -12,6 +12,7 @@ pub mod har;
 pub mod modification;
 pub mod policy;
 pub mod rule;
+pub mod sse;
 
 // Placeholder
 pub fn version() -> &'static str {
