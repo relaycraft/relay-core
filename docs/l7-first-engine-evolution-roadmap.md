@@ -619,12 +619,20 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 
 ### 必做（M0/M1）
 
-1. 修复并可信化 benchmark harness：
-   - 验证 target/proxy 进程和端口
-   - 支持 `CARGO_TARGET_DIR`
-   - 验证响应成功率
-   - 失败时不生成有效报告
-2. 建立当前版本可信 baseline
+1. ✅ 修复并可信化 benchmark harness（已完成，待补 baseline）：
+   - 验证 target/proxy 进程和端口 ✅
+   - 支持 `CARGO_TARGET_DIR` ✅
+   - 验证响应成功率 ✅
+   - 失败时不生成有效报告 ✅
+   - ✅ 额外修复：就绪探测不带 `--fail`（502 曾判为 ready）、端口被占用时不中止
+     （曾导致外部监听者冒充代理被压测）、无法读取的 RSS 记为 0MB 反而 PASS、
+     `--strict` 在 release 模式不可达、`commit-baseline.sh` 不读状态字段
+   - ✅ 额外修复：Python 上游饱和于 ~2.7k req/s（低于 10k DoD），导致所有吞吐数字实际
+     测量的是上游。已替换为 `benchmarks/rust_echo_server.rs`（直连 ~104k req/s）。
+     实测参考（M4 Max / 100 连接 / 1KB）：直连上游 ~104k req/s，经 RelayCore ~43k req/s，
+     P99 ~10.3ms，成功率 100%
+2. 建立当前版本可信 baseline（harness 已就绪，下一步执行 `release` 模式并
+   `commit-baseline.sh 0.10.0`）
 3. mitmproxy differential fixtures：比较线路行为，不只比较 QPS
 4. 关键协议和 Action E2E
 5. backpressure、channel full、subscriber lagged 可观测
@@ -993,6 +1001,14 @@ release 下产生错帧，debug 下触发 `debug_assert!`。
   ⇒ 在唯一的阻塞门禁 Linux 上被跳过
 - CI 无 soak、无 fuzz、无 mitmproxy differential、coverage 无阈值、
   无 cargo-audit/deny、macOS/Windows 仅构建不测试
-- `benchmarks/results/` 无 0.10.0 基线；`benchmark harness` 的就绪探测不带 `--fail`
-  （502 亦判定为 ready），死进程 RSS=0MB 仍判 PASS，报告在 `--strict` 闸门之前写出，
-  release 模式 `--strict` 不可达，`commit-baseline.sh` 不读取状态字段
+
+**修复进度（2026-09-12）**
+
+- ✅ harness 可信化：就绪探测带 `--fail`、进程与端口预检、oha 成功率 DoD、
+  RSS 不可测即失败、报告闸门、`CARGO_TARGET_DIR` 支持、`commit-baseline.sh` 拒绝非 PASS 报告
+- ✅ 上游性能上限解除：`benchmarks/rust_echo_server.rs` 取代饱和于 ~2.7k req/s 的 Python
+  实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
+- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：基线通过，
+  3 个 §24.1/§24.4 缺陷已用 `#[ignore]` 钉住并各自验证确实失败
+- ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
+- ⬜ §24.1–§24.9 的线路缺陷仍全部未修复，按 Phase A 的 A4/A5 推进
