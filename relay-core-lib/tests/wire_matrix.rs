@@ -2137,3 +2137,77 @@ async fn wire_matrix_failed_flow_records_its_end_time() {
         "an exchange that failed must still record end_time, otherwise its duration is unknowable"
     );
 }
+
+// ── Ingress HTTP version reaches the forwarded request (§24.9) ───────────────────────
+//
+// The outbound request used to be built with the builder's HTTP/1.1 default regardless of what the
+// client spoke, so the ingress version was dropped from the request's own metadata.
+
+#[tokio::test]
+async fn wire_matrix_forwarded_request_carries_the_client_version() {
+    init_crypto();
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let upstream_addr = listener.local_addr().expect("addr");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let n = socket.read(&mut buf).await.unwrap_or(0);
+        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        let _ = tx.send(head);
+        let _ = socket
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await;
+    });
+
+    let proxy_listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = proxy_listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(proxy_listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // Speak HTTP/1.0 to the proxy; the forwarded request should reflect that rather than defaulting.
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let request =
+        format!("GET http://{upstream_addr}/probe HTTP/1.0\r\nHost: {upstream_addr}\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+
+    let head = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .expect("upstream timed out")
+        .expect("upstream dropped");
+
+    assert!(
+        head.starts_with("GET /probe HTTP/1.0"),
+        "the forwarded request must carry the client's version, got:\n{head}"
+    );
+}

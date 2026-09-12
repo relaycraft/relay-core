@@ -449,7 +449,12 @@ pub fn build_forward_request(
         ));
     };
 
-    let mut forward_req_builder = Request::builder().method(current_req.method.as_str());
+    // Carry the version the client actually spoke, so the forwarded request describes the real
+    // ingress protocol rather than the builder's HTTP/1.1 default. (Over TLS the wire protocol still
+    // follows ALPN; this keeps the request's own metadata truthful.)
+    let mut forward_req_builder = Request::builder()
+        .method(current_req.method.as_str())
+        .version(parse_http_version(&current_req.version));
 
     // Determine upstream URI
     let mut target_url = current_req.url.clone();
@@ -927,5 +932,66 @@ mod tests {
             .expect("collect body")
             .to_bytes();
         assert_eq!(body.as_ref(), b"hello");
+    }
+}
+
+/// Parse the `Flow`'s stored HTTP version string back into a `hyper::Version`.
+///
+/// `Flow.version` is populated from `format!("{:?}", req.version())`, so it reads `"HTTP/1.1"`,
+/// `"HTTP/2.0"` and so on. Recovering the typed value matters because the outbound request used to be
+/// built with the builder's default (HTTP/1.1) regardless of what the client actually spoke, which
+/// hid the ingress version from the upstream and from any diagnostics reading the forwarded request.
+pub fn parse_http_version(version: &str) -> hyper::Version {
+    match version.trim().to_ascii_uppercase().as_str() {
+        "HTTP/0.9" => hyper::Version::HTTP_09,
+        "HTTP/1.0" => hyper::Version::HTTP_10,
+        "HTTP/1.1" => hyper::Version::HTTP_11,
+        "HTTP/2" | "HTTP/2.0" => hyper::Version::HTTP_2,
+        "HTTP/3" | "HTTP/3.0" => hyper::Version::HTTP_3,
+        // Unknown or empty: fall back to HTTP/1.1, which is what the builder would have used anyway.
+        _ => hyper::Version::HTTP_11,
+    }
+}
+
+#[cfg(test)]
+mod version_parsing_tests {
+    use super::parse_http_version;
+    use hyper::Version;
+
+    #[test]
+    fn known_versions_round_trip_from_the_debug_format() {
+        // These strings are what `format!("{:?}", Version::…)` produces, which is how Flow stores it.
+        for (text, expected) in [
+            ("HTTP/1.1", Version::HTTP_11),
+            ("HTTP/1.0", Version::HTTP_10),
+            ("HTTP/2.0", Version::HTTP_2),
+            ("HTTP/3.0", Version::HTTP_3),
+            ("HTTP/0.9", Version::HTTP_09),
+        ] {
+            assert_eq!(parse_http_version(text), expected, "parsing {text}");
+        }
+    }
+
+    #[test]
+    fn variant_spellings_are_accepted() {
+        for text in ["http/2", "HTTP/2", "Http/2.0", " http/2.0 "] {
+            assert_eq!(
+                parse_http_version(text),
+                Version::HTTP_2,
+                "parsing {text:?}"
+            );
+        }
+    }
+
+    /// An unknown or empty version must not panic or invent a protocol.
+    #[test]
+    fn unknown_versions_fall_back_to_http_1_1() {
+        for text in ["", " ", "gopher/1", "HTTP/9.9"] {
+            assert_eq!(
+                parse_http_version(text),
+                Version::HTTP_11,
+                "parsing {text:?} should fall back rather than guess"
+            );
+        }
     }
 }
