@@ -7,7 +7,18 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
     let (request, response) = match &flow.layer {
         Layer::Http(http) => (&http.request, http.response.as_ref()),
         Layer::WebSocket(ws) => (&ws.handshake_request, Some(&ws.handshake_response)),
-        _ => return json!({ "request": {}, "response": {}, "timings": {} }),
+        // Not an HTTP exchange: there is nothing to measure, so report no timings rather than a set
+        // of zeroes that read as measurements.
+        _ => {
+            return json!({
+                "startedDateTime": flow.start_time.to_rfc3339(),
+                "time": -1,
+                "request": {},
+                "response": {},
+                "timings": {},
+                "cache": {},
+            });
+        }
     };
 
     let req_headers: Vec<Value> = request
@@ -69,7 +80,12 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
         .unwrap_or_default();
 
     let mut resp_json = json!({});
-    let mut timings = json!({ "send": 0, "wait": 0, "receive": 0, "connect": -1, "ssl": -1, "dns": -1, "blocked": -1 });
+    // HAR says `-1` means the phase was not measured and `0` means it was measured as instantaneous.
+    // Every phase therefore starts as not-measured; only real observations replace that.
+    let mut timings = json!({
+        "send": -1, "wait": -1, "receive": -1,
+        "connect": -1, "ssl": -1, "dns": -1, "blocked": -1,
+    });
 
     if let Some(resp) = response {
         let resp_content_type = resp
@@ -101,10 +117,17 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
             "bodySize": resp.body.as_ref().map(|b| b.size).unwrap_or(0),
         });
 
-        timings["wait"] = json!(resp.timing.time_to_first_byte.unwrap_or(0));
-        let ttlbs = resp.timing.time_to_last_byte.unwrap_or(0);
-        let wait = resp.timing.time_to_first_byte.unwrap_or(0);
-        timings["receive"] = json!(ttlbs.saturating_sub(wait));
+        if let Some(ttfb) = resp.timing.time_to_first_byte {
+            timings["wait"] = json!(ttfb);
+        }
+        // `receive` is the remainder of the exchange, so it is only meaningful when both ends were
+        // observed; otherwise it stays unknown rather than being derived from a fabricated zero.
+        if let (Some(ttfb), Some(ttlb)) = (
+            resp.timing.time_to_first_byte,
+            resp.timing.time_to_last_byte,
+        ) {
+            timings["receive"] = json!(ttlb.saturating_sub(ttfb));
+        }
         if let Some(c) = resp.timing.connect_time_ms {
             timings["connect"] = json!(c);
         }
@@ -113,9 +136,11 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
         }
     }
 
+    // The total is the exchange's own duration when it was observed, and unknown otherwise.
     let total_time = response
-        .map(|r| r.timing.time_to_last_byte.unwrap_or(0))
-        .unwrap_or(0);
+        .and_then(|r| r.timing.time_to_last_byte)
+        .map(|ms| ms as i64)
+        .unwrap_or(-1);
 
     json!({
         "startedDateTime": flow.start_time.to_rfc3339(),
