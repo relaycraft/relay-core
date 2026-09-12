@@ -1,7 +1,7 @@
 use crate::interceptors::inspect::handle_rule_termination;
 use crate::services::{InterceptService, RuleService};
 use async_trait::async_trait;
-use relay_core_api::body_plan::{BodyPlan, BodyPlanInputs, decide};
+use relay_core_api::body_plan::{BodyObservation, BodyPlan, BodyPlanInputs, decide};
 use relay_core_api::flow::{Direction, Flow, Layer};
 use relay_core_api::rule::{RuleStage, RuleTraceSummary};
 use relay_core_lib::interceptor::{
@@ -35,9 +35,12 @@ fn body_plan_inputs(engine: &RuleEngine, consumes_body: bool) -> BodyPlanInputs 
         has_body_stage_rules: consumes_body,
         has_body_hook_script: false,
         has_body_intercept: false,
-        // The tap path already retains a bounded prefix for observation, so this decision only has
-        // to account for active inspection.
-        wants_observation: false,
+        // Observation is an explicit policy choice, not inferred: the desktop UI shows bodies while
+        // a headless run does not, and inferring it would silently change what a user can see.
+        observation: engine
+            .policy()
+            .map(|p| p.body_observation)
+            .unwrap_or(BodyObservation::Off),
         budget: engine
             .policy()
             .map(|p| p.rule_body_inspect_budget)
@@ -111,12 +114,23 @@ impl Interceptor for RuleInterceptor {
 
         // Body-stage rules can only match a body they can see. Decide explicitly whether that is
         // worth the cost instead of buffering unconditionally (roadmap §3-3 BodyPlan, §22).
-        let limit = match decide(body_plan_inputs(
+        let plan = decide(body_plan_inputs(
             &engine,
             engine.stage_consumes_body(RuleStage::RequestBody),
-        )) {
+        ));
+
+        let limit = match plan {
             BodyPlan::Buffer { limit } => limit,
-            _ => {
+            // Observation only: the bounded prefix is retained by the tap path, which wraps the
+            // body for exactly this purpose and streams it untouched. Draining here to snapshot the
+            // prefix would materialize the whole body and destroy the streaming property this plan
+            // exists to preserve, so the stage simply runs against metadata and streams on.
+            BodyPlan::Capture { .. } => {
+                let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+                mark_stage_executed(flow, &RuleStage::RequestBody);
+                return finish_request_stage(&self.intercepts, flow, ctx, body).await;
+            }
+            BodyPlan::PassThrough => {
                 // Nothing here needs the bytes: run the stage against metadata only and stream on.
                 let ctx = engine.execute(RuleStage::RequestBody, flow).await;
                 mark_stage_executed(flow, &RuleStage::RequestBody);

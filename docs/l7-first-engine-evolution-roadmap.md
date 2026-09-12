@@ -1061,7 +1061,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   与 `buffer_prefix`（观察场景，仅保留流过的字节）职责分离。
 - ✅ `RuleInterceptor::on_request` 已接线 BodyPlan，请求方向 body 阶段规则可匹配（§24.2 请求侧关闭）。
 - ✅ 响应方向接线完成（§24.2 关闭）：请求阶段声明意图 → 代理在 header 投影后按预算保留 → header 阶段匹配。
-- ⬜ Tauri 宿主仍自行缓冲，尚未统一到 BodyPlan（会重复物化）。
+- ✅ **body 观察策略已显式化**：`ProxyPolicy::body_observation`
+  （`off` / `prefixed` / `full`）。观察是产品决策，不再从「有没有 body 阶段规则」推断——
+  桌面 UI 要显示 body，无界面运行不需要，推断会静默改变用户能看到什么。
+  默认 `off`：保留流式，且计划层有回归测试锁定「无消费者 → 零拷贝」。
+- ⬜ Tauri 宿主尚未改为依赖该策略跳过自身缓冲；现在已有显式开关，这一步不再会改变
+  用户可见行为（需要把 Tauri 的 UI 依赖改为 `prefixed`/`full`）。
 
 **修复进度（2026-09-12）**
 

@@ -410,11 +410,21 @@ where
         &res_parts.headers,
     );
 
-    // The response-body stage runs at this header moment, before the body has been read, so a rule
-    // that inspects the body can only match one the proxy retained in advance. The rule engine
-    // declares that need during the request phase; without the declaration the body keeps streaming
-    // and the common case pays nothing (roadmap §22).
-    if let Some(budget) = crate::rule::stage_guard::response_body_budget(&flow) {
+    // Decide the response body's plan from two explicit inputs: whether a stage will inspect it
+    // (declared by the rule engine during the request phase, because at this header moment it is too
+    // late to retain anything) and how much the host wants to observe. `PassThrough` keeps
+    // streaming, so an exchange nobody inspects and nobody displays pays nothing (roadmap §22).
+    let response_body_plan =
+        relay_core_api::body_plan::decide(relay_core_api::body_plan::BodyPlanInputs {
+            has_body_stage_rules: crate::rule::stage_guard::response_body_budget(&flow).is_some(),
+            has_body_hook_script: false,
+            has_body_intercept: false,
+            observation: policy.body_observation,
+            budget: crate::rule::stage_guard::response_body_budget(&flow)
+                .unwrap_or(policy.rule_body_inspect_budget),
+        });
+
+    if let relay_core_api::body_plan::BodyPlan::Buffer { limit: budget } = response_body_plan {
         let taken = std::mem::replace(
             &mut res_body,
             Full::new(Bytes::new())

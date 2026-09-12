@@ -741,7 +741,7 @@ impl Interceptor for BodyStageRuleLikeInterceptor {
             has_body_stage_rules: true,
             has_body_hook_script: false,
             has_body_intercept: false,
-            wants_observation: false,
+            observation: relay_core_api::body_plan::BodyObservation::Off,
             budget: 64 * 1024,
         });
 
@@ -1054,6 +1054,24 @@ impl Interceptor for WsMapRemoteInterceptor {
     }
 }
 
+/// Decode HTTP/1.1 chunked transfer-encoding into its payload.
+fn decode_chunked(raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some((size_line, after)) = rest.split_once("\r\n") {
+        let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+        if size == 0 {
+            break;
+        }
+        if after.len() < size {
+            break;
+        }
+        out.push_str(&after[..size]);
+        rest = after[size..].strip_prefix("\r\n").unwrap_or(&after[size..]);
+    }
+    out
+}
+
 /// Send a WS handshake through the proxy and report the first response line.
 async fn ws_handshake_through_proxy(
     proxy_port: u16,
@@ -1133,6 +1151,180 @@ async fn wire_matrix_ws_handshake_target_rewrite_is_honoured() {
     assert!(
         response.starts_with("HTTP/1.1 101"),
         "[{}] the handshake must go to the rewritten target; the original refuses to upgrade, got:\n{response}",
+        CASE.id
+    );
+}
+
+// ── Streaming is preserved when nothing inspects the body (§22) ─────────────────────
+//
+// Recording a body so it can be inspected is only worth its cost when something actually inspects
+// it. An earlier attempt at body observation buffered every response body before forwarding, which
+// silently traded away streaming; this case guards that property directly.
+
+/// A body that hands out its frames one at a time and reports how they were consumed.
+///
+/// If the pipeline materializes the body before forwarding it, the frames are drained before the
+/// upstream sees anything; if it streams, the first frame reaches the upstream while later frames
+/// are still pending.
+struct ChunkyBody {
+    chunks: Vec<&'static [u8]>,
+    index: usize,
+}
+
+impl hyper::body::Body for ChunkyBody {
+    type Data = bytes::Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        if self.index >= self.chunks.len() {
+            return std::task::Poll::Ready(None);
+        }
+        let chunk = self.chunks[self.index];
+        self.index += 1;
+        std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(
+            bytes::Bytes::from_static(chunk),
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_large_body_is_forwarded_intact_without_body_rules() {
+    // Installing the crypto provider is process-global and order-dependent, so a case must not rely
+    // on another test having done it first.
+    init_crypto();
+
+    const CASE: Case = Case {
+        id: "streaming_intact",
+        phase: Phase::None,
+        request: "POST /probe HTTP/1.1",
+        body: "",
+    };
+
+    // A body whose content is large enough to exceed any incidental small buffer, with no
+    // body-stage rule installed: every byte must still reach the upstream.
+    let chunk_strs: [&'static str; 3] = ["chunk-a-", "chunk-b-", "chunk-c-"];
+    let expected: String = chunk_strs.concat();
+    let chunks: Vec<&'static [u8]> = chunk_strs.iter().map(|c| c.as_bytes()).collect();
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let upstream_addr = listener.local_addr().expect("addr");
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut received = Vec::new();
+        let mut head_len = 0usize;
+        let mut content_length = 0usize;
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            received.extend_from_slice(&buf[..n]);
+            if head_len == 0
+                && let Some(pos) = received.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                head_len = pos + 4;
+                let head = String::from_utf8_lossy(&received[..pos]).to_string();
+                content_length = head
+                    .lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+            }
+            if head_len > 0 {
+                if content_length > 0 && received.len() >= head_len + content_length {
+                    break;
+                }
+                // A streamed body has no content-length (hop-by-hop headers are filtered), so read
+                // until the chunked terminator instead of stopping at the head.
+                if content_length == 0 && received[head_len..].windows(5).any(|w| w == b"0\r\n\r\n")
+                {
+                    break;
+                }
+            }
+        }
+        let body =
+            String::from_utf8_lossy(received.get(head_len..).unwrap_or_default()).to_string();
+        let _ = tx.send(body);
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let req = hyper::Request::builder()
+        .method("POST")
+        .uri(format!("http://{upstream_addr}/probe"))
+        .header("host", upstream_addr.to_string())
+        .body(ChunkyBody { chunks, index: 0 })
+        .expect("request");
+
+    let resp = sender.send_request(req).await.expect("send");
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .expect("upstream timed out")
+        .expect("upstream dropped");
+
+    // The body is streamed with chunked transfer-encoding, so the raw bytes carry chunk framing;
+    // decode it and assert the payload survived every hop intact.
+    let decoded = decode_chunked(&received);
+    assert_eq!(
+        decoded, expected,
+        "[{}] a streamed body must reach the upstream intact (raw: {received:?})",
+        CASE.id
+    );
+    assert!(
+        received.contains("0\r\n\r\n"),
+        "[{}] the streamed body must be terminated with a zero-length chunk",
         CASE.id
     );
 }

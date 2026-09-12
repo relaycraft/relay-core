@@ -1,3 +1,4 @@
+use crate::body_plan::BodyObservation;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -173,6 +174,21 @@ pub struct ProxyPolicy {
     #[serde(default = "default_rule_body_inspect_budget")]
     pub rule_body_inspect_budget: usize,
 
+    /// How much of each body to keep **on the live Flow** for observation when no rule, script or
+    /// breakpoint inspects it.
+    ///
+    /// Explicit because inferring it from "is there a body-stage rule?" silently changes which
+    /// bodies a host can read back off the flow.
+    ///
+    /// - `off` (default): keep only what inspecting consumers force. The tap path still streams
+    ///   `FlowUpdate::HttpBody` to the UI/store, so display is unaffected, and bodies keep streaming.
+    /// - `prefixed`: additionally record a bounded prefix on the live flow. Note that the
+    ///   response-direction plan has to decide before the body is read, so `prefixed` and `full`
+    ///   both materialize the response body up to the budget.
+    /// - `full`: read the whole body up to the budget, unconditionally.
+    #[serde(default)]
+    pub body_observation: BodyObservation,
+
     /// Request timeout in milliseconds (connect + send request + receive response headers)
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
@@ -251,7 +267,8 @@ impl Default for ProxyPolicy {
             max_local_file_bytes: 10 * 1024 * 1024, // 10MB
             max_body_size: 10 * 1024 * 1024,        // 10MB
             rule_body_inspect_budget: 1024 * 1024,  // 1MB
-            request_timeout_ms: 30_000,             // 30 seconds
+            body_observation: BodyObservation::Off,
+            request_timeout_ms: 30_000, // 30 seconds
             transparent_enabled: false,
             transparent_require_original_dst: true,
             transparent_allow_host_fallback: false,
@@ -341,6 +358,68 @@ fn default_sensitive_query_keys() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The default policy must not make the engine copy bodies it has no reason to keep.
+    ///
+    /// Caught a real regression: defaulting observation to a mode that buffers materialized every
+    /// response body before forwarding, silently trading away streaming for every exchange.
+    #[test]
+    fn default_policy_plan_does_not_copy_bodies() {
+        use crate::body_plan::{BodyPlan, BodyPlanInputs, decide};
+
+        let policy = ProxyPolicy::default();
+        assert_eq!(
+            policy.body_observation,
+            BodyObservation::Off,
+            "the default must not retain bodies nobody asked to observe"
+        );
+
+        let plan = decide(BodyPlanInputs {
+            has_body_stage_rules: false,
+            has_body_hook_script: false,
+            has_body_intercept: false,
+            observation: policy.body_observation,
+            budget: policy.rule_body_inspect_budget,
+        });
+
+        assert_eq!(
+            plan,
+            BodyPlan::PassThrough,
+            "with no consumer, a body must stream untouched"
+        );
+    }
+
+    /// Observation is a deliberate choice, and asking for it does change the plan.
+    #[test]
+    fn prefixed_observation_captures_without_materializing() {
+        use crate::body_plan::{BodyObservation, BodyPlan, BodyPlanInputs, decide};
+
+        let policy = ProxyPolicy::default();
+        for (mode, expected) in [
+            (
+                BodyObservation::Prefixed,
+                BodyPlan::Capture {
+                    limit: policy.rule_body_inspect_budget,
+                },
+            ),
+            (
+                BodyObservation::Full,
+                BodyPlan::Buffer {
+                    limit: policy.rule_body_inspect_budget,
+                },
+            ),
+            (BodyObservation::Off, BodyPlan::PassThrough),
+        ] {
+            let plan = decide(BodyPlanInputs {
+                has_body_stage_rules: false,
+                has_body_hook_script: false,
+                has_body_intercept: false,
+                observation: mode,
+                budget: policy.rule_body_inspect_budget,
+            });
+            assert_eq!(plan, expected, "unexpected plan for {mode:?}");
+        }
+    }
+
     use super::*;
     use secrecy::SecretString;
 

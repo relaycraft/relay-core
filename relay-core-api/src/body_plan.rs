@@ -39,6 +39,24 @@ impl BodyPlan {
     }
 }
 
+/// How much of a body to keep for observation (display, storage, export) when nothing inspects it.
+///
+/// This is a product decision, not something to infer from "is there a rule?": the desktop UI shows
+/// bodies, the CLI does not, and inferring it silently changes which bodies a user can see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyObservation {
+    /// Retain nothing; only inspect-and-rewrite consumers cause a body to be kept.
+    Off,
+    /// Retain a bounded prefix while the body keeps streaming. Streaming is preserved.
+    #[default]
+    Prefixed,
+    /// Read the whole body (bounded by the budget) before forwarding, so observation sees all of it.
+    ///
+    /// Costs the streaming property for every exchange, including ones with no rules at all.
+    Full,
+}
+
 /// Inputs that determine the plan for one direction of one exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyPlanInputs {
@@ -48,8 +66,8 @@ pub struct BodyPlanInputs {
     pub has_body_hook_script: bool,
     /// Whether a manual breakpoint is configured for this direction's body stage.
     pub has_body_intercept: bool,
-    /// Whether the adapter wants a copy for display/storage even when nothing inspects it.
-    pub wants_observation: bool,
+    /// How much the host wants for observation when nothing inspects the body.
+    pub observation: BodyObservation,
     /// Maximum bytes that may be retained or buffered.
     pub budget: usize,
 }
@@ -62,29 +80,35 @@ pub const fn decide(inputs: BodyPlanInputs) -> BodyPlan {
     if inputs.budget == 0 {
         return BodyPlan::PassThrough;
     }
+
+    // Inspection and rewriting need the whole body, so they win over observation.
     if inputs.has_body_stage_rules || inputs.has_body_hook_script || inputs.has_body_intercept {
-        BodyPlan::Buffer {
+        return BodyPlan::Buffer {
             limit: inputs.budget,
-        }
-    } else if inputs.wants_observation {
-        BodyPlan::Capture {
+        };
+    }
+
+    match inputs.observation {
+        BodyObservation::Off => BodyPlan::PassThrough,
+        BodyObservation::Prefixed => BodyPlan::Capture {
             limit: inputs.budget,
-        }
-    } else {
-        BodyPlan::PassThrough
+        },
+        BodyObservation::Full => BodyPlan::Buffer {
+            limit: inputs.budget,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BodyPlan, BodyPlanInputs, decide};
+    use super::{BodyObservation, BodyPlan, BodyPlanInputs, decide};
 
     fn inputs() -> BodyPlanInputs {
         BodyPlanInputs {
             has_body_stage_rules: false,
             has_body_hook_script: false,
             has_body_intercept: false,
-            wants_observation: false,
+            observation: BodyObservation::Off,
             budget: 1024,
         }
     }
@@ -97,7 +121,7 @@ mod tests {
     #[test]
     fn observation_alone_uses_bounded_capture_and_keeps_streaming() {
         let plan = decide(BodyPlanInputs {
-            wants_observation: true,
+            observation: BodyObservation::Prefixed,
             ..inputs()
         });
         assert_eq!(plan, BodyPlan::Capture { limit: 1024 });
@@ -105,6 +129,26 @@ mod tests {
             !plan.needs_full_body(),
             "capture must not force the body to be materialized"
         );
+    }
+
+    #[test]
+    fn full_observation_buffers_even_without_rules() {
+        let plan = decide(BodyPlanInputs {
+            observation: BodyObservation::Full,
+            ..inputs()
+        });
+        assert_eq!(plan, BodyPlan::Buffer { limit: 1024 });
+    }
+
+    #[test]
+    fn inspection_wins_over_observation() {
+        // A rule that rewrites the body needs all of it, even when the host only asked for a prefix.
+        let plan = decide(BodyPlanInputs {
+            has_body_stage_rules: true,
+            observation: BodyObservation::Prefixed,
+            ..inputs()
+        });
+        assert_eq!(plan, BodyPlan::Buffer { limit: 1024 });
     }
 
     #[test]
