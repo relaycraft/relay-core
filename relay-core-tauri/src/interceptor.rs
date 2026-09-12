@@ -9,7 +9,7 @@ use relay_core_lib::interceptor::{
 };
 use relay_core_lib::proxy::budget::BudgetedBody;
 use relay_core_lib::proxy::http_utils::mock_to_response;
-use relay_core_lib::rule::stage_guard::stage_already_executed;
+use relay_core_lib::rule::stage_guard::{body_already_captured, stage_already_executed};
 use relay_core_lib::rule::{RuleStage, RuleTraceSummary, TerminalReason};
 use relay_core_runtime::interceptors::inspect::INSPECT_TIMEOUT;
 use relay_core_runtime::services::{InterceptService, PolicyService, RuleService};
@@ -60,10 +60,15 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(RequestAction::Continue(body));
         }
 
-        // NOTE: the runtime's RuleInterceptor may already have materialized this body onto the flow
-        // when the stage needed it. Re-reading here is therefore sometimes duplicated work, but
-        // skipping it would change which bodies this host records for the UI, so the capture stays
-        // as-is until body observation has an explicit policy (roadmap §24.2 follow-up).
+        // The proxy retains bodies itself now that this host declares
+        // `BodyObservation::Full` (see commands/system.rs), so the body is already on the Flow and
+        // reading the stream again would duplicate the work for nothing.
+        // `RuleInterceptor` runs earlier in the chain and marks the stage as executed after it
+        // retains the body, so a captured body means the rules have already run on it.
+        if body_already_captured(flow) {
+            return Ok(RequestAction::Continue(body));
+        }
+
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
@@ -160,8 +165,13 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(ResponseAction::Continue(body));
         }
 
-        // See on_request: the proxy may have retained this body already; re-reading is duplicated
-        // work, but skipping it would change which bodies reach the UI.
+        // See on_request: the proxy already retained this body under `BodyObservation::Full`, so
+        // there is nothing to re-read.
+        // See on_request: a captured body means `RuleInterceptor` already handled this stage.
+        if body_already_captured(flow) {
+            return Ok(ResponseAction::Continue(body));
+        }
+
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();

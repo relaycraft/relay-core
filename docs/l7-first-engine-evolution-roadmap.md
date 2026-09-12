@@ -1150,8 +1150,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （`off` / `prefixed` / `full`）。观察是产品决策，不再从「有没有 body 阶段规则」推断——
   桌面 UI 要显示 body，无界面运行不需要，推断会静默改变用户能看到什么。
   默认 `off`：保留流式，且计划层有回归测试锁定「无消费者 → 零拷贝」。
-- ⬜ Tauri 宿主尚未改为依赖该策略跳过自身缓冲；现在已有显式开关，这一步不再会改变
-  用户可见行为（需要把 Tauri 的 UI 依赖改为 `prefixed`/`full`）。
+- ✅ **已决策并对齐 mitmproxy**：桌面宿主声明 `BodyObservation::Full`（详见
+  [`decisions/0002`](./decisions/0002-body-observation-policy.md)），因为 mitmproxy 默认即
+  **完整缓冲** body；引擎默认保持 `Off` 以免无谓缓冲。桌面宿主现依据代理已保留的 body
+  **跳过自身重复缓冲**，「body 规则看到的」与「UI 看到的」成为同一来源。
 
 **修复进度（2026-09-12）**
 

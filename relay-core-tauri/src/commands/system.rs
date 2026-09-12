@@ -205,6 +205,19 @@ pub async fn start_core_proxy<R: Runtime>(
         sink.run(proxy_rx).await;
     });
 
+    // The desktop UI shows request and response bodies, matching mitmproxy's default of buffering
+    // them (see docs/mitmproxy-policy-benchmark.md §1.3). Declaring it here means the proxy retains
+    // bodies itself and the interceptor below does not have to read the stream a second time.
+    {
+        let mut policy = state.ctx.policy.policy_snapshot();
+        policy.body_observation = relay_core_api::body_plan::BodyObservation::Full;
+        state.core.update_policy_from(
+            relay_core_runtime::audit::AuditActor::Tauri,
+            "startup.policy".to_string(),
+            policy,
+        );
+    }
+
     let tauri_interceptor = Arc::new(TauriInterceptor {
         app_handle: app.clone(),
         rules: state.ctx.rules.clone(),
