@@ -182,6 +182,8 @@ where
     match interceptor.on_request_headers(&mut flow).await {
         InterceptionResult::Continue => {}
         InterceptionResult::Drop => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on drop: {}", e);
             }
@@ -191,6 +193,8 @@ where
             ));
         }
         InterceptionResult::MockResponse(resp) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on mock: {}", e);
             }
@@ -198,6 +202,8 @@ where
         }
         InterceptionResult::ModifiedRequest(_) => {}
         InterceptionResult::ModifiedResponse(res) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on modified response: {}", e);
             }
@@ -236,6 +242,8 @@ where
             current_body = new_body;
         }
         Ok(RequestAction::Drop) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on request drop: {}", e);
             }
@@ -245,6 +253,8 @@ where
             ));
         }
         Ok(RequestAction::MockResponse(res)) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on request mock: {}", e);
             }
@@ -319,6 +329,8 @@ where
             circuit_open: true,
             ..flow.resilience_trace.clone().unwrap_or_default()
         });
+        // The exchange is finishing: record it so duration_ms can be computed.
+        flow.end_time = Some(chrono::Utc::now());
         if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
             tracing::error!("Failed to send flow update on circuit breaker: {}", e);
         }
@@ -359,6 +371,8 @@ where
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some(format!("Upstream Error: {}", e));
             }
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on upstream error: {}", e);
             }
@@ -382,6 +396,8 @@ where
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some("Upstream Request Timed Out".to_string());
             }
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on upstream timeout: {}", e);
             }
@@ -469,6 +485,8 @@ where
     match interceptor.on_response_headers(&mut flow).await {
         InterceptionResult::Continue => {}
         InterceptionResult::Drop => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response drop: {}", e);
             }
@@ -478,12 +496,16 @@ where
             ));
         }
         InterceptionResult::MockResponse(resp) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response mock: {}", e);
             }
             return Ok(mock_to_response(resp));
         }
         InterceptionResult::ModifiedResponse(resp) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response modification: {}", e);
             }
@@ -518,6 +540,8 @@ where
             current_res_body = new_body;
         }
         Ok(ResponseAction::Drop) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response body drop: {}", e);
             }
@@ -527,6 +551,8 @@ where
             ));
         }
         Ok(ResponseAction::ModifiedResponse(res)) => {
+            // The exchange is finishing: record it so duration_ms can be computed.
+            flow.end_time = Some(chrono::Utc::now());
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!(
                     "Failed to send flow update on response body modification: {}",
@@ -617,15 +643,19 @@ where
         res_parts.headers = headers;
     }
 
-    if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
-        tracing::error!("Failed to send final flow update: {}", e);
-    }
-
     // Record time-to-last-byte as total upstream-to-client latency
     if let Layer::Http(http) = &mut flow.layer
         && let Some(response) = &mut http.response
     {
         response.timing.time_to_last_byte = Some(upstream_start.elapsed().as_millis() as u64);
+    }
+
+    // Mark the exchange complete. Without this, `FlowSummary.duration_ms` — derived solely from
+    // `end_time` — was always null, and consumers could not distinguish a finished exchange from a
+    // stalled one. It is set after the timing fields so the emitted flow carries the full record.
+    flow.end_time = Some(chrono::Utc::now());
+    if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
+        tracing::error!("Failed to send final flow update: {}", e);
     }
 
     Ok(Response::from_parts(res_parts, current_res_body))

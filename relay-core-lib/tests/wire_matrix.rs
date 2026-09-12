@@ -2000,3 +2000,140 @@ async fn wire_matrix_compressed_request_rewrite_is_sent_as_plaintext_without_a_f
         "the replacement is what must reach the upstream"
     );
 }
+
+// ── Flow completion is recorded (§24.7) ─────────────────────────────────────────────
+//
+// `Flow.end_time` was never set on the live path, so `FlowSummary.duration_ms` — computed only from
+// end_time — was always null in REST/MCP output, and consumers could not tell a finished exchange
+// from a stalled one.
+
+/// Drive one exchange while capturing every flow update the proxy emits.
+async fn run_case_capturing_updates() -> Vec<FlowUpdate> {
+    init_crypto();
+
+    let (upstream_addr, _upstream_rx) = spawn_recording_upstream_with_reply(Some("body")).await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let _ = drive(proxy_port, upstream_addr, "GET /probe HTTP/1.1", "").await;
+
+    // Give the final update a moment to be enqueued, then drain without blocking.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut updates = Vec::new();
+    while let Ok(update) = flow_rx.try_recv() {
+        updates.push(update);
+    }
+    updates
+}
+
+#[tokio::test]
+async fn wire_matrix_completed_flow_records_its_end_time() {
+    let updates = run_case_capturing_updates().await;
+
+    let flows: Vec<&relay_core_api::flow::Flow> = updates
+        .iter()
+        .filter_map(|u| match u {
+            FlowUpdate::Full(flow) => Some(flow.as_ref()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !flows.is_empty(),
+        "the proxy must emit at least one full flow update"
+    );
+    assert!(
+        flows.iter().any(|f| f.end_time.is_some()),
+        "a completed exchange must record end_time; otherwise duration_ms can never be computed"
+    );
+
+    let finished = flows
+        .iter()
+        .find(|f| f.end_time.is_some())
+        .expect("checked above");
+    assert!(
+        finished.end_time >= Some(finished.start_time),
+        "end_time must not precede start_time"
+    );
+}
+
+/// A failed exchange must also record its end time, so duration is available for debugging failures
+/// rather than only for successes.
+#[tokio::test]
+async fn wire_matrix_failed_flow_records_its_end_time() {
+    init_crypto();
+
+    // Reserve then drop a port so connecting to it fails deterministically.
+    let dead = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind");
+    let dead_addr = dead.local_addr().expect("addr");
+    drop(dead);
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let _ = drive(proxy_port, dead_addr, "GET /probe HTTP/1.1", "").await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut updates = Vec::new();
+    while let Ok(update) = flow_rx.try_recv() {
+        updates.push(update);
+    }
+
+    let finished = updates.iter().filter_map(|u| match u {
+        FlowUpdate::Full(flow) => Some(flow.as_ref()),
+        _ => None,
+    });
+
+    assert!(
+        finished.into_iter().any(|f| f.end_time.is_some()),
+        "an exchange that failed must still record end_time, otherwise its duration is unknowable"
+    );
+}

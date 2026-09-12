@@ -990,8 +990,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.7 模型与时间语义失真
 
-- `Flow.end_time` 在线路路径上从不设置 ⇒ `FlowSummary.duration_ms` 恒为 `null`
-  （`actors/flow_store.rs:197-199`）
+- ✅ **`Flow.end_time` 已修复**：HTTP 路径在**每个终止点**（成功、错误、丢弃、超时、
+  mock、熔断等共 14 处）设置 `end_time`，因此 `FlowSummary.duration_ms` 不再恒为 `null`，
+  且**失败**的交换同样可算时长（此前失败请求的持续时间无从得知）。
+  契约由 `wire_matrix_completed_flow_records_its_end_time` 与
+  `wire_matrix_failed_flow_records_its_end_time` 锁定，两条均已双向验证。
 - `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
 - `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
 - 关闭/错误原因无枚举，仅为自由字符串 tag；文档中提到的 `"error"` tag **没有任何生产者**
