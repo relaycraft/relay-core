@@ -89,6 +89,10 @@ benchmarks/.tls/
 # gitignore's `*` does not cross `/`.) Committed baselines stay tracked via the negation below.
 benchmarks/**/bench_*
 benchmarks/bench_*
+# The harness writes bench_*, release_* and ramp_* artifacts; committed baselines are named
+# baseline_*, so they stay tracked.
+benchmarks/**/release_*
+benchmarks/**/ramp_*
 benchmarks/*.csv
 benchmarks/.bench_ca_cert.*
 benchmarks/.bench_ca_key.pem
