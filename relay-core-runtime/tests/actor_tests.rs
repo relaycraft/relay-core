@@ -5,6 +5,7 @@ use relay_core_api::flow::{
     BodyData, Direction, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
     ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
 };
+use relay_core_api::rule::WebSocketDirection;
 use relay_core_lib::InterceptionResult;
 use relay_core_lib::intercept::Interceptor;
 use relay_core_lib::rule::{Action, Filter, Rule, RuleStage, RuleTermination, RuleTraceSummary};
@@ -607,6 +608,81 @@ async fn test_intercept_orphan_cleanup_after_channel_drop() {
         second.is_err(),
         "second resolve should fail (key already cleaned)"
     );
+}
+
+/// `Action::MockWebSocketMessage` must replace the frame, not drop it.
+///
+/// The mocked frame is the message the stage appended, so routing the mock through the generic
+/// HTTP-oriented termination path — which only produces a `MockResponse` for a WS layer when the
+/// handshake response carries a real status — turned a mock into a silent frame drop.
+#[tokio::test]
+async fn test_rule_interceptor_mock_websocket_message_replaces_frame() {
+    let state = Arc::new(CoreState::new(None).await);
+    let rule = Rule {
+        id: "ws-mock".to_string(),
+        name: "ws mock".to_string(),
+        active: true,
+        priority: 100,
+        stage: RuleStage::WebSocketMessage,
+        filter: Filter::All,
+        actions: vec![Action::MockWebSocketMessage {
+            direction: WebSocketDirection::Incoming,
+            message: "mocked-payload".to_string(),
+        }],
+        termination: RuleTermination::Stop,
+        constraints: None,
+    };
+    state.set_rules(vec![rule]).await;
+
+    let interceptor = RuleInterceptor::new(state.clone(), state.clone());
+    let mut flow = create_test_flow("http://example.com/ws", "GET");
+    // A WebSocket flow: handshake response present but with the default status the tunnel leaves.
+    flow.layer = Layer::WebSocket(WebSocketLayer {
+        handshake_request: match &flow.layer {
+            Layer::Http(http) => http.request.clone(),
+            _ => unreachable!(),
+        },
+        handshake_response: HttpResponse {
+            status: 0,
+            status_text: String::new(),
+            version: "HTTP/1.1".to_string(),
+            headers: vec![],
+            cookies: vec![],
+            body: None,
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+        },
+        messages: vec![],
+        closed: false,
+    });
+
+    let message = WebSocketMessage {
+        id: Uuid::new_v4(),
+        timestamp: Utc::now(),
+        direction: Direction::ClientToServer,
+        content: BodyData {
+            encoding: "utf-8".to_string(),
+            content: "original".to_string(),
+            size: 8,
+        },
+        opcode: "Text".to_string(),
+    };
+
+    let action = interceptor
+        .on_websocket_message(&mut flow, message)
+        .await
+        .expect("interceptor");
+
+    match action {
+        relay_core_lib::interceptor::WebSocketMessageAction::Continue(replaced) => {
+            assert_eq!(replaced.content.content, "mocked-payload");
+        }
+        other => panic!("a mocked WS frame must be replaced, got {other:?}"),
+    }
 }
 
 #[tokio::test]

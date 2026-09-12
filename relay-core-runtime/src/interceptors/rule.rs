@@ -208,6 +208,16 @@ impl Interceptor for RuleInterceptor {
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
             mark_stage_executed(flow, &RuleStage::WebSocketMessage);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
+                // `Action::MockWebSocketMessage` replaces the frame with the one the rule produced,
+                // which by construction is the message the stage just appended. Routing it through
+                // the generic HTTP-oriented termination path turned a mock into a dropped frame.
+                if matches!(reason, relay_core_api::rule::TerminalReason::Mock)
+                    && let Layer::WebSocket(ws) = &flow.layer
+                    && let Some(mocked) = ws.messages.last()
+                {
+                    return Ok(WebSocketMessageAction::Continue(mocked.clone()));
+                }
+
                 let result = handle_rule_termination(
                     &self.intercepts,
                     reason,
