@@ -974,11 +974,20 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 `RuleInterceptor` 记录标记，`TauriInterceptor` 依据标记跳过。
 契约由 `wire_matrix_stage_guard_applies_mutation_once_per_chain` 在真实线路上锁定。
 
-### 24.5 手工 Intercept「带修改恢复」在宿主间结果相反
+### 24.5 手工 Intercept「带修改恢复」在宿主间结果相反 —— ✅ 已修复
 
-`runtime/src/interceptors/rule.rs:56-62, 101-107` 将 `ModifiedRequest`/`ModifiedResponse`
-落入 `_ => Drop` ⇒ body 阶段手工放行并修改返回 **403**；同一 API 在 Tauri 正常
-（`tauri/src/interceptor.rs:82-94`）。直接违反 §11「Rule 与 Script 修改结果在线路层语义一致」。
+**历史问题**：`ModifiedRequest`/`ModifiedResponse` 落入 `_ => Drop` ⇒ body 阶段手工放行并修改
+返回 **403**；同一 API 在 Tauri 正常。且 `apply_flow_modification` 对**任何** request 阶段都返回
+`ModifiedRequest`（`modification.rs:47`），所以这不是边角情况——**每次**在 body 阶段带修改恢复
+都会被拒。
+
+**修复方式**：显式处理每种结果，与 Tauri 语义对齐：
+- `ModifiedRequest` → 把编辑写回 Flow（并用 `reframe_request_headers_for_replaced_body` 重建 framing），
+  复用与 `SetRequestBody` 相同的路径，使两者不会对 framing 产生分歧；
+- `ModifiedResponse` → 在请求阶段视为 mock 回复；在响应阶段按修改后的响应构造；
+- `Continue` → 原样继续。
+契约由 `resuming_a_request_body_intercept_with_an_edit_applies_it` 锁定，
+已双向验证：恢复旧的 catch-all 时该测试报 `got Drop`。
 
 ### 24.6 校验与结构化结果缺失
 

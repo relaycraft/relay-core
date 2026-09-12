@@ -34,5 +34,7 @@ relay-core-script = { path = "../relay-core-script", version = "0.10.0", optiona
 async-trait = "0.1.89"
 
 [dev-dependencies]
+http-body-util = "0.1"
+bytes = "1.6"
 chrono = { workspace = true }
 url = { workspace = true }

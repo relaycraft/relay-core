@@ -68,7 +68,40 @@ async fn finish_request_stage(
             InterceptionResult::MockResponse(res) => {
                 RequestAction::MockResponse(mock_to_response(res))
             }
-            _ => RequestAction::Drop,
+            // "Resume with modifications" at the body stage. This used to fall into the catch-all
+            // and become a Drop, so a user editing a request body in the desktop UI was answered
+            // with a 403 whenever the desktop's own interceptor was not the one handling it — the
+            // same gesture succeeded or failed depending on the host. Apply the edit instead.
+            InterceptionResult::ModifiedRequest(req) => {
+                // Record the edit on the Flow so filters and adapters see it, then let the proxy
+                // materialize and reframe it — the same path a rule's SetRequestBody takes, so the
+                // two cannot disagree about framing.
+                let body_data = req.body.unwrap_or(relay_core_api::flow::BodyData {
+                    encoding: "utf-8".to_string(),
+                    content: String::new(),
+                    size: 0,
+                });
+                let new_body =
+                    relay_core_lib::proxy::http_utils::build_request_body_from_flow(&body_data);
+
+                if let Layer::Http(http) = &mut flow.layer {
+                    let len = body_data.size as usize;
+                    http.request.headers =
+                        relay_core_lib::proxy::http_utils::reframe_request_headers_for_replaced_body(
+                            &http.request.headers,
+                            len,
+                        );
+                    http.request.body = Some(body_data);
+                }
+
+                RequestAction::Continue(new_body)
+            }
+            // A modified *response* at the request stage is a mocked reply, not a body edit.
+            InterceptionResult::ModifiedResponse(res) => {
+                RequestAction::MockResponse(mock_to_response(res))
+            }
+            InterceptionResult::Continue => RequestAction::Continue(forwarded),
+            InterceptionResult::ModifiedMessage(_) => RequestAction::Continue(forwarded),
         });
     }
     Ok(RequestAction::Continue(forwarded))
@@ -252,7 +285,17 @@ impl Interceptor for RuleInterceptor {
                     InterceptionResult::MockResponse(res) => {
                         ResponseAction::ModifiedResponse(mock_to_response(res))
                     }
-                    _ => ResponseAction::Drop,
+                    // "Resume with modifications" at the response-body stage: build the reply from
+                    // the edited Flow rather than dropping it. The catch-all used to turn this into a
+                    // Drop, so resuming a breakpoint with an edit produced a 403.
+                    InterceptionResult::ModifiedResponse(res) => {
+                        ResponseAction::ModifiedResponse(mock_to_response(res))
+                    }
+                    InterceptionResult::Continue => ResponseAction::Continue(body),
+                    // A body edit arrives as a modified request/response on the Flow; the proxy
+                    // materializes it, so continuing is the correct wire action.
+                    InterceptionResult::ModifiedRequest(_) => ResponseAction::Continue(body),
+                    InterceptionResult::ModifiedMessage(_) => ResponseAction::Continue(body),
                 });
             }
         }
@@ -445,5 +488,169 @@ mod stage_outcome_tests {
         report_stage_outcome(&rules, &RuleStage::RequestHeaders, &ctx);
 
         assert_eq!(reported.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod intercept_resolution_tests {
+    use super::finish_request_stage;
+    use async_trait::async_trait;
+    use relay_core_api::flow::{
+        BodyData, Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
+    };
+    use relay_core_api::modification::FlowModification;
+    use relay_core_api::rule::RuleTraceSummary;
+    use relay_core_lib::InterceptionResult;
+    use relay_core_lib::rule::engine::ExecutionContext;
+    use std::sync::Arc;
+    use tokio::sync::oneshot;
+
+    /// The service the resolver consults when a breakpoint is resumed.
+    struct ResolvingIntercepts {
+        resolution: InterceptionResult,
+    }
+
+    #[async_trait]
+    impl crate::services::InterceptService for ResolvingIntercepts {
+        async fn register_intercept(&self, _key: String, tx: oneshot::Sender<InterceptionResult>) {
+            let _ = tx.send(self.resolution.clone());
+        }
+        async fn set_pending_ws_message(
+            &self,
+            _key: String,
+            _message: relay_core_api::flow::WebSocketMessage,
+        ) {
+        }
+        async fn resolve_intercept(
+            &self,
+            _key: String,
+            _result: InterceptionResult,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn resolve_intercept_with_modifications_from(
+            &self,
+            _actor: crate::audit::AuditActor,
+            _key: String,
+            _action: &str,
+            _mods: Option<FlowModification>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn is_flow_intercepted(&self, _flow_id: String) -> bool {
+            true
+        }
+        async fn intercept_snapshot(&self) -> crate::CoreInterceptSnapshot {
+            crate::CoreInterceptSnapshot {
+                pending_count: 0,
+                ws_pending_count: 0,
+                items: Vec::new(),
+            }
+        }
+    }
+
+    fn flow_with_request_body() -> Flow {
+        Flow {
+            id: uuid::Uuid::new_v4(),
+            start_time: chrono::Utc::now(),
+            end_time: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".to_string(),
+                client_port: 1,
+                server_ip: "127.0.0.1".to_string(),
+                server_port: 2,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Http(HttpLayer {
+                request: HttpRequest {
+                    method: "POST".to_string(),
+                    url: url::Url::parse("http://example.com/").expect("url"),
+                    version: "HTTP/1.1".to_string(),
+                    headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                    cookies: vec![],
+                    query: vec![],
+                    body: None,
+                },
+                response: None,
+                error: None,
+            }),
+            tags: vec![],
+            meta: Default::default(),
+            resilience_trace: None,
+            rule_variables: Default::default(),
+            matched_rules: vec![],
+        }
+    }
+
+    fn terminated_ctx() -> ExecutionContext {
+        ExecutionContext {
+            trace: vec![],
+            variables: Default::default(),
+            policy: None,
+            summary: RuleTraceSummary::Terminated {
+                rule_id: "inspect-rule".to_string(),
+                reason: relay_core_api::rule::TerminalReason::Inspect,
+            },
+            state_store: Arc::new(
+                relay_core_lib::rule::engine::state::InMemoryRuleStateStore::new(),
+            ),
+            throttle_bytes_per_sec: None,
+            connect_override: None,
+        }
+    }
+
+    /// Resuming a body-stage breakpoint with an edit must apply the edit.
+    ///
+    /// `apply_flow_modification` returns `ModifiedRequest` for every request phase, and the mapping
+    /// used to fall through to a catch-all `Drop` — so "resume with modifications" answered 403.
+    #[tokio::test]
+    async fn resuming_a_request_body_intercept_with_an_edit_applies_it() {
+        let intercepts: Arc<dyn crate::services::InterceptService> =
+            Arc::new(ResolvingIntercepts {
+                resolution: InterceptionResult::ModifiedRequest(HttpRequest {
+                    method: "POST".to_string(),
+                    url: url::Url::parse("http://example.com/").expect("url"),
+                    version: "HTTP/1.1".to_string(),
+                    headers: vec![],
+                    cookies: vec![],
+                    query: vec![],
+                    body: Some(BodyData {
+                        encoding: "utf-8".to_string(),
+                        content: "EDITED-BY-USER".to_string(),
+                        size: 14,
+                    }),
+                }),
+            });
+
+        let mut flow = flow_with_request_body();
+        let body: relay_core_lib::interceptor::HttpBody =
+            http_body_util::BodyExt::boxed(http_body_util::BodyExt::map_err(
+                http_body_util::Full::new(bytes::Bytes::from_static(b"original")),
+                |e: std::convert::Infallible| -> relay_core_lib::interceptor::BoxError {
+                    match e {}
+                },
+            ));
+
+        let action = finish_request_stage(&intercepts, &mut flow, terminated_ctx(), body)
+            .await
+            .expect("intercept resolution should not error");
+
+        match action {
+            relay_core_lib::interceptor::RequestAction::Continue(new_body) => {
+                let bytes = http_body_util::BodyExt::collect(new_body)
+                    .await
+                    .expect("collect")
+                    .to_bytes();
+                assert_eq!(
+                    &bytes[..],
+                    b"EDITED-BY-USER",
+                    "the edited body must be what is forwarded"
+                );
+            }
+            other => panic!("a resumed body breakpoint must continue, got {other:?}"),
+        }
     }
 }

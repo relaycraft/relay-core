@@ -4774,8 +4774,10 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
  "futures",
+ "http-body-util",
  "log",
  "lru 0.16.4",
  "regex",
