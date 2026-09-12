@@ -10,7 +10,8 @@ use relay_core_lib::interceptor::{
 };
 use relay_core_lib::proxy::body_plan::{buffer_prefix, headers_for_direction, record_body_on_flow};
 use relay_core_lib::proxy::http_utils::mock_to_response;
-use relay_core_lib::rule::stage_guard::mark_stage_executed;
+use relay_core_lib::rule::RuleEngine;
+use relay_core_lib::rule::stage_guard::{self, mark_stage_executed};
 use std::sync::Arc;
 
 pub struct RuleInterceptor {
@@ -26,9 +27,10 @@ impl RuleInterceptor {
 
 /// Inputs for the BodyPlan decision, using only what this interceptor can observe.
 ///
-/// Script hooks and manual breakpoints are separate interceptors, so they are not claimed here; the
-/// budget comes from policy and a zero budget disables buffering entirely.
-fn body_plan_inputs(consumes_body: bool, flow: &Flow) -> BodyPlanInputs {
+/// Script hooks and manual breakpoints are separate interceptors, so they are not claimed here. The
+/// budget comes from the engine's `ProxyPolicy` so every host sizes it identically; a zero budget
+/// disables buffering entirely.
+fn body_plan_inputs(engine: &RuleEngine, consumes_body: bool) -> BodyPlanInputs {
     BodyPlanInputs {
         has_body_stage_rules: consumes_body,
         has_body_hook_script: false,
@@ -36,19 +38,16 @@ fn body_plan_inputs(consumes_body: bool, flow: &Flow) -> BodyPlanInputs {
         // The tap path already retains a bounded prefix for observation, so this decision only has
         // to account for active inspection.
         wants_observation: false,
-        budget: flow
-            .meta
-            .get(BODY_INSPECT_BUDGET_KEY)
-            .and_then(|v| v.parse::<usize>().ok())
+        budget: engine
+            .policy()
+            .map(|p| p.rule_body_inspect_budget)
             .unwrap_or(DEFAULT_BODY_INSPECT_BUDGET),
     }
 }
 
-/// Default retained-body budget: 1 MiB, matching `ProxyPolicy::rule_body_inspect_budget`.
+/// Fallback when a host builds an engine without a policy; matches
+/// `ProxyPolicy::rule_body_inspect_budget`'s default so the two cannot silently diverge.
 const DEFAULT_BODY_INSPECT_BUDGET: usize = 1024 * 1024;
-
-/// `flow.meta` key carrying the per-request budget, set by the proxy from policy.
-pub const BODY_INSPECT_BUDGET_KEY: &str = "rule_body_inspect_budget";
 
 /// Map a completed request-body stage result onto the wire action.
 async fn finish_request_stage(
@@ -79,7 +78,7 @@ impl Interceptor for RuleInterceptor {
         // the response, because a body-stage rule can only match a body that was retained. Declare
         // the intent here, where the rule set is visible; streaming is kept when nothing needs it.
         if engine.stage_consumes_body(RuleStage::ResponseBody) {
-            let budget = body_plan_inputs(true, flow).budget;
+            let budget = body_plan_inputs(&engine, true).budget;
             relay_core_lib::rule::stage_guard::request_response_body(flow, budget);
         }
 
@@ -113,8 +112,8 @@ impl Interceptor for RuleInterceptor {
         // Body-stage rules can only match a body they can see. Decide explicitly whether that is
         // worth the cost instead of buffering unconditionally (roadmap §3-3 BodyPlan, §22).
         let limit = match decide(body_plan_inputs(
+            &engine,
             engine.stage_consumes_body(RuleStage::RequestBody),
-            flow,
         )) {
             BodyPlan::Buffer { limit } => limit,
             _ => {
@@ -140,6 +139,8 @@ impl Interceptor for RuleInterceptor {
                 snapshot.total_bytes,
                 &headers,
             );
+            // Tell later interceptors in the chain not to read the stream a second time.
+            stage_guard::mark_body_captured(flow);
         }
 
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;

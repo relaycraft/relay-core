@@ -60,6 +60,10 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(RequestAction::Continue(body));
         }
 
+        // NOTE: the runtime's RuleInterceptor may already have materialized this body onto the flow
+        // when the stage needed it. Re-reading here is therefore sometimes duplicated work, but
+        // skipping it would change which bodies this host records for the UI, so the capture stays
+        // as-is until body observation has an explicit policy (roadmap §24.2 follow-up).
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();
@@ -72,9 +76,8 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
 
         self.update_flow_request_body(flow, &body_bytes);
 
-        // Buffering above is host-specific (it feeds the Flow/UI) and must always run. Rule
-        // execution, however, is shared with the runtime's RuleInterceptor, so exactly one of
-        // them may execute the stage — otherwise mutations apply twice (see stage_guard).
+        // Rule execution is shared with the runtime's RuleInterceptor, so exactly one member of the
+        // chain may execute a stage — otherwise mutations apply twice (see stage_guard).
         if stage_already_executed(flow, &RuleStage::RequestBody) {
             let new_body: HttpBody = Full::new(body_bytes).map_err(|e| match e {}).boxed();
             return Ok(RequestAction::Continue(new_body));
@@ -157,6 +160,8 @@ impl<R: Runtime> Interceptor for TauriInterceptor<R> {
             return Ok(ResponseAction::Continue(body));
         }
 
+        // See on_request: the proxy may have retained this body already; re-reading is duplicated
+        // work, but skipping it would change which bodies reach the UI.
         let budget = policy.rule_body_inspect_budget;
         let mut budgeted = BudgetedBody::new(body, budget);
         let body_bytes = (&mut budgeted).collect().await?.to_bytes();

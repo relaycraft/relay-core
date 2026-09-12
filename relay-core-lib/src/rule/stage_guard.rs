@@ -63,6 +63,24 @@ pub fn response_body_budget(flow: &Flow) -> Option<usize> {
         .and_then(|v| v.parse::<usize>().ok())
 }
 
+/// `flow.meta` key marking that the upstream body was already materialized and recorded.
+///
+/// Buffering a body is not free, and more than one interceptor in a chain may want it. The first
+/// one to do so marks the flow, so a later host-specific interceptor can reuse what is already on
+/// the flow instead of reading the stream a second time.
+pub const BODY_CAPTURED_KEY: &str = "body_captured";
+
+/// Record that the body for this exchange has been materialized onto the flow.
+pub fn mark_body_captured(flow: &mut Flow) {
+    flow.meta
+        .insert(BODY_CAPTURED_KEY.to_string(), "1".to_string());
+}
+
+/// Was the body already materialized onto this flow?
+pub fn body_already_captured(flow: &Flow) -> bool {
+    flow.meta.contains_key(BODY_CAPTURED_KEY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{mark_stage_executed, stage_already_executed};
@@ -92,6 +110,18 @@ mod tests {
             rule_variables: Default::default(),
             matched_rules: vec![],
         }
+    }
+
+    #[test]
+    fn body_capture_marker_round_trips_and_stays_out_of_json() {
+        let mut flow = flow();
+        assert!(!super::body_already_captured(&flow));
+
+        super::mark_body_captured(&mut flow);
+        assert!(super::body_already_captured(&flow));
+
+        let json = serde_json::to_value(&flow).expect("serialize flow");
+        assert_eq!(json.get("meta"), None);
     }
 
     #[test]

@@ -100,6 +100,14 @@ impl RuleEngine {
             .any(|r| r.original.active && r.original.stage == stage)
     }
 
+    /// The policy this engine was built with, if any.
+    ///
+    /// Hosts need it to size body-inspection budgets consistently instead of each hardcoding a
+    /// default that can drift from `ProxyPolicy::rule_body_inspect_budget`.
+    pub fn policy(&self) -> Option<&Arc<ProxyPolicy>> {
+        self.policy.as_ref()
+    }
+
     /// Would any enabled rule for `stage` actually consume the body?
     ///
     /// Body-stage rules that only act on metadata (status, headers, method, URL) do not need the
@@ -430,6 +438,25 @@ mod tests {
         } else {
             panic!("Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
         }
+    }
+
+    #[test]
+    fn policy_accessor_exposes_the_configured_budget() {
+        // Hosts size their body-inspection budget from the policy, so the accessor has to return
+        // exactly what the engine was built with rather than a private default.
+        let policy = Arc::new(ProxyPolicy {
+            rule_body_inspect_budget: 4096,
+            ..Default::default()
+        });
+
+        let engine = RuleEngine::new(vec![], vec![], Some(policy), None);
+        assert_eq!(
+            engine.policy().map(|p| p.rule_body_inspect_budget),
+            Some(4096)
+        );
+
+        let no_policy = RuleEngine::new(vec![], vec![], None, None);
+        assert!(no_policy.policy().is_none());
     }
 
     #[test]

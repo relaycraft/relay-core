@@ -433,6 +433,8 @@ where
                         snapshot.total_bytes,
                         &headers,
                     );
+                    // Tell later interceptors the body is already on the flow.
+                    crate::rule::stage_guard::mark_body_captured(&mut flow);
                 }
                 res_body = forwarded;
             }
