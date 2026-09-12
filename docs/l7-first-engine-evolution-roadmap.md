@@ -1072,10 +1072,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `format!("{:?}")` 形式的版本串（含 `HTTP/2.0`、`HTTP/3.0` 等）与未知值回退，3 个单测 +
   1 个 wire 测试（以 HTTP/1.0 请求代理，转发请求行必须为 `HTTP/1.0`），已双向验证。
   说明：TLS 上的实际线协议仍由 ALPN 决定，此项修正的是请求自身的元数据与可诊断性
-- 响应版本仍不回传：`build_client_response_from_flow` 使用调用方传入的 `default_version`
-  （已无 TODO，因其现已提供 `parse_http_version`），但该函数**无生产调用点**；
-  响应方向由 `build_client_response_head` 从上游 `Parts` 继承版本，故 H2 客户端的响应版本仍是
-  上游的版本而非客户端所讲的版本——留待后续（需先明确 H1↔H2 转换的期望语义）
+- ✅ **响应版本已回传**：`build_client_response_head` 现用 `parse_http_version(&http.request.version)`
+  设定响应版本，即**响应讲客户端所讲的版本**，而非继承上游版本。此前 HTTP/1.0 客户端可能收到
+  HTTP/1.1 响应（framing 与 keep-alive 语义不同），H2 客户端的响应元数据也会误述。
+  契约由 `wire_matrix_response_version_matches_the_client_not_the_upstream` 锁定
+  （H1.0 上游 + H1.1 客户端），已双向验证；H2 端到端测试（`test_https_mitm_h2`）仍通过。
 - ✅ **已修复（A7）**：新增 `proxy/content_encoding.rs`，支持 **gzip / deflate / br / zstd** ——
   与 mitmproxy 12.2.3 的编解码覆盖**完全对齐**。规则看到的是明文；重写后按原编码**重新编码**，
   `Content-Encoding` 与所发字节始终一致，`content-length` 随之重算。

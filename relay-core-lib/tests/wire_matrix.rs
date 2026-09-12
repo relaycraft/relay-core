@@ -2211,3 +2211,87 @@ async fn wire_matrix_forwarded_request_carries_the_client_version() {
         "the forwarded request must carry the client's version, got:\n{head}"
     );
 }
+
+// ── Response version follows the client (§24.9) ─────────────────────────────────────
+//
+// The response used to inherit whatever version the upstream spoke, so an HTTP/1.0 client could be
+// answered with an HTTP/1.1 response — which changes the framing rules (lingering close vs
+// Content-Length, keep-alive expectations).
+
+#[tokio::test]
+async fn wire_matrix_response_version_matches_the_client_not_the_upstream() {
+    init_crypto();
+
+    // Upstream answers HTTP/1.0 while the client speaks HTTP/1.1.
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let upstream_addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let _ = socket
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+            .await;
+        let _ = socket.flush().await;
+    });
+
+    let proxy_listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = proxy_listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(proxy_listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // The client speaks HTTP/1.1 and reads the raw status line.
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let request = format!(
+        "GET http://{upstream_addr}/probe HTTP/1.1\r\nHost: {upstream_addr}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+
+    let mut raw = Vec::new();
+    let mut buf = vec![0u8; 8192];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+            }
+        }
+    })
+    .await;
+
+    let head = String::from_utf8_lossy(&raw);
+    assert!(
+        head.starts_with("HTTP/1.1 "),
+        "the response must speak the client's version, got:\n{}",
+        head.lines().next().unwrap_or("<empty>")
+    );
+}

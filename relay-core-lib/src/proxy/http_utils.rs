@@ -223,6 +223,13 @@ pub fn build_client_response_head(
     // (content-length, transfer-encoding, and any extension state) survive untouched.
     let mut parts = upstream_parts.clone();
 
+    // The response must speak the client's version, not the upstream's: an HTTP/1.0 client answered
+    // with an HTTP/1.1 response gets different framing and keep-alive expectations, and an H2 client
+    // answered with HTTP/1.1 metadata misdescribes the exchange. `Flow` records what the client sent.
+    if let Layer::Http(http) = &flow.layer {
+        parts.version = parse_http_version(&http.request.version);
+    }
+
     if let Some(response) = flow_response(flow) {
         parts.status = StatusCode::from_u16(response.status).unwrap_or(upstream_parts.status);
 
