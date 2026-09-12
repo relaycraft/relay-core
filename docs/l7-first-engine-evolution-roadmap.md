@@ -1003,7 +1003,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
     （此前只写进被丢弃的 trace）；`RuleInterceptor` 在每个阶段后汇总并逐条上报失败。
   - ✅ **错误指标已有生产者**：新增 `RuleService::report_rule_exec_error`，
     `relay_core_rule_exec_errors_total` 不再是恒为 0 的假健康指标（含 2 个单测）。
-  - ⬜ `RuleOutcome::Skipped` 仍从未被构造（跳过原因不可表达）；
+  - ✅ **跳过现在被显式记录**：body 超过检查预算时，依赖 body 的规则**不再**对截断前缀做匹配
+    （会得到错误答案），而是被跳过并**逐条记录原因**（含预算字节数），同时计入错误指标。
+    新增 `RuleEngine::rules_for_stage` 以列出某阶段将被执行的规则。
+    「我的 body 规则为什么没生效」因此可回答。3 个单测覆盖。
   - ⬜ `RuleTrace`（`api/rule.rs:303-310`）仍无构造点，未通过任何适配器暴露给 UI/MCP。
 
 ### 24.7 模型与时间语义失真

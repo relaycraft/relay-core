@@ -107,6 +107,48 @@ async fn finish_request_stage(
     Ok(RequestAction::Continue(forwarded))
 }
 
+/// Total bytes a body-stage rule is checked against.
+///
+/// Exposed in trace reasons so an operator can see *how far* off a budget was.
+fn body_inspection_budget(engine: &RuleEngine) -> usize {
+    engine
+        .policy()
+        .map(|p| p.rule_body_inspect_budget)
+        .unwrap_or(DEFAULT_BODY_INSPECT_BUDGET)
+}
+
+/// Record that body-dependent rules could not run because the body exceeded the budget.
+///
+/// Returns how many rules were skipped. The rules are not executed: matching a body filter against a
+/// truncated prefix would silently produce a wrong answer, which is worse than not running.
+fn record_body_rules_skipped(engine: &RuleEngine, flow: &mut Flow, stage: &RuleStage) -> usize {
+    let budget = body_inspection_budget(engine);
+    let reason = format!("body exceeded the {budget}-byte inspection budget");
+
+    let rule_ids: Vec<String> = engine
+        .rules_for_stage(stage)
+        .into_iter()
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    if rule_ids.is_empty() {
+        return 0;
+    }
+
+    for rule_id in &rule_ids {
+        flow.meta
+            .insert(format!("rule_skipped:{rule_id}"), reason.clone());
+    }
+    flow.tags
+        .push(format!("rule_skipped:{}", stage_debug(stage)));
+
+    rule_ids.len()
+}
+
+fn stage_debug(stage: &RuleStage) -> String {
+    format!("{stage:?}")
+}
+
 /// Expose what a stage actually decided.
 ///
 /// `ExecutionContext.trace` is discarded by every production caller, so before this a stage that
@@ -221,8 +263,19 @@ impl Interceptor for RuleInterceptor {
         let (snapshot, forwarded) = buffer_prefix(body, limit).into_parts();
 
         if snapshot.truncated {
-            // A prefix is not the body: do not let rules match on it, and record why.
+            // A prefix is not the body. Rules that need the body cannot be evaluated at all, so they
+            // are skipped explicitly rather than matched against a partial body — and the skip is
+            // recorded as a trace event and a metric, because "my body rule did not fire" was
+            // previously unanswerable.
             flow.tags.push("rule_skipped:body_truncated".to_string());
+
+            let skipped = record_body_rules_skipped(&engine, flow, &RuleStage::RequestBody);
+            if skipped > 0 {
+                for _ in 0..skipped {
+                    self.rules.report_rule_exec_error();
+                }
+                return Ok(RequestAction::Continue(forwarded));
+            }
         } else {
             let headers = headers_for_direction(flow, Direction::ClientToServer);
             // Record decoded, so a body filter matches plaintext rather than compressed bytes.
@@ -652,5 +705,110 @@ mod intercept_resolution_tests {
             }
             other => panic!("a resumed body breakpoint must continue, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod body_budget_skip_tests {
+    use super::record_body_rules_skipped;
+    use relay_core_api::flow::{Flow, Layer, NetworkInfo, TransportProtocol};
+    use relay_core_api::rule::{Action, BodySource, Filter, Rule, RuleStage, RuleTermination};
+    use relay_core_lib::rule::RuleEngine;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn flow() -> Flow {
+        Flow {
+            id: uuid::Uuid::new_v4(),
+            start_time: chrono::Utc::now(),
+            end_time: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".to_string(),
+                client_port: 1,
+                server_ip: "127.0.0.1".to_string(),
+                server_port: 2,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Unknown,
+            tags: vec![],
+            meta: HashMap::new(),
+            resilience_trace: None,
+            rule_variables: HashMap::new(),
+            matched_rules: vec![],
+        }
+    }
+
+    fn body_rule(id: &str) -> Rule {
+        Rule {
+            id: id.to_string(),
+            name: id.to_string(),
+            active: true,
+            stage: RuleStage::RequestBody,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter: Filter::All,
+            actions: vec![Action::SetRequestBody {
+                body: BodySource::Text("replaced".to_string()),
+            }],
+            constraints: None,
+        }
+    }
+
+    /// When a body exceeds the budget its rules cannot be evaluated, so they are skipped — and the
+    /// skip must be recorded, because a body rule silently not firing is otherwise unanswerable.
+    #[test]
+    fn skipped_body_rules_are_recorded_per_rule_with_a_reason() {
+        let policy = relay_core_api::policy::ProxyPolicy {
+            rule_body_inspect_budget: 512,
+            ..Default::default()
+        };
+        let engine = RuleEngine::new(
+            vec![body_rule("body-a"), body_rule("body-b")],
+            vec![],
+            Some(Arc::new(policy)),
+            None,
+        );
+
+        let mut flow = flow();
+        let skipped = record_body_rules_skipped(&engine, &mut flow, &RuleStage::RequestBody);
+
+        assert_eq!(skipped, 2, "both body rules should be reported as skipped");
+        for id in ["body-a", "body-b"] {
+            let reason = flow
+                .meta
+                .get(&format!("rule_skipped:{id}"))
+                .unwrap_or_else(|| panic!("{id} must have a recorded skip reason"));
+            assert!(
+                reason.contains("512"),
+                "the reason should name the budget so it is actionable, got: {reason}"
+            );
+        }
+    }
+
+    /// A rule at another stage must not be reported as skipped by the body stage.
+    #[test]
+    fn only_rules_for_the_stage_are_reported() {
+        let engine = RuleEngine::new(vec![body_rule("body-a")], vec![], None, None);
+        let mut flow = flow();
+
+        assert_eq!(
+            record_body_rules_skipped(&engine, &mut flow, &RuleStage::ResponseBody),
+            0,
+            "a RequestBody rule must not be reported when the response stage is skipped"
+        );
+    }
+
+    /// The skip must not silently change non-body stages.
+    #[test]
+    fn no_rules_means_nothing_to_report() {
+        let engine = RuleEngine::new(vec![], vec![], None, None);
+        let mut flow = flow();
+        assert_eq!(
+            record_body_rules_skipped(&engine, &mut flow, &RuleStage::RequestBody),
+            0
+        );
     }
 }

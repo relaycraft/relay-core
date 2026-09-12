@@ -100,6 +100,18 @@ impl RuleEngine {
             .any(|r| r.original.active && r.original.stage == stage)
     }
 
+    /// Ids of the enabled rules targeting `stage`, in execution order.
+    ///
+    /// Lets a caller report which rules were skipped when a stage cannot be evaluated — for example
+    /// when a body exceeded the inspection budget — so "my rule did not fire" becomes answerable.
+    pub fn rules_for_stage(&self, stage: &RuleStage) -> Vec<String> {
+        self.compiled_rules
+            .iter()
+            .filter(|r| r.original.active && &r.original.stage == stage)
+            .map(|r| r.original.id.clone())
+            .collect()
+    }
+
     /// The policy this engine was built with, if any.
     ///
     /// Hosts need it to size body-inspection budgets consistently instead of each hardcoding a
