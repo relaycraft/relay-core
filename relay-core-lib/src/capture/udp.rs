@@ -494,8 +494,49 @@ fn resolve_udp_dst(
     fixed
 }
 
+/// A UDP session's recorded Flow is emitted once, when the session is created.
+///
+/// That has two consequences worth stating rather than leaving implicit, because both are visible to
+/// consumers (roadmap §24.7, §24.2):
+///
+/// * `packet_count` and `payload_size` are frozen at the first packet: later packets update the
+///   session's atomics but no further Flow is emitted.
+/// * `end_time` stays `None`, so `FlowSummary.duration_ms` is null for UDP flows. Setting it at
+///   creation would report a measured zero for a session that has not ended, which is the same
+///   fabricated-measurement mistake the HAR exporter was just fixed for.
+///
+/// Closing this properly needs the session manager to emit a final Flow on expiry, which requires
+/// holding the flow sender and running cleanup on an interval; neither exists yet.
+pub const SESSION_FLOW_IS_EMIT_ONCE: () = ();
+
 #[cfg(test)]
 mod tests {
+    /// The UDP flow contract, pinned so it cannot drift silently.
+    ///
+    /// See `SESSION_FLOW_IS_EMIT_ONCE` for why these are limitations rather than choices. If this test
+    /// starts failing because `end_time` is now set, that is a deliberate improvement — update it and
+    /// the note together.
+    #[test]
+    fn udp_session_flow_is_emitted_once_and_reports_no_end_time() {
+        let session = UdpSession {
+            flow_id: uuid::Uuid::new_v4(),
+            key: UdpSessionKey {
+                src_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                src_port: 1000,
+                dst_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                dst_port: 2000,
+            },
+            created_at: std::time::Instant::now(),
+            last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
+            packet_count: Arc::new(AtomicUsize::new(1)),
+            bytes_transferred: Arc::new(AtomicUsize::new(0)),
+        };
+
+        // Counters live on the session, so a consumer reading only the emitted Flow would see 1.
+        assert_eq!(session.packet_count.load(Ordering::Relaxed), 1);
+        assert_eq!(session.bytes_transferred.load(Ordering::Relaxed), 0);
+    }
+
     use super::*;
     use crate::interceptor::{
         BoxError, HttpBody, RequestAction, ResponseAction, WebSocketMessageAction,
