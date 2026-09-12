@@ -354,23 +354,75 @@ poll_proxy_ready() {
   echo "$ready"
 }
 
+# Which tool produced the idle-memory number. `ps`/VmRSS and macOS `footprint` are not the same
+# metric, so the report must say which one was used rather than silently mixing them.
+MEMORY_METRIC="rss"
+
 measure_idle_rss_mb() {
+  local attempt value
+  # A process that has just started can report a 0 footprint, and a blocked `ps` can report
+  # nothing at all; either would produce a "0MB" reading that PASSES a `< 85MB` DoD. Retry briefly,
+  # then report genuinely-unmeasurable as `unknown` so the DoD fails instead of silently passing.
+  for attempt in 1 2 3 4 5; do
+    value="$(measure_idle_rss_once)"
+    if [[ "$value" =~ ^[0-9]+$ ]] && [[ "$value" -gt 0 ]]; then
+      echo "$value"
+      return
+    fi
+    sleep 0.3
+  done
+  echo "unknown"
+}
+
+measure_idle_rss_once() {
   if [[ "$(uname)" == "Darwin" ]]; then
     local rss_kb
-    rss_kb=$(ps -o rss= -p "$PROXY_PID" 2>/dev/null | tr -d ' ')
-    if [[ -z "$rss_kb" ]]; then
-      echo "unknown"
+    # `ps` must be checked via its EXIT STATUS, not just for empty output: when it cannot run at
+    # all (restricted/sandboxed environment) it prints nothing, but in some configurations it
+    # prints a bare `0` — and `0MB` satisfied the `< 85MB` DoD, certifying an unmeasured proxy.
+    if rss_kb=$(ps -o rss= -p "$PROXY_PID" 2>/dev/null) && [[ "$rss_kb" =~ ^[0-9]+$ ]] && [[ "$rss_kb" -gt 0 ]]; then
+      MEMORY_METRIC="rss"
+      echo $((rss_kb / 1024))
       return
     fi
-    echo $((rss_kb / 1024))
+
+    # `ps` can be unavailable in restricted/sandboxed environments. Fall back to `footprint`,
+    # which reports phys_footprint (includes compressed memory) rather than resident size, and
+    # label it so reports never compare the two as if they were the same metric.
+    #
+    # NOTE: `footprint` switches units with magnitude ("880 KB" below 1 MB, "306 MB" above), so the
+    # unit token must be parsed. Reading the number alone silently produced 51/1024 = 0 for a 51 MB
+    # proxy, i.e. a "0MB" reading that PASSED the `< 85MB` DoD.
+    if command -v footprint >/dev/null 2>&1; then
+      local fp_line fp_value fp_unit fp_kb
+      fp_line=$(footprint "$PROXY_PID" 2>/dev/null | awk '/phys_footprint:/{print $2, $3; exit}')
+      fp_value="${fp_line%% *}"
+      fp_unit="${fp_line##* }"
+      if [[ "$fp_value" =~ ^[0-9]+$ ]] && [[ "$fp_value" -gt 0 ]]; then
+        case "${fp_unit^^}" in
+          KB) fp_kb=$fp_value ;;
+          MB) fp_kb=$((fp_value * 1024)) ;;
+          GB) fp_kb=$((fp_value * 1024 * 1024)) ;;
+          *) fp_kb=0 ;;
+        esac
+        if [[ "$fp_kb" -gt 0 ]]; then
+          MEMORY_METRIC="phys_footprint"
+          echo $((fp_kb / 1024))
+          return
+        fi
+      fi
+    fi
+
+    echo "unknown"
   else
     local rss_kb
-    rss_kb=$(awk '/VmRSS/{print $2}' "/proc/$PROXY_PID/status" 2>/dev/null)
-    if [[ -z "$rss_kb" ]]; then
-      echo "unknown"
+    if rss_kb=$(awk '/VmRSS/{print $2}' "/proc/$PROXY_PID/status" 2>/dev/null) \
+      && [[ "$rss_kb" =~ ^[0-9]+$ ]] && [[ "$rss_kb" -gt 0 ]]; then
+      MEMORY_METRIC="rss"
+      echo $((rss_kb / 1024))
       return
     fi
-    echo $((rss_kb / 1024))
+    echo "unknown"
   fi
 }
 
@@ -378,6 +430,12 @@ measure_idle_rss_mb() {
 # certified a dead or unreadable proxy. A measurement we cannot take must FAIL, not pass.
 assert_rss_measurable() {
   local rss="$1"
+  # A live process never has 0 memory; a 0 reading means the measurement failed, not that the
+  # proxy is frugal.
+  if [[ "$rss" = "0" ]]; then
+    fail "Idle RSS measured as 0MB for pid ${PROXY_PID:-?} — measurement failed, not a frugal proxy"
+    return 1
+  fi
   if ! [[ "$rss" =~ ^[0-9]+$ ]]; then
     fail "Idle RSS could not be measured for pid ${PROXY_PID:-?} (got '${rss}')"
     return 1
@@ -629,6 +687,7 @@ run_release_mode() {
   local TPUT_VALS P99_VALS SUCCESS_VALS tput p99 tput_mean p99_mean
   local success_rate success_mean
   local SUCCESS_STATUS="PASS"
+  local LOADGEN_STATUS="OK"
 
   echo "=== relay-core Release Benchmark (${TIMESTAMP}) ==="
   echo ""
@@ -781,6 +840,7 @@ run_release_mode() {
     TPUT_VALS=""
     P99_VALS=""
     SUCCESS_VALS=""
+    ERRORS_SEEN=""
     info "    Measurement: ${RUNS} round(s)"
     for round in $(seq 1 "$RUNS"); do
       local metrics
@@ -788,11 +848,14 @@ run_release_mode() {
         fail "    Measurement round ${round}/${RUNS} failed"
         return 1
       fi
-      IFS='|' read -r tput p99 success_rate _errors <<< "$metrics"
+      IFS='|' read -r tput p99 success_rate round_errors <<< "$metrics"
       TPUT_VALS+="${tput}"$'\n'
       P99_VALS+="${p99}"$'\n'
       SUCCESS_VALS+="${success_rate}"$'\n'
-      info "      Round ${round}/${RUNS}: ${tput} req/s, P99=${p99}ms, success=${success_rate}%"
+      if [[ -n "$round_errors" ]]; then
+        ERRORS_SEEN="${ERRORS_SEEN}${round_errors}; "
+      fi
+      info "      Round ${round}/${RUNS}: ${tput} req/s, P99=${p99}ms, success=${success_rate}%${round_errors:+ (${round_errors})}"
     done
 
     local tput_stats p99_stats success_stats
@@ -805,9 +868,21 @@ run_release_mode() {
 
     local row_qps_status="INFO" row_lat_status="INFO"
 
+    # Distinguish a proxy failure from a load-generator artifact. Exhausting the client's ephemeral
+    # port range (macOS `os error 49`) or hitting oha's own deadline shows up as a collapsed success
+    # rate while the proxy is healthy — reporting that as a proxy regression is a false signal.
+    if [[ "$ERRORS_SEEN" == *"Can't assign requested address"* ]]; then
+      LOADGEN_STATUS="FAIL"
+      fail "    Load generator exhausted ephemeral ports (os error 49) — result is not a proxy measurement"
+      info "    Set CONNECTIONS lower (currently ${CONNECTIONS}) or reduce --duration; see §15-1"
+    fi
+
     if (( $(python3 -c "print(1 if ${success_mean} >= ${DOD_SUCCESS_RATE} else 0)") )); then
       pass "    Success rate: mean=${success_mean}% (DoD: >=${DOD_SUCCESS_RATE}%)"
       SUCCESS_STATUS="PASS"
+    elif [[ "$LOADGEN_STATUS" == "FAIL" ]]; then
+      # Already reported as a harness artifact above; do not also blame the proxy.
+      SUCCESS_STATUS="INVALID"
     else
       fail "    Success rate: mean=${success_mean}% (DoD: >=${DOD_SUCCESS_RATE}%)"
       SUCCESS_STATUS="FAIL"
@@ -890,6 +965,11 @@ EOF
   COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
   DATE_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
+  local MEMORY_METRIC_NOTE=""
+  if [[ "$MEMORY_METRIC" != "rss" ]]; then
+    MEMORY_METRIC_NOTE=" (phys_footprint, NOT resident size — do not compare against rss baselines)"
+  fi
+
   # ── Reports ───────────────────────────────────────────────────────────
   local report_prefix="release_v${CRATE_VER}_${TIMESTAMP}"
   local OUT_MD="$RESULTS_DIR/${report_prefix}.md"
@@ -912,6 +992,7 @@ EOF
 | Rust | ${RUSTC_VER} |
 | Load tool | ${TOOL_VER} |
 | Connections | ${CONNECTIONS} |
+| Memory metric | ${MEMORY_METRIC}${MEMORY_METRIC_NOTE} |
 
 ### Results (S1: 1KB payload)
 
@@ -965,7 +1046,8 @@ REPORT
     "cpu_cores": ${CPU_CORES},
     "ram_gb": ${RAM_GB},
     "rustc": "${RUSTC_VER}",
-    "load_tool": "${TOOL_VER}"
+    "load_tool": "${TOOL_VER}",
+    "memory_metric": "${MEMORY_METRIC}"
   },
   "methodology": {
     "warmup_rounds": ${WARMUP_RUNS},
@@ -980,6 +1062,7 @@ REPORT
     "api_flow_detail_ms": ${flow_detail_ms},
     "api_sse_first_event_ms": ${sse_first_ms}
   },
+  "load_errors": "${ERRORS_SEEN}",
   "scenarios": ${LOAD_JSON_ITEMS},
   "dod": {
     "cold_start": "${CS_STATUS}",
@@ -995,6 +1078,14 @@ JSON
 
   # Gate BEFORE announcing/reporting: a run whose DoD failed must not be treated as a valid
   # report (previously `--strict` was unreachable in release mode because of the early exit).
+  if [[ "$SUCCESS_STATUS" == "INVALID" ]]; then
+    fail "Release run is INVALID: the load generator, not the proxy, limited the measurement"
+    if [[ "$STRICT" -eq 1 ]]; then
+      fail "Strict mode: refusing to publish an invalid measurement"
+      return 1
+    fi
+  fi
+
   if [[ "$CS_STATUS" == "FAIL" || "$RSS_STATUS" == "FAIL" || "$QPS_STATUS" == "FAIL" || "$LAT_STATUS" == "FAIL" || "$SUCCESS_STATUS" == "FAIL" ]]; then
     fail "Release run produced a FAIL DoD status; report written for diagnosis only: $OUT_MD"
     if [[ "$STRICT" -eq 1 ]]; then

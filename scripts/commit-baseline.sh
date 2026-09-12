@@ -13,9 +13,25 @@ if [ -z "$VERSION" ]; then
 fi
 VERSION="${VERSION#v}"
 
-latest_json="$(find "$RESULTS" -maxdepth 1 -name 'release_*.json' -type f ! -name 'baseline_*' -print 2>/dev/null | sort | tail -1)"
-if [ -z "$latest_json" ] || [ ! -f "$latest_json" ]; then
+# Pick the newest report by MODIFICATION TIME, and prefer one whose embedded version matches the
+# requested version. Sorting paths alphabetically used to win on the label (e.g. `release_vdiag_…`
+# beat `release_v0.10.0_…`), which silently promoted the wrong run.
+candidates="$(find "$RESULTS" -maxdepth 1 -name 'release_*.json' -type f ! -name 'baseline_*' -print 2>/dev/null)"
+if [ -z "$candidates" ]; then
   echo "error: no benchmarks/results/release_*.json found — run bench_minimal.sh release first" >&2
+  exit 1
+fi
+
+matching="$(printf '%s\n' "$candidates" | grep -F "release_v${VERSION}_" || true)"
+if [ -n "$matching" ]; then
+  latest_json="$(printf '%s\n' "$matching" | xargs ls -t 2>/dev/null | head -1)"
+else
+  latest_json="$(printf '%s\n' "$candidates" | xargs ls -t 2>/dev/null | head -1)"
+  echo "warning: no report labelled v${VERSION}; using the newest report: $(basename "$latest_json")" >&2
+fi
+
+if [ -z "$latest_json" ] || [ ! -f "$latest_json" ]; then
+  echo "error: could not determine the latest release report" >&2
   exit 1
 fi
 

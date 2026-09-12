@@ -631,8 +631,10 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
      测量的是上游。已替换为 `benchmarks/rust_echo_server.rs`（直连 ~104k req/s）。
      实测参考（M4 Max / 100 连接 / 1KB）：直连上游 ~104k req/s，经 RelayCore ~43k req/s，
      P99 ~10.3ms，成功率 100%
-2. 建立当前版本可信 baseline（harness 已就绪，下一步执行 `release` 模式并
-   `commit-baseline.sh 0.10.0`）
+2. ✅ 已建立 0.10.0 可信 baseline（`benchmarks/results/baseline_v0.10.0.{json,md}`）：
+   cold start 144.2ms、idle 内存 52.0MB、S1 吞吐 47,678.8 ±578.3 req/s、P99 1.17ms、
+   成功率 100%；方差从旧基线的 ~40% 降至 ~1.2%。复现命令：
+   `CONNECTIONS=25 ./benchmarks/bench_minimal.sh release --version 0.10.0 --runs 5 --warmup-runs 2 --duration 20`
 3. mitmproxy differential fixtures：比较线路行为，不只比较 QPS
 4. 关键协议和 Action E2E
 5. backpressure、channel full、subscriber lagged 可观测
@@ -1011,6 +1013,16 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - CI 无 soak、无 fuzz、无 mitmproxy differential、coverage 无阈值、
   无 cargo-audit/deny、macOS/Windows 仅构建不测试
 
+**载荷生成器上限（重要）**
+
+- 默认 `CONNECTIONS=100` 在 20s 持续压测下会**耗尽客户端临时端口**
+  （oha 报 `Can't assign requested address (os error 49)` 数万次），成功率塌陷到 0–30%。
+  这是**压测客户端**的限制，不是代理回归。harness 现已识别该特征并把该轮标记为
+  `INVALID` 而非 `FAIL`，避免产生假回归信号。
+- 根因是代理响应携带 `Connection: close`，使 oha 无法复用连接；每次请求都要新端口。
+  根治需单独决策（是否让代理默认 keep-alive 或改用 keep-alive 压测模式）。
+  当前 baseline 以 `CONNECTIONS=25` 采集，并在报告 methodology 中记录。
+
 **已知的待办与代价（A5b）**
 
 - Tauri 宿主对**每个**携带 body 的请求都会 `collect()` 完整 body（`tauri/src/interceptor.rs:65,147`，
@@ -1027,7 +1039,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
 - ✅ wire-level 矩阵（`relay-core-lib/tests/wire_matrix.rs`）：**6 个用例全部通过，无 `#[ignore]`
   占位**（基线往返、请求头、请求 body、响应头、响应状态、链式单次应用、WS 握手响应头）
-- ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
+- ✅ **0.10.0 baseline 已产出**（见 §15-2）
 - ✅ A5a HTTP 响应方向收敛（§24.1 响应头/状态已修复）
 - ✅ A5b 请求 body 替换生效并重建 framing（§24.1 `SetRequestBody` 已修复）
 - ✅ A5c WS 握手响应收敛并补齐 `on_response_headers`（§24.1 WS 握手项已修复）
