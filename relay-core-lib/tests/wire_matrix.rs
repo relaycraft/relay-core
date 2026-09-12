@@ -605,6 +605,26 @@ async fn wire_matrix_stage_guard_applies_mutation_once_per_chain() {
 // `flow.handshake_response` is finally populated for observation.
 
 /// Upstream that accepts a WebSocket upgrade so RelayCore has a real 101 to relay.
+/// An upstream that refuses to upgrade: it drops the connection immediately, so a handshake that
+/// reaches it cannot answer 101.
+async fn spawn_refusing_upstream() -> SocketAddr {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind refusing upstream");
+    let addr = listener.local_addr().expect("addr");
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => drop(stream),
+                Err(_) => return,
+            }
+        }
+    });
+
+    addr
+}
+
 async fn spawn_ws_upstream() -> SocketAddr {
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -979,6 +999,140 @@ async fn wire_matrix_response_body_replacement_reaches_client() {
     assert!(
         !client.contains("original-upstream-body"),
         "[{}] the original body must not also be sent, got:\n{client}",
+        CASE.id
+    );
+}
+
+// ── WebSocket handshake target rewrite (§24.1 MapRemote on WS) ──────────────────────
+//
+// The WS path read its forwarding target from the original request metadata, so a rule that
+// rewrote the handshake URL (`Action::MapRemote`) changed the Flow and the UI while the handshake
+// still went to the original target.
+
+/// Rewrites the handshake URL the way `Action::MapRemote` does, then leaves the rest to the proxy.
+struct WsMapRemoteInterceptor {
+    target: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Interceptor for WsMapRemoteInterceptor {
+    async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        if let Layer::WebSocket(ws) = &mut flow.layer
+            && let Ok(url) = url::Url::parse(self.target)
+        {
+            ws.handshake_request.url = url;
+        }
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+/// Send a WS handshake through the proxy and report the first response line.
+async fn ws_handshake_through_proxy(
+    proxy_port: u16,
+    target: SocketAddr,
+    interceptor: Arc<dyn Interceptor>,
+) -> String {
+    init_crypto();
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    let _ = proxy_port;
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .expect("connect proxy");
+    let request = format!(
+        "GET http://{target}/ws HTTP/1.1\r\nHost: {target}\r\nUpgrade: websocket\r\n\
+         Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write handshake");
+
+    let mut buf = vec![0u8; 4096];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("handshake timed out")
+        .expect("read handshake response");
+    String::from_utf8_lossy(&buf[..read]).to_string()
+}
+
+#[tokio::test]
+async fn wire_matrix_ws_handshake_target_rewrite_is_honoured() {
+    const CASE: Case = Case {
+        id: "ws_map_remote",
+        phase: Phase::None,
+        request: "GET /ws HTTP/1.1",
+        body: "",
+    };
+
+    // The upstream the handshake must reach after the rewrite.
+    let rewritten_addr = spawn_ws_upstream().await;
+    // The original target refuses to upgrade, so a 101 proves the rewrite was honoured rather than
+    // merely that *some* upstream answered.
+    let original_addr = spawn_refusing_upstream().await;
+
+    let interceptor: Arc<dyn Interceptor> = Arc::new(WsMapRemoteInterceptor {
+        target: Box::leak(format!("http://{rewritten_addr}/ws").into_boxed_str()),
+    });
+
+    let response = ws_handshake_through_proxy(0, original_addr, interceptor).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 101"),
+        "[{}] the handshake must go to the rewritten target; the original refuses to upgrade, got:\n{response}",
         CASE.id
     );
 }

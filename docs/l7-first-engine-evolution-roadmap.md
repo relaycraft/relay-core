@@ -923,7 +923,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 | `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
 | `MockWebSocketMessage` | ✅ 已修复 | mock 产生的帧即该阶段刚压入的消息，现直接替换（此前被通用终止路径转成 Drop） | `runtime/src/interceptors/rule.rs` |
 | WebSocket 握手响应头 | ✅ 已修复 | WS 路径现调用 `on_response_headers` 并记录 `flow.handshake_response`，101 由 Flow 构造；同时补齐了此前缺失的握手响应可观测性 | `proxy/websocket.rs` |
-| `MapRemote`（WebSocket 握手） | ⬜ 未修复 | 目标取自 `meta.url_str` 原值 | `proxy/websocket.rs:213` |
+| `MapRemote`（WebSocket 握手） | ✅ 已修复 | 转发目标改由 Flow 的 `handshake_request.url` 决定；此前取自原始请求元数据，改写被忽略 | `proxy/websocket.rs` |
 | `ForwardPort` 的 `target_host` | ⬜ 未修复 | 仅 `port` 生效 | `proxy/server.rs:224-231` |
 
 Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`tauri/src/interceptor.rs:123-128`），
@@ -1078,5 +1078,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ A1 双执行已修复（§24.4，stage_guard）
 - ✅ §24.1 响应 body 替换已修复（`SetResponseBody`/`TransformResponseBody`）
 - ✅ §24.1 `MockWebSocketMessage` 已修复（帧替换而非丢弃）
-- ⬜ §24.1 剩余：`MapRemote`(WS)、`ForwardPort` host、`SetTtl`
+- ✅ §24.1 `MapRemote`(WS) 已修复（目标由 Flow 决定）
+- ✅ §24.1 `MapRemote`(WS) 已修复
+- ⬜ §24.1 剩余：`ForwardPort` host、`SetTtl`
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放

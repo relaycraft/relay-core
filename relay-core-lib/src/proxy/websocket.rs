@@ -153,8 +153,13 @@ where
     let (parts, body) = req.into_parts();
     let req_for_upgrade = Request::from_parts(parts, body);
 
-    // Determine Target URL
-    let mut target_url_str = meta.url_str.clone();
+    // Determine Target URL from the Flow, which is authoritative: an interceptor may have rewritten
+    // the handshake URL (`Action::MapRemote`), and reading the original request metadata ignored
+    // that rewrite.
+    let mut target_url_str = match &flow.layer {
+        Layer::WebSocket(ws) => ws.handshake_request.url.to_string(),
+        _ => meta.url_str.clone(),
+    };
 
     if policy.transparent_enabled
         && let Some(addr) = target_addr
