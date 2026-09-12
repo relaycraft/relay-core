@@ -1019,6 +1019,9 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
     新增 `RuleEngine::rules_for_stage` 以列出某阶段将被执行的规则。
     「我的 body 规则为什么没生效」因此可回答。3 个单测覆盖。
   - ⬜ `RuleTrace`（`api/rule.rs:303-310`）仍无构造点，未通过任何适配器暴露给 UI/MCP。
+    说明：「这次改动是谁做的、改了哪些字段」现已通过 `FlowEvent::MutationApplied` 暴露
+    （见 §24.8），但 `RuleTrace` 的**逐阶段逐规则事件**（`RuleExecutionEvent`：匹配与否、
+    耗时、outcome）仍未对外暴露——`FlowEvent` 只覆盖「已应用」的结果，不覆盖「评估过但未匹配」。
 
 ### 24.7 模型与时间语义失真
 
@@ -1033,10 +1036,35 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.8 事件与存储
 
-- `relay-core-api/src/event.rs` 为空文件；`FlowUpdate` 仅 4 个变体，无阶段区分
-- SSE `event: http-body` 丢弃 `direction` 与 `body`（`http/routes/events.rs:58`）；
-  文档注释承诺的 `event: intercept` 无任何代码发出（`events.rs:26`）
-- CLI SSE 客户端 `ws-message` 分支反序列化必然失败（`cli/src/sse_client.rs:154`），且无测试
+- ✅ **SSE 帧契约已统一**：新增 `relay-core-api/src/sse.rs`，`event` 名、payload 形状与**编解码双向**
+  集中一处。此前适配器用 `serde_json::json!` 各自拼 payload，CLI 自己 `match` 事件名，两端无任何约束：
+  - `event: http-body` 文档承诺「HTTP body received on a flow」，实际只写 `{"flow_id": ...}` ——
+    **direction 与 body 都被丢弃**，UI 无法从流里显示 body；
+  - `event: body-budget-exceeded` 同样丢 direction，「哪个方向超预算」无从得知；
+  - `event: ws-message` 写的是 `{flow_id, message}`，而 CLI 按 tagged `FlowUpdate` 反序列化，
+    **永远解析失败**（实测 `None`）；
+  - 序列化失败时写空 `data:`，而 SSE 客户端会**静默忽略**空 data —— 与「没有流量」无法区分。
+  现有：HTTP 适配器只渲染被交付的帧（无第二处可写错），CLI 只经同一模块解码，
+  `every_update_round_trips_through_its_frame` 覆盖全部变体防止再次漂移。
+  双向验证：还原解码器 → `ws-message frame should decode, got None`；还原写入器 → 帧字面为
+  `data: {"flow_id":"flow-1"}`。SSE 断言读取的是**渲染后的线上文本**（经真实路由 + 真实 SSE 序列化）。
+- ✅ **类型化事件已接线**（§4-4/§4-5，决策见 [`decisions/0003`](./decisions/0003-typed-events-alongside-flow-snapshots.md)）：
+  `FlowEvent` 此前**只有类型和单测**，无生产者、无消费者，因此 §4-4 并不成立。现新增独立广播通道
+  （`FlowEventHub` / `FlowEventSink`），并在**拥有结构化取值处**产生事件：
+  - `InterceptPaused` / `InterceptResolved`（`await_user_inspect`，含超时路径）——
+    文档承诺的 `event: intercept` **从未有代码发出**，暂停甚至**没有审计事件**（只有「已解决」），
+    因此 UI 只能轮询、MCP agent 完全无信号；
+  - `MutationApplied`：每个**被应用**的规则一条，字段名由 `actions::mutated_fields` 从动作推导；
+    `match` 穷尽 ⇒ 新增 `Action` 不补映射即**编译失败**；控制类动作（`Drop`/`Tag`/`Delay`/…）声明空集，
+    失败或未匹配的动作**一条都不发**。
+  消费者：SSE `event: flow-event`（与 `event: flow` **并存**，§4-5 只做加法）、Tauri `flow-event`、
+  MCP 对 `proxy://status` 的通知（暂停/恢复会移动 `intercepts_pending`）。
+  双向验证：把 mutation 发布点改为空操作 → `a matching rule must publish a mutation event: Empty`。
+- ⬜ **事件模型仍不完整（不得据此宣称 §4-4 完成）**：`Started`、`HeadersReceived`、`BodyChunk`、
+  `MessageReceived`、`Completed`、`Errored` **仍无生产者**。它们需要在代理的终止点
+  （`proxy/http.rs` 的 14 处 `end_time` 赋值）与握手/帧路径上新增生产者；
+  由快照 diff 合成正是本模型要消除的推断，因此**明确不做**。
+  `CloseReason` 同理：`"error"` tag 至今**没有生产者**，错误与正常结束在线路上不可区分。
 - ✅ **迁移机制已建立**：`Store` 现使用 `PRAGMA user_version` + `SCHEMA_VERSION` + 有序
   `apply_migration`。此前所有语句都是 `IF NOT EXISTS`，老库**永远升不上去**且没有任何版本记录；
   现在落后版本会**前滚**，更新版本会**被拒绝**（而非静默改造），连接时应用
@@ -1174,5 +1202,9 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ §24.1 `ForwardPort` host 已修复（此前 host 被丢弃，仅 port 生效）
 - ✅ §24.1 `MapRemote`(WS) 已修复
 - ✅ §24.1 `ForwardPort` 的 `target_host` 已修复
+- ✅ §24.8 SSE 帧契约已统一（`relay-core-api/src/sse.rs`，编解码双向同源 + round-trip 锁定）
+- ✅ §24.8 类型化事件已接线（intercept 暂停/恢复、规则改动归因；决策见 `decisions/0003`）
+- ⬜ §24.8 剩余：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived`/`Completed`/`Errored`
+  与 `CloseReason` 仍无生产者（需在代理终止点新增，不由快照 diff 合成）
 - ⬜ §24.1 剩余：`SetTtl`（有意未实现：需要 raw socket 访问，超出当前连接模型）
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放
