@@ -1025,8 +1025,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   gzip / br / zstd 改写后客户端按声明编码解码得到替换内容。
   契约由 `wire_matrix_gzip_response_rewrite_stays_decodable` 锁定（客户端按声明的编码解码必须得到替换内容），
   已双向验证：不重新编码时该测试必失败。
-- ⬜ 仍未实现：**请求方向**的 `Content-Encoding` 处理；
-  规则**匹配**响应体时仍看到压缩字节（「解压→匹配→重编码」目前只在**重写**路径生效）
+- ✅ **匹配路径已修复**：`record_decoded_body_on_flow` 在记录 body 时先按 `Content-Encoding`
+  解码，因此 body 过滤器在 gzip/br/zstd 响应上匹配的是**明文**而非压缩字节
+  （此前会静默永不命中）。未修改的 body 仍原样透传，客户端收到的字节不变。
+  契约由 `wire_matrix_body_filter_verdict_is_matched_not_missed_on_gzip` 锁定，
+  已双向验证：关闭解码记录时该测试必失败。
+- ⬜ 仍未实现：**请求方向**的 `Content-Encoding` 处理（请求体目前不按 `Content-Encoding` 解码）
 - 📊 **mitmproxy 12.2.3 实测对标**见 [`mitmproxy-policy-benchmark.md`](./mitmproxy-policy-benchmark.md)：
   mitmproxy 支持 gzip/deflate/**br**/**zstd** 且读写自动重编码（header 与字节始终一致）；
   但其**默认全量缓冲** body，流式与可读性互斥。RelayCore 的默认流式 + 有界前缀观察是更优取舍，

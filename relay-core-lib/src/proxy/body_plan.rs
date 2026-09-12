@@ -230,6 +230,49 @@ pub fn record_body_on_flow(
     }
 }
 
+/// Record a body on the flow **decoded**, so body-stage filters match plaintext.
+///
+/// Mitmproxy exposes a decoded `text` view to filters because it buffers by default; RelayCore keeps
+/// streaming, so the decoded view has to be produced at the point where the body is retained. Without
+/// this, a filter on a gzip/br/zstd body was matched against compressed bytes and silently never
+/// fired (roadmap §24.3).
+///
+/// The recorded `BodyData` therefore holds plaintext while the wire still carries the encoded bytes.
+/// [`DECODED_FOR_MATCHING_KEY`] records that fact so a later re-encode does not double-encode.
+pub const DECODED_FOR_MATCHING_KEY: &str = "body_decoded_for_matching";
+
+pub fn record_decoded_body_on_flow(
+    flow: &mut Flow,
+    direction: Direction,
+    bytes: &[u8],
+    total_bytes: u64,
+    header_source: &[(String, String)],
+) -> bool {
+    use crate::proxy::content_encoding::{DecodedBody, content_encoding_of, decode_for_inspection};
+
+    let content_encoding = content_encoding_of(header_source);
+    let (decoded, state) = decode_for_inspection(bytes, content_encoding.as_deref());
+    let decoded_for_matching = state == DecodedBody::Decoded;
+    if decoded_for_matching {
+        flow.meta
+            .insert(DECODED_FOR_MATCHING_KEY.to_string(), "1".to_string());
+    }
+
+    // The representation is chosen from the decoded bytes, so text stays text rather than base64.
+    let mut headers = header_source.to_vec();
+    if decoded_for_matching {
+        headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-encoding"));
+    }
+    record_body_on_flow(flow, direction, &decoded, total_bytes, &headers);
+
+    decoded_for_matching
+}
+
+/// Was the body recorded on this flow decoded from a `Content-Encoding`?
+pub fn body_recorded_decoded(flow: &Flow) -> bool {
+    flow.meta.contains_key(DECODED_FOR_MATCHING_KEY)
+}
+
 /// Headers to use when recording a body for the given direction.
 pub fn headers_for_direction(flow: &Flow, direction: Direction) -> Vec<(String, String)> {
     match (&flow.layer, direction) {

@@ -1651,3 +1651,220 @@ async fn wire_matrix_zstd_response_rewrite_stays_decodable() {
         "the upstream body must not survive a replacement"
     );
 }
+
+// ── Body-stage filters see plaintext through Content-Encoding (§24.3) ───────────────
+//
+// Retention for matching used to record the bytes as received, so on a gzip/br/zstd response a
+// filter was matched against compressed bytes and silently never fired. mitmproxy avoids this by
+// buffering and exposing a decoded `text`; RelayCore keeps streaming, so the decode has to happen
+// where the body is retained.
+
+#[tokio::test]
+async fn wire_matrix_body_filter_matches_through_content_encoding() {
+    init_crypto();
+
+    // Upstream replies gzip-encoded; the *needle* only exists in the plaintext.
+    let plain = b"a-payload-with-needle-inside";
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, plain).expect("write");
+    let gzipped = encoder.finish().expect("finish");
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let target = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            gzipped.len()
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(&gzipped).await;
+        let _ = socket.flush().await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(ResponseBodyRuleLikeInterceptor);
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (bytes, encoding) = drive_and_read_raw_body(proxy_port, target).await;
+
+    // The filter must have matched the decoded payload, not the compressed bytes...
+    assert_eq!(
+        encoding.as_deref(),
+        Some("gzip"),
+        "the response must still declare gzip"
+    );
+    let mut decoded = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut decoded)
+        .expect("declared gzip encoding must decode what was sent");
+    assert_eq!(
+        decoded, "a-payload-with-needle-inside",
+        "an unmodified compressed body must pass through unchanged"
+    );
+}
+
+/// Same contract, but the filter's verdict is visible to the client so a non-match cannot pass
+/// silently.
+struct FilterOnDecodedBodyInterceptor;
+
+#[async_trait::async_trait]
+impl Interceptor for FilterOnDecodedBodyInterceptor {
+    async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        relay_core_lib::rule::stage_guard::request_response_body(flow, 64 * 1024);
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        let matched = match &flow.layer {
+            Layer::Http(http) => http
+                .response
+                .as_ref()
+                .and_then(|r| r.body.as_ref())
+                .is_some_and(|b| b.content.contains("needle")),
+            _ => false,
+        };
+
+        if let Layer::Http(http) = &mut flow.layer
+            && let Some(res) = &mut http.response
+        {
+            res.headers.push((
+                "x-filter-verdict".to_string(),
+                if matched { "matched" } else { "missed" }.to_string(),
+            ));
+        }
+
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_body_filter_verdict_is_matched_not_missed_on_gzip() {
+    init_crypto();
+
+    let plain = b"a-payload-with-needle-inside";
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, plain).expect("write");
+    let gzipped = encoder.finish().expect("finish");
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let target = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            gzipped.len()
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(&gzipped).await;
+        let _ = socket.flush().await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(FilterOnDecodedBodyInterceptor);
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://{target}/probe"))
+        .header("host", target.to_string())
+        .body(String::new())
+        .expect("request");
+    let resp = sender.send_request(req).await.expect("send");
+
+    assert_eq!(
+        resp.headers()
+            .get("x-filter-verdict")
+            .and_then(|v| v.to_str().ok()),
+        Some("matched"),
+        "a body filter must match the decoded payload, not the compressed bytes"
+    );
+}

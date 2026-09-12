@@ -8,7 +8,7 @@ use crate::interceptor::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, ResponseAction,
 };
 use crate::proxy::body_plan::{
-    buffer_body_within_budget, headers_for_direction, record_body_on_flow,
+    buffer_body_within_budget, headers_for_direction, record_decoded_body_on_flow,
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
@@ -437,7 +437,9 @@ where
                     flow.tags.push("rule_skipped:body_truncated".to_string());
                 } else {
                     let headers = headers_for_direction(&flow, Direction::ServerToClient);
-                    record_body_on_flow(
+                    // Record decoded: the response body stage runs immediately after this, and a
+                    // filter on a gzip/br/zstd body must see plaintext (roadmap §24.3).
+                    record_decoded_body_on_flow(
                         &mut flow,
                         Direction::ServerToClient,
                         &snapshot.bytes,

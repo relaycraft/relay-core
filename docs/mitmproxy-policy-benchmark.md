@@ -99,9 +99,9 @@ client body: 未改动，47 字节
 
 1. ~~**`br` / `zstd` 未解码**~~ → **已全部补齐**：gzip / deflate / br / zstd 均可解码与重编码，
    与 mitmproxy 覆盖一致，含真实帧 fixture 与 gzip/br/zstd 三条 wire 级改写验证。
-2. **压缩 body 上的「匹配」链路不完整**（唯一的实质差距）：Roadmap §24.3 记录的
-   「解压 → 匹配 → 重编码」目前只在**重写**路径生效；body 过滤器仍可能看到压缩字节。
-   mitmproxy 因默认缓冲，其 `text` 视图在匹配时已是明文，这一点上它更完整。
+2. ~~**压缩 body 上的「匹配」链路不完整**~~ → **已修复**：记录 body 时按 `Content-Encoding`
+   解码，因此 body 过滤器在 gzip/br/zstd 响应上匹配的是明文，且未修改的 body 原样透传
+   （客户端收到的字节不变）。剩下的是**请求方向**：请求体尚未按 `Content-Encoding` 解码。
 3. mitmproxy 的 `raw_content`/`text` **双视图**（wire 字节与语义视图分离）比 RelayCore 更干净：
    RelayCore 用 `BodyData.encoding` 单字段承载两种语义，历史上已因此出过 base64 误用（§24.3）。
 

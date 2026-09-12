@@ -8,7 +8,9 @@ use relay_core_lib::interceptor::{
     BoxError, ConnectAction, ConnectionInfo, ConnectionStats, HttpBody, InterceptionResult,
     Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
 };
-use relay_core_lib::proxy::body_plan::{buffer_prefix, headers_for_direction, record_body_on_flow};
+use relay_core_lib::proxy::body_plan::{
+    buffer_prefix, headers_for_direction, record_decoded_body_on_flow,
+};
 use relay_core_lib::proxy::http_utils::mock_to_response;
 use relay_core_lib::rule::RuleEngine;
 use relay_core_lib::rule::stage_guard::{self, mark_stage_executed};
@@ -146,7 +148,8 @@ impl Interceptor for RuleInterceptor {
             flow.tags.push("rule_skipped:body_truncated".to_string());
         } else {
             let headers = headers_for_direction(flow, Direction::ClientToServer);
-            record_body_on_flow(
+            // Record decoded, so a body filter matches plaintext rather than compressed bytes.
+            record_decoded_body_on_flow(
                 flow,
                 Direction::ClientToServer,
                 &snapshot.bytes,
