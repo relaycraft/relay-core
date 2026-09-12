@@ -17,6 +17,7 @@ fn make_flow(url: &str) -> Flow {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         tags: vec![],
         meta: HashMap::new(),
         resilience_trace: None,

@@ -73,6 +73,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                 end_time: ttl.map(|_ms| {
                     chrono::Utc::now() // HAR doesn't have end_time; approximate for analysis
                 }),
+                close_reason: None,
                 network: relay_core_api::flow::NetworkInfo {
                     client_ip: entry["_relaycore"]["client_ip"]
                         .as_str()

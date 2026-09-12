@@ -659,6 +659,7 @@ mod intercept_resolution_tests {
             id: uuid::Uuid::new_v4(),
             start_time: chrono::Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 1,
@@ -871,6 +872,7 @@ mod body_budget_skip_tests {
             id: uuid::Uuid::new_v4(),
             start_time: chrono::Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 1,

@@ -26,9 +26,11 @@
      结构化的 flow id、真实的 phase，以及等待**实际如何结束**（含超时路径）。
    - `MutationApplied`：每个**被应用**的规则产生一条，字段名由动作本身推导
      （`actions::mutated_fields`），而非 diff 前后 Flow。
-3. **不合成其余事件。** `Started` / `HeadersReceived` / `BodyChunk` / `MessageReceived` /
-   `Completed` / `Errored` 目前**不产生**。它们需要在代理的终止点（`proxy/http.rs` 的 14 处）
-   与握手/帧路径上新增生产者，属于后续工作（§24.8 记为开放项）。
+3. **不合成其余事件。** `Started` / `HeadersReceived` / `BodyChunk` / `MessageReceived`
+   目前**不产生**：它们需要在代理的握手/帧路径上新增生产者（§24.8 记为开放项）。
+   `Completed` / `Errored` **已产生**，方式是让代理在终止点把 `CloseReason` **写进 `Flow`**
+   （`Flow.close_reason`，可加字段），再由 runtime 读取并发出事件——仍属「生产者写下的事实」，
+   不是快照 diff。
 4. **`MCP` 只对有资源意义的事件发通知**：断点暂停/恢复会改变 `intercepts_pending`，
    因此通知 `proxy://status`；其余事件已由快照流覆盖，重复通知只是噪声。
 

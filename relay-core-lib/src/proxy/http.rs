@@ -25,6 +25,7 @@ use crate::tls::CertificateAuthority;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
+use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{Direction, FlowUpdate, Layer, ResilienceTrace};
 use relay_core_api::policy::ProxyPolicy;
 
@@ -184,6 +185,9 @@ where
         InterceptionResult::Drop => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::PolicyDrop {
+                detail: "request dropped by policy".to_string(),
+            });
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on drop: {}", e);
             }
@@ -195,6 +199,7 @@ where
         InterceptionResult::MockResponse(resp) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on mock: {}", e);
             }
@@ -204,6 +209,7 @@ where
         InterceptionResult::ModifiedResponse(res) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on modified response: {}", e);
             }
@@ -244,6 +250,9 @@ where
         Ok(RequestAction::Drop) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::PolicyDrop {
+                detail: "request dropped by interceptor".to_string(),
+            });
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on request drop: {}", e);
             }
@@ -255,6 +264,7 @@ where
         Ok(RequestAction::MockResponse(res)) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on request mock: {}", e);
             }
@@ -331,6 +341,9 @@ where
         });
         // The exchange is finishing: record it so duration_ms can be computed.
         flow.end_time = Some(chrono::Utc::now());
+        flow.close_reason = Some(CloseReason::PolicyDrop {
+            detail: "circuit breaker open for upstream".to_string(),
+        });
         if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
             tracing::error!("Failed to send flow update on circuit breaker: {}", e);
         }
@@ -373,6 +386,7 @@ where
             }
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::UpstreamClosed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on upstream error: {}", e);
             }
@@ -398,6 +412,9 @@ where
             }
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Timeout {
+                kind: "total".to_string(),
+            });
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on upstream timeout: {}", e);
             }
@@ -487,6 +504,9 @@ where
         InterceptionResult::Drop => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::PolicyDrop {
+                detail: "response dropped by policy".to_string(),
+            });
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response drop: {}", e);
             }
@@ -498,6 +518,7 @@ where
         InterceptionResult::MockResponse(resp) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response mock: {}", e);
             }
@@ -506,6 +527,7 @@ where
         InterceptionResult::ModifiedResponse(resp) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response modification: {}", e);
             }
@@ -542,6 +564,9 @@ where
         Ok(ResponseAction::Drop) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::PolicyDrop {
+                detail: "response dropped by interceptor".to_string(),
+            });
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on response body drop: {}", e);
             }
@@ -553,6 +578,7 @@ where
         Ok(ResponseAction::ModifiedResponse(res)) => {
             // The exchange is finishing: record it so duration_ms can be computed.
             flow.end_time = Some(chrono::Utc::now());
+            flow.close_reason = Some(CloseReason::Completed);
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!(
                     "Failed to send flow update on response body modification: {}",
@@ -654,6 +680,7 @@ where
     // `end_time` — was always null, and consumers could not distinguish a finished exchange from a
     // stalled one. It is set after the timing fields so the emitted flow carries the full record.
     flow.end_time = Some(chrono::Utc::now());
+    flow.close_reason = Some(CloseReason::Completed);
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
         tracing::error!("Failed to send final flow update: {}", e);
     }

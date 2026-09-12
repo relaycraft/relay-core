@@ -126,6 +126,15 @@ pub struct Flow {
     /// S10a: Rule IDs that matched and executed on this flow (exposed to scripts).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matched_rules: Vec<String>,
+
+    /// How the exchange ended, in the unified vocabulary of roadmap §4-3.
+    ///
+    /// `None` means "not recorded" — either the flow is still open, or it ended somewhere that does
+    /// not yet classify its ending. It is deliberately not defaulted to `Completed`: an unrecorded
+    /// ending and a confirmed normal completion are different facts, and reporting the second when
+    /// only the first is known is what made errors indistinguishable from successes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<crate::event::CloseReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

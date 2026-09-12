@@ -19,6 +19,7 @@ fn test_flow_to_flow_index_conversion() {
         id: flow_id,
         start_time: now,
         end_time: Some(now + chrono::Duration::milliseconds(100)),
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -178,6 +179,7 @@ fn test_websocket_flow_to_detail_conversion() {
         id: flow_id,
         start_time: now,
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 54321,
@@ -291,6 +293,7 @@ fn test_flow_to_flow_index_without_response_defaults() {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -352,6 +355,7 @@ fn test_flow_detail_http_har_compat_fields() {
         id: Uuid::new_v4(),
         start_time: now,
         end_time: Some(now + chrono::Duration::milliseconds(23)),
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -414,6 +418,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -485,6 +490,7 @@ fn test_flow_detail_request_query_string_uses_struct_field() {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -532,6 +538,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -585,6 +592,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,

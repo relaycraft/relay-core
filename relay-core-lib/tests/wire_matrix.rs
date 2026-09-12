@@ -52,6 +52,7 @@
 
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
+use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{Flow, FlowUpdate, Layer};
 use relay_core_api::policy::ProxyPolicy;
 use relay_core_lib::engine::TcpCaptureSource;
@@ -82,6 +83,8 @@ fn init_crypto() {
 #[allow(dead_code)] // remaining phases are added as the data plane is fixed.
 enum Phase {
     None,
+    /// Refuse the exchange at the request-headers stage, the way a policy drop does.
+    RequestHeadersDrop,
     RequestHeaders,
     RequestBody,
     ResponseHeaders,
@@ -105,6 +108,9 @@ struct MutateInterceptor {
 #[async_trait::async_trait]
 impl Interceptor for MutateInterceptor {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        if self.phase == Phase::RequestHeadersDrop {
+            return InterceptionResult::Drop;
+        }
         if self.phase != Phase::RequestHeaders {
             return InterceptionResult::Continue;
         }
@@ -2132,10 +2138,108 @@ async fn wire_matrix_failed_flow_records_its_end_time() {
         _ => None,
     });
 
+    let finished: Vec<&Flow> = finished.filter(|f| f.end_time.is_some()).collect();
     assert!(
-        finished.into_iter().any(|f| f.end_time.is_some()),
+        !finished.is_empty(),
         "an exchange that failed must still record end_time, otherwise its duration is unknowable"
     );
+
+    // The reason matters as much as the timestamp: without it a consumer cannot tell this failure
+    // from a success, which is the whole point of recording it.
+    assert!(
+        finished
+            .iter()
+            .any(|f| f.close_reason == Some(CloseReason::UpstreamClosed)),
+        "a failed upstream connection must be recorded as UpstreamClosed, got {:?}",
+        finished.iter().map(|f| &f.close_reason).collect::<Vec<_>>()
+    );
+}
+
+/// A finished exchange states how it ended, exactly once.
+///
+/// Runtime turns that recorded reason into the terminal lifecycle event (§4-4). If a flow could
+/// carry a reason on more than one update, consumers would see the same exchange complete twice;
+/// if it carried none, they could not tell a success from a failure at all.
+#[tokio::test]
+async fn wire_matrix_a_finished_exchange_reports_its_close_reason_once() {
+    let updates = run_case_capturing_updates().await;
+
+    let reasons: Vec<&CloseReason> = updates
+        .iter()
+        .filter_map(|u| match u {
+            FlowUpdate::Full(flow) => flow.close_reason.as_ref(),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        reasons.len(),
+        1,
+        "a flow must report its ending exactly once, got {reasons:?}"
+    );
+    assert_eq!(
+        reasons[0],
+        &CloseReason::Completed,
+        "a successful exchange must be reported as completed, not as an error"
+    );
+}
+
+/// A policy drop is not a completion. `Completed` here would tell a consumer the exchange finished
+/// normally when the proxy actually refused it.
+#[tokio::test]
+async fn wire_matrix_dropped_exchange_is_not_reported_as_completed() {
+    init_crypto();
+
+    let (upstream_addr, _upstream_rx) = spawn_recording_upstream_with_reply(Some("body")).await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor {
+        phase: Phase::RequestHeadersDrop,
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let _ = drive(proxy_port, upstream_addr, "GET /probe HTTP/1.1", "").await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut reasons = Vec::new();
+    while let Ok(update) = flow_rx.try_recv() {
+        if let FlowUpdate::Full(flow) = update
+            && let Some(reason) = flow.close_reason
+        {
+            reasons.push(reason);
+        }
+    }
+
+    assert_eq!(reasons.len(), 1, "expected one ending, got {reasons:?}");
+    match &reasons[0] {
+        CloseReason::PolicyDrop { detail } => assert!(
+            detail.contains("policy"),
+            "the drop reason should name what dropped it, got {detail:?}"
+        ),
+        other => panic!("a dropped exchange must not be reported as {other:?}"),
+    }
 }
 
 // ── Ingress HTTP version reaches the forwarded request (§24.9) ───────────────────────

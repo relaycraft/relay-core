@@ -15,6 +15,7 @@ use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response, StatusCode};
+use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{
     BodyData, Direction, Flow, FlowUpdate, HttpResponse, Layer, WebSocketMessage,
 };
@@ -458,7 +459,7 @@ where
                 ws.handshake_response.status_text = "Bad Gateway".to_string();
                 ws.closed = true;
             }
-            report_websocket_end(&mut flow, &on_flow);
+            report_websocket_end(&mut flow, &on_flow, CloseReason::UpstreamClosed);
             Ok(create_error_response(StatusCode::BAD_GATEWAY, detail))
         }
         Err(_) => {
@@ -467,7 +468,13 @@ where
                 ws.handshake_response.status_text = "Gateway Timeout".to_string();
                 ws.closed = true;
             }
-            report_websocket_end(&mut flow, &on_flow);
+            report_websocket_end(
+                &mut flow,
+                &on_flow,
+                CloseReason::Timeout {
+                    kind: "handshake".to_string(),
+                },
+            );
             Ok(create_error_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 "Upstream Handshake Timed Out",
@@ -482,11 +489,12 @@ where
 /// stayed `false` and `end_time` stayed `None`. A consumer could not tell a live session from a
 /// finished one, and a finished session's duration was unknowable — while the HTTP path records
 /// both at every one of its terminal sites.
-fn report_websocket_end(flow: &mut Flow, on_flow: &Sender<FlowUpdate>) {
+fn report_websocket_end(flow: &mut Flow, on_flow: &Sender<FlowUpdate>, reason: CloseReason) {
     if let Layer::WebSocket(ws) = &mut flow.layer {
         ws.closed = true;
     }
     flow.end_time = Some(chrono::Utc::now());
+    flow.close_reason = Some(reason);
     if on_flow
         .try_send(FlowUpdate::Full(Box::new(flow.clone())))
         .is_err()
@@ -556,7 +564,11 @@ async fn handle_websocket_tunnel(
                                         interceptor
                                             .on_websocket_error(&mut flow, &e.to_string())
                                             .await;
-                                        report_websocket_end(&mut flow, &on_flow);
+                                        report_websocket_end(
+                                            &mut flow,
+                                            &on_flow,
+                                            CloseReason::Reset,
+                                        );
                                         return Err(e.into());
                                     }
 
@@ -591,7 +603,7 @@ async fn handle_websocket_tunnel(
                                 interceptor
                                     .on_websocket_error(&mut flow, &e.to_string())
                                     .await;
-                                report_websocket_end(&mut flow, &on_flow);
+                                report_websocket_end(&mut flow, &on_flow, CloseReason::Reset);
                                 return Err(e.into());
                             }
                         }
@@ -600,7 +612,13 @@ async fn handle_websocket_tunnel(
                         interceptor
                             .on_websocket_error(&mut flow, &e.to_string())
                             .await;
-                        report_websocket_end(&mut flow, &on_flow);
+                        report_websocket_end(
+                            &mut flow,
+                            &on_flow,
+                            CloseReason::ParserError {
+                                detail: e.to_string(),
+                            },
+                        );
                         return Err(e.into());
                     }
                     None => {
@@ -616,14 +634,21 @@ async fn handle_websocket_tunnel(
                 interceptor
                     .on_websocket_error(&mut flow, "WebSocket Idle Timeout")
                     .await;
-                report_websocket_end(&mut flow, &on_flow);
+                report_websocket_end(
+                    &mut flow,
+                    &on_flow,
+                    CloseReason::Timeout {
+                        kind: "websocket_idle".to_string(),
+                    },
+                );
                 return Err("WebSocket Idle Timeout".into());
             }
         }
     }
 
     // A clean close breaks out of the loop rather than returning, so the end is reported here too.
-    report_websocket_end(&mut flow, &on_flow);
+    // `on_websocket_end` is told 1000/"normal" for the same reason.
+    report_websocket_end(&mut flow, &on_flow, CloseReason::Completed);
     Ok(())
 }
 

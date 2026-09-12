@@ -191,6 +191,7 @@ where
                 id: conn_id,
                 start_time: Utc::now(),
                 end_time: None,
+                close_reason: None,
                 network: NetworkInfo {
                     client_ip: client_addr.ip().to_string(),
                     client_port: client_addr.port(),

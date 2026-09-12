@@ -1038,12 +1038,26 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   场景下完全不可见；现记录 `handshake_response.status`（502/504）、`closed` 与 `end_time` 后再发出。
   契约由 `wire_matrix_ws_session_end_reaches_consumers` 与
   `wire_matrix_failed_ws_handshake_is_recorded` 锁定（真实 WS 客户端 + 真实上游），均已双向验证。
-- ⬜ **WS 会话仍无类型化关闭原因**：现在能知道「结束了」，但不知道是正常关闭、对端重置还是
-  空闲超时——原因仍是 `on_websocket_error` / `on_websocket_end` 里被丢弃的字符串。
-  与 §24.8 的 `CloseReason` 缺口同源，需要先在 `Flow` 上落一个类型化字段。
-- `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
-- `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
-- 关闭/错误原因无枚举，仅为自由字符串 tag；文档中提到的 `"error"` tag **没有任何生产者**
+- ✅ **关闭/错误原因已类型化**（§4-3）：`Flow.close_reason: Option<CloseReason>`（可加字段，
+  `None` 表示**未记录**而非「已完成」——把未记录当成成功正是此前错误与成功无法区分的原因）。
+  在此之前关闭原因**只是自由字符串 tag**，且文档提到的 `"error"` tag **没有任何生产者**。
+  映射（14 处 HTTP 终止点 + 4 处 WS 出口 + UDP 会话关闭）：
+  | 终局 | `CloseReason` |
+  |---|---|
+  | 正常完成 / 规则 mock / 本地 map | `Completed` |
+  | 规则或策略丢弃（请求头、请求体、响应头、响应体） | `PolicyDrop { detail }` |
+  | 熔断开路拒绝 | `PolicyDrop { detail: "circuit breaker open for upstream" }` |
+  | 上游连接失败、WS 上游握手被拒 | `UpstreamClosed` |
+  | 上游超时 / WS 空闲超时 / WS 握手超时 | `Timeout { kind: "total" \| "websocket_idle" \| "handshake" }` |
+  | WS 帧发送失败或被重置 | `Reset` |
+  | WS 帧解析错误 | `ParserError { detail }` |
+  | UDP 空闲关闭 | `Completed` |
+  契约由 `wire_matrix_a_finished_exchange_reports_its_close_reason_once`（**恰好一次**）、
+  `wire_matrix_dropped_exchange_is_not_reported_as_completed`、
+  `wire_matrix_failed_flow_records_its_end_time` 与 3 个 serde 兼容测试锁定，均已双向验证。
+- ⬜ `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
+- ⬜ `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
+- ⬜ `CloseReason::ClientClosed` / `TlsError` 目前**没有生产者**（语义已在枚举里，尚无终局映射到它）
 
 ### 24.8 事件与存储
 
@@ -1071,11 +1085,15 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   消费者：SSE `event: flow-event`（与 `event: flow` **并存**，§4-5 只做加法）、Tauri `flow-event`、
   MCP 对 `proxy://status` 的通知（暂停/恢复会移动 `intercepts_pending`）。
   双向验证：把 mutation 发布点改为空操作 → `a matching rule must publish a mutation event: Empty`。
+- ✅ **`Completed` / `Errored` 已有生产者**：代理在终止点把 `CloseReason` 记进 Flow
+  （见 §24.7），runtime 的 flow pump 读**被声明的**原因并发出对应的终局事件
+  （`services::terminal_event`）。之所以不是「由快照 diff 推断」：原因是**生产者写下的事实**，
+  不是从字段是否被填充猜出来的——按 `end_time.is_some()` 推断会把每一次上游失败与策略丢弃
+  都报成成功。契约由一个**真实起代理**的集成测试锁定
+  （`a_flow_that_recorded_its_ending_publishes_a_terminal_event`）。
 - ⬜ **事件模型仍不完整（不得据此宣称 §4-4 完成）**：`Started`、`HeadersReceived`、`BodyChunk`、
-  `MessageReceived`、`Completed`、`Errored` **仍无生产者**。它们需要在代理的终止点
-  （`proxy/http.rs` 的 14 处 `end_time` 赋值）与握手/帧路径上新增生产者；
+  `MessageReceived` **仍无生产者**。它们需要在代理的握手/帧路径上新增生产者；
   由快照 diff 合成正是本模型要消除的推断，因此**明确不做**。
-  `CloseReason` 同理：`"error"` tag 至今**没有生产者**，错误与正常结束在线路上不可区分。
 - ✅ **迁移机制已建立**：`Store` 现使用 `PRAGMA user_version` + `SCHEMA_VERSION` + 有序
   `apply_migration`。此前所有语句都是 `IF NOT EXISTS`，老库**永远升不上去**且没有任何版本记录；
   现在落后版本会**前滚**，更新版本会**被拒绝**（而非静默改造），连接时应用
@@ -1216,7 +1234,8 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ §24.7 WS 会话结束与握手失败现已可观测（此前 `closed`/`end_time` 恒缺失、失败握手无 Flow）
 - ✅ §24.8 SSE 帧契约已统一（`relay-core-api/src/sse.rs`，编解码双向同源 + round-trip 锁定）
 - ✅ §24.8 类型化事件已接线（intercept 暂停/恢复、规则改动归因；决策见 `decisions/0003`）
-- ⬜ §24.8 剩余：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived`/`Completed`/`Errored`
-  与 `CloseReason` 仍无生产者（需在代理终止点新增，不由快照 diff 合成）
+- ✅ §24.7 `Flow.close_reason` 已类型化并在全部终局赋值（14 处 HTTP 终止点 + 4 处 WS 出口 + UDP）
+- ✅ §24.8 `Completed`/`Errored` 已由 runtime 从 Flow 记录的关闭原因发出
+- ⬜ §24.8 剩余：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived` 仍无生产者
 - ⬜ §24.1 剩余：`SetTtl`（有意未实现：需要 raw socket 访问，超出当前连接模型）
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放

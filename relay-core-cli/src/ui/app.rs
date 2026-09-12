@@ -774,6 +774,7 @@ mod tests {
             id: uuid::Uuid::parse_str(id).unwrap(),
             start_time: chrono::Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".into(),
                 client_port: 12345,

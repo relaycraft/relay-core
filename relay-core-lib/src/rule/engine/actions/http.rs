@@ -383,6 +383,7 @@ mod tests {
             id: Uuid::new_v4(),
             start_time: Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 12345,

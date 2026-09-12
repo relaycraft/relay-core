@@ -16,11 +16,23 @@ use tokio::sync::oneshot;
 use url::Url;
 use uuid::Uuid;
 
+static INIT_CRYPTO: std::sync::Once = std::sync::Once::new();
+
+/// Installing the process-level TLS provider must happen before any proxy binds.
+fn init_crypto() {
+    INIT_CRYPTO.call_once(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+    });
+}
+
 fn create_test_flow(url: &str, method: &str) -> Flow {
     Flow {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -57,6 +69,7 @@ fn create_test_ws_flow(url: &str) -> Flow {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -815,4 +828,107 @@ async fn a_stage_that_matches_nothing_publishes_no_event() {
         events.try_recv().is_err(),
         "a non-matching stage must not report a mutation"
     );
+}
+
+/// A flow that recorded how it ended produces the matching terminal lifecycle event.
+///
+/// This is the join the whole chain depends on: the proxy states the reason on the Flow, and the
+/// runtime turns it into `Completed`/`Errored`. Deriving the event from `end_time` alone would
+/// report every upstream failure and policy drop as a success, and producing nothing would leave
+/// `Started`/`Completed`/`Errored` — half the §4-4 model — with no producer.
+#[tokio::test]
+async fn a_flow_that_recorded_its_ending_publishes_a_terminal_event() {
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::flow::FlowUpdate;
+
+    init_crypto();
+
+    let state = Arc::new(CoreState::new(None).await);
+    let mut events = state.subscribe_flow_events();
+
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = upstream.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                if stream.read(&mut buf).await.is_ok() {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                }
+            });
+        }
+    });
+
+    let dir = std::env::temp_dir().join(format!("relay-core-events-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let config = relay_core_runtime::ProxyConfig::new(0, dir.join("ca.pem"), dir.join("ca.key"));
+
+    // Reserve a port, then release it, so the proxy has a real port to bind.
+    let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve port");
+    let port = reserved.local_addr().expect("port").port();
+    drop(reserved);
+    let mut config = config;
+    config.port = port;
+
+    let (sink, mut sink_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    state
+        .spawn_proxy(config, sink, None)
+        .expect("the proxy should start");
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    // Drive one exchange through the proxy.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut client = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .expect("connect proxy");
+    let request =
+        format!("GET http://{upstream_addr}/probe HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n");
+    client
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut buf = vec![0u8; 4096];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf)).await;
+
+    // The runtime must also forward the flow itself; wait for that before judging the event.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut saw_terminal_flow = false;
+    let mut observed: Vec<FlowEvent> = Vec::new();
+    while tokio::time::Instant::now() < deadline && !saw_terminal_flow {
+        if let Ok(Some(FlowUpdate::Full(flow))) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), sink_rx.recv()).await
+            && flow.close_reason.is_some()
+        {
+            saw_terminal_flow = true;
+        }
+    }
+    assert!(
+        saw_terminal_flow,
+        "the proxy must emit a flow carrying its close reason"
+    );
+
+    // The event is published in the pump that drains that same channel, so it is already queued.
+    while let Ok(event) = events.try_recv() {
+        observed.push(event);
+    }
+
+    let terminal: Vec<&FlowEvent> = observed.iter().filter(|e| e.is_terminal()).collect();
+    assert_eq!(
+        terminal.len(),
+        1,
+        "one finished exchange must produce exactly one terminal event, got {observed:?}"
+    );
+    match terminal[0] {
+        FlowEvent::Completed { .. } => {}
+        other => panic!("a successful exchange must complete, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

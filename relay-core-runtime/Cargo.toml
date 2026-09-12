@@ -36,5 +36,8 @@ async-trait = "0.1.89"
 [dev-dependencies]
 http-body-util = "0.1"
 bytes = "1.6"
+# Spinning up a real proxy in a test needs a process-level TLS provider installed up front; the
+# crate is already in the graph through relay-core-lib.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 chrono = { workspace = true }
 url = { workspace = true }

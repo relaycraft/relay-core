@@ -1577,6 +1577,14 @@ impl CoreState {
             while let Some(update) = proxy_rx.recv().await {
                 match update.clone() {
                     FlowUpdate::Full(flow) => {
+                        // A flow that recorded how it ended is finished, and the reason it gives is
+                        // the fact the typed event model needs. Deriving this from the snapshot
+                        // instead — "end_time is set, so call it complete" — would report every
+                        // upstream failure and policy drop as a success.
+                        if let Some(reason) = flow.close_reason.clone() {
+                            let event = services::terminal_event(&flow, reason);
+                            state.publish_flow_event(event);
+                        }
                         state.upsert_flow(flow);
                     }
                     FlowUpdate::WebSocketMessage { flow_id, message } => {
@@ -2039,6 +2047,7 @@ mod tests {
             id: Uuid::new_v4(),
             start_time,
             end_time: Some(start_time),
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 12000,
@@ -2092,6 +2101,7 @@ mod tests {
             id: Uuid::new_v4(),
             start_time,
             end_time: Some(start_time),
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 12000,

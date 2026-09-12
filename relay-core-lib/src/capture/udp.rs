@@ -212,6 +212,9 @@ impl UdpSessionManager {
             id: session.flow_id,
             start_time: session.started_at,
             end_time: Some(chrono::Utc::now()),
+            // A session ends here by definition: it was idle past the timeout, so it closed
+            // normally rather than being reset or dropped.
+            close_reason: Some(relay_core_api::event::CloseReason::Completed),
             network: NetworkInfo {
                 client_ip: session.src.ip().to_string(),
                 client_port: session.src.port(),
@@ -359,6 +362,7 @@ impl UdpProxy {
                                     id: session.flow_id,
                                     start_time: Utc::now(),
                                     end_time: None,
+                                    close_reason: None,
                                     network: NetworkInfo {
                                         client_ip: src_addr.ip().to_string(),
                                         client_port: src_addr.port(),
@@ -472,6 +476,7 @@ impl UdpProxy {
                         id: session.flow_id,
                         start_time: Utc::now(),
                         end_time: None,
+                        close_reason: None,
                         network: NetworkInfo {
                             client_ip: src_addr.ip().to_string(),
                             client_port: src_addr.port(),
@@ -701,6 +706,7 @@ mod tests {
             id: session.flow_id,
             start_time: session.started_at,
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: session.src.ip().to_string(),
                 client_port: session.src.port(),
@@ -768,6 +774,7 @@ mod tests {
             id: Uuid::new_v4(),
             start_time: chrono::Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "10.0.0.1".to_string(),
                 client_port: 50000,

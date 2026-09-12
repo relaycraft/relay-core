@@ -417,6 +417,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             start_time: Utc::now() - chrono::Duration::milliseconds(200),
             end_time: end,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".into(),
                 client_port: 1,

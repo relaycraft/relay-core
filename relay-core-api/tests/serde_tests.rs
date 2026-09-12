@@ -16,6 +16,7 @@ fn sample_flow() -> Flow {
         id: Uuid::new_v4(),
         start_time: Utc::now(),
         end_time: None,
+        close_reason: None,
         network: NetworkInfo {
             client_ip: "127.0.0.1".to_string(),
             client_port: 12345,
@@ -319,4 +320,55 @@ fn test_flow_custom_layer_deserializes_to_generic_protocol_layer() {
         }
         _ => panic!("expected custom layer"),
     }
+}
+
+/// Adding the close reason must not change the JSON of a flow that does not have one.
+///
+/// Roadmap §4-5 keeps the existing `Flow` JSON additive: every consumer that already parses a flow
+/// must keep seeing exactly the same payload, and the new field appears only when there is
+/// something to say.
+#[test]
+fn a_flow_without_a_close_reason_serialises_unchanged() {
+    let flow = sample_flow();
+    let value = serde_json::to_value(&flow).expect("serialize flow");
+
+    assert!(
+        value.get("close_reason").is_none(),
+        "an unrecorded ending must not appear in the payload, got {value}"
+    );
+}
+
+/// A recorded ending must survive the wire in the unified vocabulary of roadmap §4-3, so a
+/// consumer can tell an upstream failure from a normal completion.
+#[test]
+fn a_recorded_close_reason_round_trips() {
+    use relay_core_api::event::CloseReason;
+
+    let mut flow = sample_flow();
+    flow.close_reason = Some(CloseReason::Timeout {
+        kind: "total".to_string(),
+    });
+
+    let value = serde_json::to_value(&flow).expect("serialize flow");
+    assert_eq!(value["close_reason"]["reason"], "timeout");
+    assert_eq!(value["close_reason"]["kind"], "total");
+
+    let decoded: Flow = serde_json::from_value(value).expect("deserialize flow");
+    assert_eq!(decoded.close_reason, flow.close_reason);
+}
+
+/// Older payloads predate the field, so decoding them must keep working.
+#[test]
+fn a_flow_recorded_before_the_field_existed_still_decodes() {
+    let mut value = serde_json::to_value(sample_flow()).expect("serialize flow");
+    value
+        .as_object_mut()
+        .expect("flow serialises to an object")
+        .remove("close_reason");
+
+    let decoded: Flow = serde_json::from_value(value).expect("deserialize legacy flow");
+    assert_eq!(
+        decoded.close_reason, None,
+        "an absent reason means unrecorded, not complete"
+    );
 }

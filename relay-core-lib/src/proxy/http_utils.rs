@@ -140,6 +140,7 @@ pub fn create_initial_flow(
             id: flow_id,
             start_time,
             end_time: None,
+            close_reason: None,
             network: network_info,
             layer: Layer::WebSocket(WebSocketLayer {
                 handshake_request: http_request,
@@ -171,6 +172,7 @@ pub fn create_initial_flow(
             id: flow_id,
             start_time,
             end_time: None,
+            close_reason: None,
             network: network_info,
             layer: Layer::Http(HttpLayer {
                 request: http_request,
@@ -819,6 +821,7 @@ mod tests {
             id: Uuid::new_v4(),
             start_time: Utc::now(),
             end_time: None,
+            close_reason: None,
             network: NetworkInfo {
                 client_ip: "127.0.0.1".to_string(),
                 client_port: 12345,
