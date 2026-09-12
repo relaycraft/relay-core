@@ -4,6 +4,9 @@ use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
+/// Current on-disk schema version. Bump this and add an arm to `apply_migration` together.
+pub const SCHEMA_VERSION: i64 = 1;
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -26,7 +29,16 @@ impl Store {
 
     pub async fn connect(url: &str) -> Result<Self> {
         let pool = SqlitePoolOptions::new().connect(url).await?;
-        Ok(Self { pool })
+        let store = Self { pool };
+
+        // WAL keeps readers (the API serving the UI) from blocking the writer that persists flows,
+        // and a busy timeout turns a transient lock into a short wait instead of an immediate error.
+        // These are per-connection settings, so they are applied to every pooled connection.
+        for pragma in ["PRAGMA journal_mode = WAL;", "PRAGMA busy_timeout = 5000;"] {
+            sqlx::query(pragma).execute(&store.pool).await?;
+        }
+
+        Ok(store)
     }
 
     pub async fn init(&self) -> Result<()> {
@@ -120,7 +132,68 @@ impl Store {
             .execute(&self.pool)
             .await?;
 
+        // Schema versioning and migrations.
+        //
+        // Every statement above is `IF NOT EXISTS`, so an existing database with an older schema is
+        // silently left alone: `CREATE TABLE IF NOT EXISTS` cannot add a column, and nothing recorded
+        // which shape a file was in. Migrations make the on-disk shape explicit and advanceable.
+        self.migrate().await?;
+
         Ok(())
+    }
+
+    /// The underlying connection pool.
+    ///
+    /// Exposed so integration tests can drive schema state directly (for example stamping a legacy
+    /// `user_version`). It is not part of the storage contract and callers outside tests should use
+    /// the typed methods.
+    pub fn pool_for_tests(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Current on-disk schema version.
+    pub async fn schema_version(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("PRAGMA user_version;")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
+
+    /// Bring the database up to [`SCHEMA_VERSION`], recording each step.
+    ///
+    /// Migrations run in order and are each committed before the next, so a failure leaves the file
+    /// on the last completed version rather than in an unknown state. A fresh database reports
+    /// version 0 and simply runs every step.
+    pub async fn migrate(&self) -> Result<()> {
+        let mut version = self.schema_version().await?;
+
+        if version > SCHEMA_VERSION {
+            // Written by a newer build: refusing is safer than silently downgrading the shape.
+            return Err(crate::StorageError::UnsupportedSchema {
+                found: version,
+                supported: SCHEMA_VERSION,
+            });
+        }
+
+        while version < SCHEMA_VERSION {
+            let next = version + 1;
+            self.apply_migration(next).await?;
+            // `PRAGMA user_version` cannot be parameterized, but `next` is a local integer constant.
+            sqlx::query(&format!("PRAGMA user_version = {next};"))
+                .execute(&self.pool)
+                .await?;
+            version = next;
+        }
+
+        Ok(())
+    }
+
+    async fn apply_migration(&self, version: i64) -> Result<()> {
+        match version {
+            // Baseline: the schema created above is version 1. Nothing to alter.
+            1 => Ok(()),
+            other => Err(crate::StorageError::UnknownMigration { version: other }),
+        }
     }
 
     pub async fn save_rule(&self, id: &str, content: &Value) -> Result<()> {

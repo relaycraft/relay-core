@@ -444,3 +444,87 @@ async fn test_flow_summary_query_with_offset_and_filters() {
     assert_eq!(errored.len(), 1);
     assert_eq!(errored[0].id, "flow-2");
 }
+
+// ── Schema versioning and migrations (§24.8) ────────────────────────────────────────
+//
+// Every schema statement is `CREATE TABLE IF NOT EXISTS`, so an existing database was silently left
+// on its old shape: a new column could never appear, and nothing recorded which shape a file was in.
+
+#[tokio::test]
+async fn test_fresh_database_reports_the_current_schema_version() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+
+    assert_eq!(
+        store.schema_version().await.expect("version"),
+        relay_core_storage::store::SCHEMA_VERSION,
+        "a freshly initialised database must be stamped with the current schema version"
+    );
+}
+
+#[tokio::test]
+async fn test_migration_is_idempotent() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+    let after_first = store.schema_version().await.expect("version");
+
+    // Re-running init and migrate must not advance or corrupt anything.
+    store.init().await.expect("re-init");
+    store.migrate().await.expect("re-migrate");
+
+    assert_eq!(store.schema_version().await.expect("version"), after_first);
+}
+
+/// A database written before versioning existed reports 0. Opening it must bring it forward rather
+/// than leaving it stranded.
+#[tokio::test]
+async fn test_unversioned_database_is_migrated_forward() {
+    let url = sqlite_url();
+
+    // Build a database the way the old code would have: schema present, no version recorded.
+    {
+        let store = Store::connect(&url).await.expect("connect");
+        store.init().await.expect("init");
+        sqlx::query("PRAGMA user_version = 0;")
+            .execute(store.pool_for_tests())
+            .await
+            .expect("reset version");
+        assert_eq!(store.schema_version().await.expect("version"), 0);
+    }
+
+    // Re-opening it must migrate forward to the current version.
+    let reopened = Store::connect(&url).await.expect("reconnect");
+    reopened.init().await.expect("init on legacy db");
+
+    assert_eq!(
+        reopened.schema_version().await.expect("version"),
+        relay_core_storage::store::SCHEMA_VERSION,
+        "a pre-versioning database must be brought up to the current version, not left behind"
+    );
+}
+
+/// A file written by a newer build must be refused rather than silently reshaped.
+#[tokio::test]
+async fn test_future_schema_version_is_refused() {
+    let url = sqlite_url();
+    let store = Store::connect(&url).await.expect("connect");
+    store.init().await.expect("init");
+
+    sqlx::query(&format!(
+        "PRAGMA user_version = {};",
+        relay_core_storage::store::SCHEMA_VERSION + 1
+    ))
+    .execute(store.pool_for_tests())
+    .await
+    .expect("stamp future version");
+
+    let err = store
+        .migrate()
+        .await
+        .expect_err("a newer schema version must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("newer"),
+        "the error must explain the version mismatch, got: {msg}"
+    );
+}

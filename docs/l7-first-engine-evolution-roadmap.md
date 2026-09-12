@@ -1005,9 +1005,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - SSE `event: http-body` 丢弃 `direction` 与 `body`（`http/routes/events.rs:58`）；
   文档注释承诺的 `event: intercept` 无任何代码发出（`events.rs:26`）
 - CLI SSE 客户端 `ws-message` 分支反序列化必然失败（`cli/src/sse_client.rs:154`），且无测试
-- 存储无迁移机制（全仓无 `ALTER TABLE` / `PRAGMA user_version` / `.sql`），
-  无保留策略（对 flows/summaries 无任何 `DELETE`），脱敏只在输出路径
-  （`runtime/src/lib.rs:1501-1564`），`persist_flow` 落盘为原始 Flow
+- ✅ **迁移机制已建立**：`Store` 现使用 `PRAGMA user_version` + `SCHEMA_VERSION` + 有序
+  `apply_migration`。此前所有语句都是 `IF NOT EXISTS`，老库**永远升不上去**且没有任何版本记录；
+  现在落后版本会**前滚**，更新版本会**被拒绝**（而非静默改造），连接时应用
+  `journal_mode=WAL` 与 `busy_timeout=5000`。4 个测试覆盖：全新库版本、幂等、无版本库前滚、
+  未来版本拒绝；已双向验证。
+- ⬜ 无保留策略（对 flows/summaries 无任何 `DELETE`）——待做
+- ⬜ 脱敏只在输出路径（`runtime/src/lib.rs:1501-1564`），`persist_flow` 落盘为原始 Flow——待做
 
 ### 24.9 协议与压缩
 
