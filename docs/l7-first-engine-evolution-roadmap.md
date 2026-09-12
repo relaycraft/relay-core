@@ -635,7 +635,12 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    cold start 144.2ms、idle 内存 52.0MB、S1 吞吐 47,678.8 ±578.3 req/s、P99 1.17ms、
    成功率 100%；方差从旧基线的 ~40% 降至 ~1.2%。复现命令：
    `CONNECTIONS=25 ./benchmarks/bench_minimal.sh release --version 0.10.0 --runs 5 --warmup-runs 2 --duration 20`
-3. mitmproxy differential fixtures：比较线路行为，不只比较 QPS
+3. 🟡 **mitmproxy differential fixtures 已建立**：
+   `relay-core-lib/tests/mitmproxy_differential.rs` 用**同一上游 + 同一改写**分别经 RelayCore 与
+   mitmproxy 代理，比较**客户端可观测结果**（status、`content-encoding`、`content-length` 与
+   body 是否自洽、按声明编码解码后的 body），而不是 QPS。含一条基线场景（无改写，
+   确认 harness 本身可信）。mitmproxy 不在 PATH 时**跳过并打印原因**（而非静默通过），
+   CI 上可用 `REQUIRE_MITMPROXY=1` 强制要求。仍有待扩展：TLS/H2/WebSocket 场景。
 4. 关键协议和 Action E2E
 5. backpressure、channel full、subscriber lagged 可观测
 6. 取消、超时、shutdown 不泄漏 task/connection
