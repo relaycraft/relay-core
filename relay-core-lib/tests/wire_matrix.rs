@@ -1868,3 +1868,135 @@ async fn wire_matrix_body_filter_verdict_is_matched_not_missed_on_gzip() {
         "a body filter must match the decoded payload, not the compressed bytes"
     );
 }
+
+// ── Request-direction Content-Encoding (§24.3 remaining) ─────────────────────────────
+//
+// The request direction does not decode by Content-Encoding: a replaced request body is sent as
+// plaintext with the encoding dropped. That is consistent (header and body agree) but it is a
+// recorded limitation rather than a feature, so this pins the current contract instead of letting
+// it drift silently.
+
+/// Replaces the request body, leaving framing to the proxy.
+struct ReplaceRequestBodyInterceptor {
+    replacement: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Interceptor for ReplaceRequestBodyInterceptor {
+    async fn on_request_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
+        if let Layer::Http(http) = &mut flow.layer {
+            http.request.body = Some(relay_core_api::flow::BodyData {
+                encoding: "utf-8".to_string(),
+                content: self.replacement.to_string(),
+                size: self.replacement.len() as u64,
+            });
+        }
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_compressed_request_rewrite_is_sent_as_plaintext_without_a_false_header() {
+    init_crypto();
+
+    let payload = b"original-request-payload";
+    let gzipped = {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut e, payload).expect("write");
+        e.finish().expect("finish")
+    };
+
+    let (upstream_addr, upstream_rx) = spawn_recording_upstream_with_reply(None).await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(ReplaceRequestBodyInterceptor {
+        replacement: "REWRITTEN-PLAINTEXT",
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Send a gzip-encoded request body.
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let req = hyper::Request::builder()
+        .method("POST")
+        .uri(format!("http://{upstream_addr}/probe"))
+        .header("host", upstream_addr.to_string())
+        .header("content-encoding", "gzip")
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            gzipped.clone(),
+        )))
+        .expect("request");
+    let _ = sender.send_request(req).await.expect("send");
+
+    let upstream = tokio::time::timeout(std::time::Duration::from_secs(5), upstream_rx)
+        .await
+        .expect("upstream timed out")
+        .expect("upstream dropped");
+    let head = upstream.head.to_lowercase();
+
+    // The proxy must not claim gzip while sending plaintext.
+    assert!(
+        !head.contains("content-encoding: gzip"),
+        "a rewritten request body must not keep a stale Content-Encoding, got:\n{}",
+        upstream.head
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&upstream._body),
+        "REWRITTEN-PLAINTEXT",
+        "the replacement is what must reach the upstream"
+    );
+}

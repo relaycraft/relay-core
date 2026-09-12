@@ -1030,7 +1030,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （此前会静默永不命中）。未修改的 body 仍原样透传，客户端收到的字节不变。
   契约由 `wire_matrix_body_filter_verdict_is_matched_not_missed_on_gzip` 锁定，
   已双向验证：关闭解码记录时该测试必失败。
-- ⬜ 仍未实现：**请求方向**的 `Content-Encoding` 处理（请求体目前不按 `Content-Encoding` 解码）
+- ⬜ **请求方向的 `Content-Encoding` 未解码**：替换后的请求体按明文发送并**丢弃**该头
+  （header 与 body 一致，不会骗上游），但不等价于「保持原编码」。该契约已用
+  `wire_matrix_compressed_request_rewrite_is_sent_as_plaintext_without_a_false_header` 锁定，
+  避免未来静默漂移。补齐方式与响应方向相同（编码时复用 `encode_after_rewrite`）。
 - 📊 **mitmproxy 12.2.3 实测对标**见 [`mitmproxy-policy-benchmark.md`](./mitmproxy-policy-benchmark.md)：
   mitmproxy 支持 gzip/deflate/**br**/**zstd** 且读写自动重编码（header 与字节始终一致）；
   但其**默认全量缓冲** body，流式与可读性互斥。RelayCore 的默认流式 + 有界前缀观察是更优取舍，
