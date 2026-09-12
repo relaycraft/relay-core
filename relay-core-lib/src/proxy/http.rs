@@ -13,8 +13,9 @@ use crate::proxy::body_plan::{
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
     build_client_response_head, build_forward_request, build_request_body_from_flow,
-    create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
-    request_body_from_flow_len, update_flow_with_response_headers,
+    build_response_body_from_flow, create_error_response, create_initial_flow, mock_to_response,
+    parse_request_meta, reframe_response_headers_for_replaced_body, request_body_from_flow_len,
+    response_body_from_flow_len, update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use crate::proxy::tap::TapBody;
@@ -541,8 +542,43 @@ where
     }
 
     // Convergence: the Flow is the single source of truth for the response head, so mutations made
-    // by any interceptor reach the client. Only the body still streams from the upstream.
-    let res_parts = build_client_response_head(&flow, &res_parts);
+    // by any interceptor reach the client.
+    let mut res_parts = build_client_response_head(&flow, &res_parts);
+
+    // A replaced response body makes the Flow authoritative for the body too: discard the upstream
+    // stream and reframe, exactly as the request direction does.
+    if let Some(body_data) = match &flow.layer {
+        Layer::Http(http) => http.response.as_ref().and_then(|r| r.body.clone()),
+        _ => None,
+    } {
+        let new_len = response_body_from_flow_len(&flow).unwrap_or(0);
+        current_res_body = build_response_body_from_flow(&body_data);
+
+        // Rebuild the head so framing describes the replacement rather than the upstream stream.
+        let reframed = reframe_response_headers_for_replaced_body(
+            &res_parts
+                .headers
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).to_string(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            new_len,
+        );
+        let mut headers = hyper::HeaderMap::new();
+        for (k, v) in &reframed {
+            if let (Ok(name), Ok(value)) = (
+                hyper::header::HeaderName::from_bytes(k.as_bytes()),
+                hyper::header::HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, value);
+            }
+        }
+        res_parts.headers = headers;
+    }
 
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
         tracing::error!("Failed to send final flow update: {}", e);

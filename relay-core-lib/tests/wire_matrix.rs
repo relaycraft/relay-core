@@ -901,3 +901,84 @@ async fn wire_matrix_response_body_rule_matches_on_the_body() {
         CASE.id
     );
 }
+
+// ── Response body replacement (§24.1 SetResponseBody) ───────────────────────────────
+//
+// Fixed: a replaced response body now makes the Flow authoritative for the body as well, and the
+// head is reframed (content-length recomputed, transfer-encoding/content-encoding dropped) so the
+// framing describes the replacement rather than the upstream stream.
+
+/// Mimics `Action::SetResponseBody`: replace the Flow's response body, then let the pipeline send it.
+struct ResponseBodyReplaceInterceptor;
+
+#[async_trait::async_trait]
+impl Interceptor for ResponseBodyReplaceInterceptor {
+    async fn on_request_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<RequestAction, BoxError> {
+        Ok(RequestAction::Continue(body))
+    }
+
+    async fn on_response_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        if let Layer::Http(http) = &mut flow.layer
+            && let Some(res) = &mut http.response
+        {
+            res.body = Some(relay_core_api::flow::BodyData {
+                encoding: "utf-8".to_string(),
+                content: "REPLACED-RESPONSE".to_string(),
+                size: "REPLACED-RESPONSE".len() as u64,
+            });
+        }
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_response_body_replacement_reaches_client() {
+    const CASE: Case = Case {
+        id: "response_body_replace",
+        phase: Phase::None,
+        request: "GET /probe HTTP/1.1",
+        body: "",
+    };
+
+    let (client, _upstream) = run_case_full(
+        &CASE,
+        Arc::new(ResponseBodyReplaceInterceptor),
+        Some("original-upstream-body"),
+    )
+    .await;
+
+    assert!(
+        client.contains("REPLACED-RESPONSE"),
+        "[{}] a response-body replacement must reach the client, got:\n{client}",
+        CASE.id
+    );
+    assert!(
+        !client.contains("original-upstream-body"),
+        "[{}] the original body must not also be sent, got:\n{client}",
+        CASE.id
+    );
+}

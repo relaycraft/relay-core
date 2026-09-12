@@ -918,7 +918,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 |---|---|---|---|
 | `Add/Update/DeleteResponseHeader` | ✅ 已修复 | 由 Flow 重建响应头 | `proxy/http_utils.rs` `build_client_response_head` |
 | `SetResponseStatus` | ✅ 已修复 | 由 Flow 重建状态码 | 同上 |
-| `SetResponseBody` / `TransformResponseBody` | ⬜ 未修复 | 需先定义 body 替换后的 framing 语义（原定 A6/D） | `actions/http.rs:109-117, 351-359` |
+| `SetResponseBody` / `TransformResponseBody` | ✅ 已修复 | 响应 body 替换后由 Flow 提供字节并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`），与请求方向对称 | `proxy/http_utils.rs` `build_response_body_from_flow` / `reframe_response_headers_for_replaced_body`；`proxy/http.rs` |
 | `SetRequestBody` / `TransformRequestBody` | ✅ 已修复 | 检测到 Flow 持有替换体时改由 Flow 提供 body 并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`）；未被替换的 body 仍保持流式 | `proxy/http_utils.rs` `build_request_body_from_flow` / `reframe_request_headers_for_replaced_body` |
 | `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
 | `MockWebSocketMessage` | ⬜ 未修复 | 帧被 Drop 而非替换 | `interceptors/rule.rs:134`；`inspect.rs:37-43` |
@@ -1076,6 +1076,6 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ A5b 请求 body 替换生效并重建 framing（§24.1 `SetRequestBody` 已修复）
 - ✅ A5c WS 握手响应收敛并补齐 `on_response_headers`（§24.1 WS 握手项已修复）
 - ✅ A1 双执行已修复（§24.4，stage_guard）
-- ⬜ §24.1 剩余：`SetResponseBody`/`TransformResponseBody`、`MockWebSocketMessage`、
-  `MapRemote`(WS)、`ForwardPort` host、`SetTtl`
+- ✅ §24.1 响应 body 替换已修复（`SetResponseBody`/`TransformResponseBody`）
+- ⬜ §24.1 剩余：`MockWebSocketMessage`、`MapRemote`(WS)、`ForwardPort` host、`SetTtl`
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放

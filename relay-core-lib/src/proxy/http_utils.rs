@@ -314,6 +314,51 @@ pub fn request_body_from_flow_len(flow: &Flow) -> Option<usize> {
     }
 }
 
+/// Materialize an interceptor-replaced **response** body as a wire body.
+///
+/// Symmetric to [`build_request_body_from_flow`]: `Action::SetResponseBody` writes
+/// `flow.layer.http.response.body`, so the Flow is authoritative and the upstream stream must be
+/// discarded rather than sent alongside it.
+pub fn build_response_body_from_flow(body_data: &BodyData) -> HttpBody {
+    let bytes = body_data_to_bytes(Some(body_data));
+    Full::new(bytes).map_err(|e| e.into()).boxed()
+}
+
+/// Rewrite response headers for a response whose body was replaced by the Flow.
+///
+/// Recomputes `content-length` from the new bytes and drops `transfer-encoding` (the replacement is
+/// a known-length buffer) and `content-encoding` (the replacement is plain bytes, so keeping the
+/// upstream's encoding would misdescribe it).
+pub fn reframe_response_headers_for_replaced_body(
+    headers: &[(String, String)],
+    body_len: usize,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = headers
+        .iter()
+        .filter(|(k, _)| {
+            !k.eq_ignore_ascii_case("content-length")
+                && !k.eq_ignore_ascii_case("transfer-encoding")
+                && !k.eq_ignore_ascii_case("content-encoding")
+        })
+        .cloned()
+        .collect();
+
+    out.push(("Content-Length".to_string(), body_len.to_string()));
+    out
+}
+
+/// Byte length of the response body the Flow currently holds, if any.
+pub fn response_body_from_flow_len(flow: &Flow) -> Option<usize> {
+    match &flow.layer {
+        Layer::Http(http) => http
+            .response
+            .as_ref()
+            .and_then(|r| r.body.as_ref())
+            .map(|b| body_data_to_bytes(Some(b)).len()),
+        _ => None,
+    }
+}
+
 /// Build the client-facing response directly from a `relay-core-api` `HttpResponse`.
 ///
 /// Used by the proxy wiring for terminal/mock/modified results, so it must produce the SAME
