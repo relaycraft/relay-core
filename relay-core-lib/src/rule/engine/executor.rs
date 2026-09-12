@@ -5,7 +5,8 @@ use crate::rule::engine::matcher;
 use crate::rule::engine::state::{InMemoryRuleStateStore, RuleStateStore};
 use crate::rule::engine::validator;
 use crate::rule::model::{
-    Rule, RuleExecutionEvent, RuleGroup, RuleOutcome, RuleStage, RuleTermination, RuleTraceSummary,
+    Action, Filter, Rule, RuleExecutionEvent, RuleGroup, RuleOutcome, RuleStage, RuleTermination,
+    RuleTraceSummary,
 };
 use relay_core_api::flow::Flow;
 use relay_core_api::policy::ProxyPolicy;
@@ -97,6 +98,26 @@ impl RuleEngine {
         self.compiled_rules
             .iter()
             .any(|r| r.original.active && r.original.stage == stage)
+    }
+
+    /// Would any enabled rule for `stage` actually consume the body?
+    ///
+    /// Body-stage rules that only act on metadata (status, headers, method, URL) do not need the
+    /// body to be buffered, so a caller deciding a BodyPlan can keep streaming for them. Only rules
+    /// that read or rewrite the body justify the cost of materializing it.
+    ///
+    /// This is used to answer "does this stage need the body?" without the caller having to
+    /// enumerate rule variants itself.
+    pub fn stage_consumes_body(&self, stage: RuleStage) -> bool {
+        self.compiled_rules
+            .iter()
+            .filter(|r| r.original.active && r.original.stage == stage)
+            .any(|r| {
+                // A body-content filter can only be evaluated against the body itself.
+                filter_reads_body(&r.original.filter)
+                    // Any of these actions rewrites or reads the body.
+                    || r.original.actions.iter().any(action_touches_body)
+            })
     }
 
     pub async fn execute(&self, stage: RuleStage, flow: &mut Flow) -> ExecutionContext {
@@ -246,6 +267,27 @@ impl RuleEngine {
     }
 }
 
+/// Does this filter need the body bytes to be evaluated?
+fn filter_reads_body(filter: &Filter) -> bool {
+    match filter {
+        Filter::ResponseBody(_) | Filter::WebSocketMessage(_) => true,
+        Filter::And(inner) | Filter::Or(inner) => inner.iter().any(filter_reads_body),
+        Filter::Not(inner) => filter_reads_body(inner),
+        _ => false,
+    }
+}
+
+/// Does this action read or rewrite the body?
+fn action_touches_body(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::SetRequestBody { .. }
+            | Action::SetResponseBody { .. }
+            | Action::TransformRequestBody { .. }
+            | Action::TransformResponseBody { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +430,103 @@ mod tests {
         } else {
             panic!("Expected Failed outcome, got {:?}", ctx.trace[0].outcome);
         }
+    }
+
+    #[test]
+    fn stage_consumes_body_is_false_for_metadata_only_body_stage_rules() {
+        // A ResponseBody rule that only sets the status does not need the body bytes, so a caller
+        // can keep streaming instead of buffering.
+        let engine = RuleEngine::new(
+            vec![Rule {
+                id: "status-only".to_string(),
+                name: "status only".to_string(),
+                active: true,
+                stage: RuleStage::ResponseBody,
+                priority: 0,
+                termination: RuleTermination::Continue,
+                filter: Filter::All,
+                actions: vec![Action::SetResponseStatus { status: 500 }],
+                constraints: None,
+            }],
+            vec![],
+            None,
+            None,
+        );
+
+        assert!(engine.has_rules_for_stage(RuleStage::ResponseBody));
+        assert!(
+            !engine.stage_consumes_body(RuleStage::ResponseBody),
+            "metadata-only actions must not force the body to be buffered"
+        );
+    }
+
+    #[test]
+    fn stage_consumes_body_is_true_for_body_filters_and_body_actions() {
+        let body_filter_engine = RuleEngine::new(
+            vec![Rule {
+                id: "body-filter".to_string(),
+                name: "body filter".to_string(),
+                active: true,
+                stage: RuleStage::ResponseBody,
+                priority: 0,
+                termination: RuleTermination::Continue,
+                filter: Filter::ResponseBody(StringMatcher::Contains("needle".to_string())),
+                actions: vec![Action::Tag {
+                    key: "hit".to_string(),
+                    value: "1".to_string(),
+                }],
+                constraints: None,
+            }],
+            vec![],
+            None,
+            None,
+        );
+        assert!(body_filter_engine.stage_consumes_body(RuleStage::ResponseBody));
+
+        let body_action_engine = RuleEngine::new(
+            vec![Rule {
+                id: "body-action".to_string(),
+                name: "body action".to_string(),
+                active: true,
+                stage: RuleStage::RequestBody,
+                priority: 0,
+                termination: RuleTermination::Continue,
+                filter: Filter::All,
+                actions: vec![Action::SetRequestBody {
+                    body: BodySource::Text("replaced".to_string()),
+                }],
+                constraints: None,
+            }],
+            vec![],
+            None,
+            None,
+        );
+        assert!(body_action_engine.stage_consumes_body(RuleStage::RequestBody));
+    }
+
+    #[test]
+    fn stage_consumes_body_ignores_inactive_rules() {
+        let engine = RuleEngine::new(
+            vec![Rule {
+                id: "inactive".to_string(),
+                name: "inactive".to_string(),
+                active: false,
+                stage: RuleStage::RequestBody,
+                priority: 0,
+                termination: RuleTermination::Continue,
+                filter: Filter::All,
+                actions: vec![Action::SetRequestBody {
+                    body: BodySource::Text("x".to_string()),
+                }],
+                constraints: None,
+            }],
+            vec![],
+            None,
+            None,
+        );
+
+        assert!(!engine.has_rules_for_stage(RuleStage::RequestBody));
+        assert!(!engine.stage_consumes_body(RuleStage::RequestBody));
     }
 
     #[test]

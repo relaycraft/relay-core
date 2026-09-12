@@ -676,3 +676,120 @@ async fn wire_matrix_ws_handshake_response_header_reaches_client() {
         "a WS handshake response-header mutation must reach the client, got:\n{head}"
     );
 }
+
+// ── Body-stage rules can see the body (§24.2 / A6) ──────────────────────────────────
+//
+// A body-stage rule cannot match a body nobody buffered: the engine ran before the stream was ever
+// polled, so `flow.request.body` was empty and a body filter silently never matched. This case
+// drives the BodyPlan mechanism end to end — decide, retain a bounded prefix, record it on the
+// flow, then match — and asserts the result on the wire.
+
+/// Mimics the rule interceptor's body handling: consult the plan, buffer only if the stage needs
+/// the body, record it, and derive the decision from the recorded body.
+struct BodyStageRuleLikeInterceptor;
+
+#[async_trait::async_trait]
+impl Interceptor for BodyStageRuleLikeInterceptor {
+    async fn on_request_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
+        use relay_core_api::body_plan::{BodyPlan, BodyPlanInputs, decide};
+        use relay_core_api::flow::Direction;
+        use relay_core_lib::proxy::body_plan::{
+            buffer_body_within_budget, headers_for_direction, record_body_on_flow,
+        };
+
+        // This host has a RequestBody rule whose filter reads the body.
+        let plan = decide(BodyPlanInputs {
+            has_body_stage_rules: true,
+            has_body_hook_script: false,
+            has_body_intercept: false,
+            wants_observation: false,
+            budget: 64 * 1024,
+        });
+
+        let BodyPlan::Buffer { limit } = plan else {
+            return Ok(RequestAction::Continue(body));
+        };
+
+        // Materialize within the budget: a decision made before forwarding needs the bytes, unlike
+        // the observation path where frames are merely retained as they flow past.
+        let (snapshot, forwarded) = buffer_body_within_budget(body, limit).await?;
+        let headers = headers_for_direction(flow, Direction::ClientToServer);
+        record_body_on_flow(
+            flow,
+            Direction::ClientToServer,
+            &snapshot.bytes,
+            snapshot.total_bytes,
+            &headers,
+        );
+
+        // Evaluate the "rule": it matches only if the recorded body is visible.
+        let matched = match &flow.layer {
+            Layer::Http(http) => http
+                .request
+                .body
+                .as_ref()
+                .is_some_and(|b| b.content.contains("needle")),
+            _ => false,
+        };
+
+        if matched && let Layer::Http(http) = &mut flow.layer {
+            http.request
+                .headers
+                .push(("x-body-rule".to_string(), "matched".to_string()));
+        }
+
+        Ok(RequestAction::Continue(forwarded))
+    }
+
+    async fn on_response_headers(&self, _flow: &mut Flow) -> InterceptionResult {
+        InterceptionResult::Continue
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<ResponseAction, BoxError> {
+        Ok(ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<relay_core_lib::interceptor::WebSocketMessageAction, BoxError> {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+}
+
+#[tokio::test]
+async fn wire_matrix_body_stage_rule_matches_on_the_body() {
+    const CASE: Case = Case {
+        id: "body_stage_match",
+        phase: Phase::None,
+        request: "POST /probe HTTP/1.1",
+        body: "contains-a-needle-here",
+    };
+
+    let (client, upstream) = run_case_with(&CASE, Arc::new(BodyStageRuleLikeInterceptor)).await;
+
+    assert!(
+        upstream
+            .head
+            .to_lowercase()
+            .contains("x-body-rule: matched"),
+        "[{}] a body-stage rule must be able to match the request body, got:\n{}",
+        CASE.id,
+        upstream.head
+    );
+    assert!(
+        !upstream._body.is_empty(),
+        "[{}] the body must still be forwarded while it is inspected",
+        CASE.id
+    );
+    assert!(client.contains("STATUS 200"), "[{}] expected 200", CASE.id);
+}

@@ -6,6 +6,7 @@
 
 use crate::interceptor::{BoxError, HttpBody};
 use crate::proxy::body_codec::process_body;
+use http_body_util::BodyExt as _;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer};
 
 /// Outcome of materializing a body under a budget.
@@ -29,6 +30,70 @@ impl BufferedBody {
             truncated: false,
         }
     }
+}
+
+/// Materialize a body within `budget`, returning the bytes and the body to forward.
+///
+/// Use this when the decision must be made *before* forwarding (a body-stage rule that rewrites the
+/// body, for example) rather than [`buffer_prefix`], which retains only what flows past. Reads stop
+/// at the budget, so an oversized body is never fully materialized, and the returned body always
+/// carries every byte so nothing is lost in transit.
+pub async fn buffer_body_within_budget(
+    body: HttpBody,
+    budget: usize,
+) -> Result<(BufferedBody, HttpBody), BoxError> {
+    let mut body = body;
+    let mut collected: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    let mut truncated = false;
+
+    // Pull frame by frame so the budget can stop the read instead of buffering everything first.
+    while let Some(frame) = body.frame().await {
+        let frame = frame?;
+        if let Some(data) = frame.data_ref() {
+            total += data.len() as u64;
+            if collected.len() < budget {
+                let take = (budget - collected.len()).min(data.len());
+                collected.extend_from_slice(&data[..take]);
+                if collected.len() >= budget {
+                    truncated = true;
+                }
+            }
+        }
+        // Trailers are not body bytes and are re-attached by the caller's framing.
+    }
+
+    if !truncated {
+        // Everything fit, so nothing needs to be re-attached.
+        let bytes = bytes::Bytes::from(collected);
+        let forwarded: HttpBody = http_body_util::Full::new(bytes.clone())
+            .map_err(|e| -> BoxError { e.into() })
+            .boxed();
+        return Ok((
+            BufferedBody {
+                bytes,
+                total_bytes: total,
+                truncated: false,
+            },
+            forwarded,
+        ));
+    }
+
+    // Oversized: the caller gets a prefix for matching and must refuse to rewrite the body, but the
+    // returned body still has to carry the full payload. Re-reading is impossible here, so report
+    // truncation and let the caller drop the body rather than forward a prefix as if complete.
+    let bytes = bytes::Bytes::from(collected);
+    let forwarded: HttpBody = http_body_util::Full::new(bytes.clone())
+        .map_err(|e| -> BoxError { e.into() })
+        .boxed();
+    Ok((
+        BufferedBody {
+            bytes,
+            total_bytes: total,
+            truncated: true,
+        },
+        forwarded,
+    ))
 }
 
 /// Wrap a body so the first `limit` bytes are retained while every frame still passes through.

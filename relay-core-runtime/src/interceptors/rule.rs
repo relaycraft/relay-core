@@ -1,12 +1,14 @@
 use crate::interceptors::inspect::handle_rule_termination;
 use crate::services::{InterceptService, RuleService};
 use async_trait::async_trait;
-use relay_core_api::flow::{Flow, Layer};
+use relay_core_api::body_plan::{BodyPlan, BodyPlanInputs, decide};
+use relay_core_api::flow::{Direction, Flow, Layer};
 use relay_core_api::rule::{RuleStage, RuleTraceSummary};
 use relay_core_lib::interceptor::{
     BoxError, ConnectAction, ConnectionInfo, ConnectionStats, HttpBody, InterceptionResult,
     Interceptor, RequestAction, ResponseAction, WebSocketMessageAction,
 };
+use relay_core_lib::proxy::body_plan::{buffer_prefix, headers_for_direction, record_body_on_flow};
 use relay_core_lib::proxy::http_utils::mock_to_response;
 use relay_core_lib::rule::stage_guard::mark_stage_executed;
 use std::sync::Arc;
@@ -20,6 +22,52 @@ impl RuleInterceptor {
     pub fn new(rules: Arc<dyn RuleService>, intercepts: Arc<dyn InterceptService>) -> Self {
         Self { rules, intercepts }
     }
+}
+
+/// Inputs for the BodyPlan decision, using only what this interceptor can observe.
+///
+/// Script hooks and manual breakpoints are separate interceptors, so they are not claimed here; the
+/// budget comes from policy and a zero budget disables buffering entirely.
+fn body_plan_inputs(consumes_body: bool, flow: &Flow) -> BodyPlanInputs {
+    BodyPlanInputs {
+        has_body_stage_rules: consumes_body,
+        has_body_hook_script: false,
+        has_body_intercept: false,
+        // The tap path already retains a bounded prefix for observation, so this decision only has
+        // to account for active inspection.
+        wants_observation: false,
+        budget: flow
+            .meta
+            .get(BODY_INSPECT_BUDGET_KEY)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_BODY_INSPECT_BUDGET),
+    }
+}
+
+/// Default retained-body budget: 1 MiB, matching `ProxyPolicy::rule_body_inspect_budget`.
+const DEFAULT_BODY_INSPECT_BUDGET: usize = 1024 * 1024;
+
+/// `flow.meta` key carrying the per-request budget, set by the proxy from policy.
+pub const BODY_INSPECT_BUDGET_KEY: &str = "rule_body_inspect_budget";
+
+/// Map a completed request-body stage result onto the wire action.
+async fn finish_request_stage(
+    intercepts: &Arc<dyn InterceptService>,
+    flow: &mut Flow,
+    ctx: relay_core_lib::rule::engine::ExecutionContext,
+    forwarded: HttpBody,
+) -> Result<RequestAction, BoxError> {
+    if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
+        let result = handle_rule_termination(intercepts, reason, flow, "request_body", None).await;
+        return Ok(match result {
+            InterceptionResult::Drop => RequestAction::Drop,
+            InterceptionResult::MockResponse(res) => {
+                RequestAction::MockResponse(mock_to_response(res))
+            }
+            _ => RequestAction::Drop,
+        });
+    }
+    Ok(RequestAction::Continue(forwarded))
 }
 
 #[async_trait]
@@ -49,23 +97,45 @@ impl Interceptor for RuleInterceptor {
 
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
         let engine = self.rules.get_rule_engine().await;
-        if engine.has_rules_for_stage(RuleStage::RequestBody) {
-            let ctx = engine.execute(RuleStage::RequestBody, flow).await;
-            mark_stage_executed(flow, &RuleStage::RequestBody);
-            if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
-                let result =
-                    handle_rule_termination(&self.intercepts, reason, flow, "request_body", None)
-                        .await;
-                return Ok(match result {
-                    InterceptionResult::Drop => RequestAction::Drop,
-                    InterceptionResult::MockResponse(res) => {
-                        RequestAction::MockResponse(mock_to_response(res))
-                    }
-                    _ => RequestAction::Drop,
-                });
-            }
+        if !engine.has_rules_for_stage(RuleStage::RequestBody) {
+            return Ok(RequestAction::Continue(body));
         }
-        Ok(RequestAction::Continue(body))
+
+        // Body-stage rules can only match a body they can see. Decide explicitly whether that is
+        // worth the cost instead of buffering unconditionally (roadmap §3-3 BodyPlan, §22).
+        let limit = match decide(body_plan_inputs(
+            engine.stage_consumes_body(RuleStage::RequestBody),
+            flow,
+        )) {
+            BodyPlan::Buffer { limit } => limit,
+            _ => {
+                // Nothing here needs the bytes: run the stage against metadata only and stream on.
+                let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+                mark_stage_executed(flow, &RuleStage::RequestBody);
+                return finish_request_stage(&self.intercepts, flow, ctx, body).await;
+            }
+        };
+
+        // Retain a bounded prefix while every byte still flows through untouched.
+        let (snapshot, forwarded) = buffer_prefix(body, limit).into_parts();
+
+        if snapshot.truncated {
+            // A prefix is not the body: do not let rules match on it, and record why.
+            flow.tags.push("rule_skipped:body_truncated".to_string());
+        } else {
+            let headers = headers_for_direction(flow, Direction::ClientToServer);
+            record_body_on_flow(
+                flow,
+                Direction::ClientToServer,
+                &snapshot.bytes,
+                snapshot.total_bytes,
+                &headers,
+            );
+        }
+
+        let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+        mark_stage_executed(flow, &RuleStage::RequestBody);
+        finish_request_stage(&self.intercepts, flow, ctx, forwarded).await
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {

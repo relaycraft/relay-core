@@ -929,13 +929,20 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`tauri/src/interceptor.rs:123-128`），
 但其代价见 24.4。
 
-### 24.2 Body-stage 规则在非 Tauri 宿主无法匹配
+### 24.2 Body-stage 规则在非 Tauri 宿主无法匹配 —— 🟡 请求方向已修复
 
-`RuleInterceptor::on_request`/`on_response` 在 body 被 poll 之前执行 body 阶段引擎
-（`runtime/src/interceptors/rule.rs:50-51, 95-96`），而 body 过滤器读取
-`flow.layer.http.response.body`（`rule/engine/matcher.rs:81-95`），该字段此刻恒为 `None`
-（`proxy/http_utils.rs:350-363`）。TapBody 抓取到的 body 写入的是 FlowStore actor 中的
-**另一个 Flow 实例**（`actors/flow_store.rs:90-115`），活 Flow 永远不可见。
+**历史问题**：`RuleInterceptor::on_request`/`on_response` 在 body 被 poll 之前执行 body 阶段
+引擎，而 body 过滤器读取 `flow.layer.*.body`，该字段此刻恒为 `None`；TapBody 抓取到的 body
+写入的是 FlowStore actor 中的**另一个 Flow 实例**，活 Flow 永远不可见。
+
+**请求方向已修复**：`RuleInterceptor::on_request` 现在先用 `BodyPlan` 决策，仅当 body 阶段规则
+**确实需要 body**（`RuleEngine::stage_consumes_body`：存在 `ResponseBody`/`WebSocketMessage`
+过滤器，或存在 body 改写动作）时才在预算内物化并写入 Flow，然后执行阶段；否则保持流式。
+超预算时打 `rule_skipped:body_truncated` 标签而**不**让规则在前缀上匹配。
+契约由 `wire_matrix_body_stage_rule_matches_on_the_body` 在真实线路上锁定。
+
+**响应方向仍开放**：响应 body 在到达时是流，且 body 阶段决策需要发生在 `on_response_headers`
+之前，因此需要「先缓冲有界前缀、决策后按需缓冲全部」的两阶段方案，尚未实现。
 
 ### 24.3 响应构造器 framing 不安全
 
@@ -1042,8 +1049,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ `TapBody` 改为委托 `buffer_prefix`，消除重复实现，原有测试全部通过。
 - ✅ `relay-core-api/src/event.rs` 不再是空文件：补 `FlowEvent`（9 个阶段化变体）与 `CloseReason`
   枚举（对应 §4-3/§4-4 的缺口），含序列化单测。
-- ⬜ 尚未接线：`RuleInterceptor`/Tauri 尚未按 BodyPlan 决策缓冲，因此 §24.2（body 阶段规则
-  在非 Tauri 宿主无法匹配）仍开放；需要把 `decide()` 接进两个宿主并让 wire 测试覆盖。
+- ✅ `RuleEngine::stage_consumes_body`：区分「body 阶段规则只是改元数据」与「真的需要 body」，
+  避免为前者付出缓冲代价；含 3 个单测。
+- ✅ `buffer_body_within_budget`：决策发生在转发之前的场景用物化（按帧读取、到预算即停），
+  与 `buffer_prefix`（观察场景，仅保留流过的字节）职责分离。
+- ✅ `RuleInterceptor::on_request` 已接线 BodyPlan，请求方向 body 阶段规则可匹配（§24.2 请求侧关闭）。
+- ⬜ 响应方向 body 阶段仍开放（见 §24.2）；Tauri 宿主仍自行缓冲，尚未统一。
 
 **修复进度（2026-09-12）**
 
