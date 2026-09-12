@@ -1010,7 +1010,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   现在落后版本会**前滚**，更新版本会**被拒绝**（而非静默改造），连接时应用
   `journal_mode=WAL` 与 `busy_timeout=5000`。4 个测试覆盖：全新库版本、幂等、无版本库前滚、
   未来版本拒绝；已双向验证。
-- ⬜ 无保留策略（对 flows/summaries 无任何 `DELETE`）——待做
+- ✅ **保留策略已建立**：`RetentionPolicy { max_flows, max_age_secs, max_audit_events }`
+  + `Store::prune`（返回 `PrunedCounts`），默认 `unbounded()` 即保持既有行为不变。
+  flows 与 summaries 按同一排序键裁剪以免两表漂移；audit 独立设界（合规记录不应被流量历史
+  挤掉）。若未接入调用方则不会自动生效——**接线到 runtime 仍待做**。
+  4 个测试覆盖：无界不删、按数量保留最新、按时间只删过期、audit 独立界不影响流量。
 - ⬜ 脱敏只在输出路径（`runtime/src/lib.rs:1501-1564`），`persist_flow` 落盘为原始 Flow——待做
 
 ### 24.9 协议与压缩

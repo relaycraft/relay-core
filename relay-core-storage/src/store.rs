@@ -4,6 +4,14 @@ use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
+/// Seconds since the Unix epoch, in the same unit `flows.created_at` uses.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Current on-disk schema version. Bump this and add an arm to `apply_migration` together.
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -186,6 +194,95 @@ impl Store {
         }
 
         Ok(())
+    }
+
+    /// Apply a retention policy, deleting the oldest rows beyond its bounds.
+    ///
+    /// Ordering matters: summaries are pruned by the same keys as flows so the two tables cannot
+    /// drift apart, and flows are deleted by id so a summary without its flow (or the reverse) is
+    /// not left behind.
+    ///
+    /// Returns what was removed, so a caller can log or expose it rather than pruning silently.
+    pub async fn prune(&self, policy: crate::RetentionPolicy) -> Result<crate::PrunedCounts> {
+        let mut counts = crate::PrunedCounts::default();
+
+        if let Some(max_age_secs) = policy.max_age_secs {
+            let cutoff = now_secs().saturating_sub(max_age_secs as i64);
+
+            let deleted = sqlx::query("DELETE FROM flows WHERE created_at < ?;")
+                .bind(cutoff)
+                .execute(&self.pool)
+                .await?;
+            counts.flows += deleted.rows_affected();
+
+            // Summaries carry their own clock (`start_time_ms`), so they are aged out by it.
+            let deleted = sqlx::query("DELETE FROM flow_summaries WHERE start_time_ms < ?;")
+                .bind(cutoff.saturating_mul(1000))
+                .execute(&self.pool)
+                .await?;
+            counts.flow_summaries += deleted.rows_affected();
+        }
+
+        if let Some(max_flows) = policy.max_flows {
+            // Keep the newest `max_flows`; delete anything older than the cutoff row.
+            let deleted = sqlx::query(
+                "DELETE FROM flows WHERE id NOT IN (
+                     SELECT id FROM flows ORDER BY created_at DESC LIMIT ?
+                 );",
+            )
+            .bind(max_flows as i64)
+            .execute(&self.pool)
+            .await?;
+            counts.flows += deleted.rows_affected();
+
+            let deleted = sqlx::query(
+                "DELETE FROM flow_summaries WHERE id NOT IN (
+                     SELECT id FROM flow_summaries ORDER BY start_time_ms DESC LIMIT ?
+                 );",
+            )
+            .bind(max_flows as i64)
+            .execute(&self.pool)
+            .await?;
+            counts.flow_summaries += deleted.rows_affected();
+        }
+
+        if let Some(max_audit_events) = policy.max_audit_events {
+            let deleted = sqlx::query(
+                "DELETE FROM audit_events WHERE id NOT IN (
+                     SELECT id FROM audit_events ORDER BY timestamp_ms DESC LIMIT ?
+                 );",
+            )
+            .bind(max_audit_events as i64)
+            .execute(&self.pool)
+            .await?;
+            counts.audit_events += deleted.rows_affected();
+        }
+
+        Ok(counts)
+    }
+
+    /// Number of stored flows, for retention reporting and tests.
+    pub async fn count_flows(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM flows;")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
+
+    /// Number of stored flow summaries.
+    pub async fn count_flow_summaries(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM flow_summaries;")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
+
+    /// Number of stored audit events.
+    pub async fn count_audit_events(&self) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events;")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
     }
 
     async fn apply_migration(&self, version: i64) -> Result<()> {

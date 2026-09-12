@@ -528,3 +528,135 @@ async fn test_future_schema_version_is_refused() {
         "the error must explain the version mismatch, got: {msg}"
     );
 }
+
+// ── Retention (§24.8) ───────────────────────────────────────────────────────────────
+//
+// Nothing pruned the database: flows, summaries and audit events grew for the life of the file.
+
+async fn seed_flow(store: &Store, id: &str, created_at: i64) {
+    store
+        .upsert_flow(id, &json!({"id": id, "start_time": "2026-01-01T00:00:00Z"}))
+        .await
+        .expect("upsert flow");
+    // `upsert_flow` stamps created_at itself, so set the timestamp explicitly to age the row.
+    sqlx::query("UPDATE flows SET created_at = ? WHERE id = ?;")
+        .bind(created_at)
+        .bind(id)
+        .execute(store.pool_for_tests())
+        .await
+        .expect("age flow");
+}
+
+#[tokio::test]
+async fn test_unbounded_policy_deletes_nothing() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+    for i in 0..5 {
+        seed_flow(&store, &format!("f{i}"), 1_700_000_000 + i).await;
+    }
+
+    let pruned = store
+        .prune(relay_core_storage::RetentionPolicy::unbounded())
+        .await
+        .expect("prune");
+
+    assert_eq!(
+        pruned.total(),
+        0,
+        "an unbounded policy must keep everything"
+    );
+    assert_eq!(store.count_flows().await.expect("count"), 5);
+}
+
+#[tokio::test]
+async fn test_max_flows_keeps_the_newest() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+    for i in 0..5 {
+        seed_flow(&store, &format!("f{i}"), 1_700_000_000 + i).await;
+    }
+
+    let pruned = store
+        .prune(relay_core_storage::RetentionPolicy {
+            max_flows: Some(2),
+            ..Default::default()
+        })
+        .await
+        .expect("prune");
+
+    assert_eq!(pruned.flows, 3, "three of five flows should be evicted");
+    assert_eq!(store.count_flows().await.expect("count"), 2);
+
+    // The survivors must be the most recent ones, not an arbitrary two.
+    assert!(
+        store.load_flow("f4").await.expect("load").is_some(),
+        "the newest flow must survive"
+    );
+    assert!(
+        store.load_flow("f0").await.expect("load").is_none(),
+        "the oldest flow must be evicted"
+    );
+}
+
+#[tokio::test]
+async fn test_max_age_evicts_expired_flows_only() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    seed_flow(&store, "ancient", now - 10_000).await;
+    seed_flow(&store, "recent", now - 10).await;
+
+    let pruned = store
+        .prune(relay_core_storage::RetentionPolicy {
+            max_age_secs: Some(3600),
+            ..Default::default()
+        })
+        .await
+        .expect("prune");
+
+    assert_eq!(pruned.flows, 1, "only the expired flow should be evicted");
+    assert!(store.load_flow("ancient").await.expect("load").is_none());
+    assert!(store.load_flow("recent").await.expect("load").is_some());
+}
+
+#[tokio::test]
+async fn test_audit_retention_is_bounded_separately_from_traffic() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect");
+    store.init().await.expect("init");
+
+    for i in 0..4u64 {
+        store
+            .save_audit_event(AuditEventRecord {
+                id: &format!("a{i}"),
+                timestamp_ms: 1_700_000_000_000 + i,
+                actor: "test",
+                kind: "RuleChanged",
+                target: "t",
+                outcome: "Success",
+                content: &json!({}),
+            })
+            .await
+            .expect("audit");
+    }
+    // Traffic history must not be affected by an audit-only bound.
+    seed_flow(&store, "keepme", 1_700_000_000).await;
+
+    store
+        .prune(relay_core_storage::RetentionPolicy {
+            max_audit_events: Some(1),
+            ..Default::default()
+        })
+        .await
+        .expect("prune");
+
+    assert_eq!(store.count_audit_events().await.expect("count"), 1);
+    assert_eq!(
+        store.count_flows().await.expect("count"),
+        1,
+        "an audit bound must not evict traffic history"
+    );
+}
