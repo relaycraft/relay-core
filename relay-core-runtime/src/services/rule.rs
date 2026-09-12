@@ -10,6 +10,13 @@ use std::sync::Arc;
 #[async_trait]
 pub trait RuleService: Send + Sync {
     async fn get_rules(&self) -> Vec<Rule>;
+
+    /// Record that a rule action failed while executing.
+    ///
+    /// The rule engine already knew this and wrote it into a per-stage trace that every caller
+    /// discards, so `relay_core_rule_exec_errors_total` had no producer anywhere and read as a
+    /// permanent zero — a metric that looked healthy precisely because it was never wired.
+    fn report_rule_exec_error(&self);
     async fn get_rule_engine(&self) -> Arc<RuleEngine>;
     async fn upsert_rule_from(
         &self,
@@ -47,6 +54,10 @@ pub trait RuleService: Send + Sync {
 impl RuleService for CoreState {
     async fn get_rules(&self) -> Vec<Rule> {
         CoreState::get_rules(self).await
+    }
+
+    fn report_rule_exec_error(&self) {
+        CoreState::report_rule_exec_error(self);
     }
 
     async fn get_rule_engine(&self) -> Arc<RuleEngine> {

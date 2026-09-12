@@ -989,9 +989,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   校验区分**阻断性错误**（模式非法、阶段不匹配）与**警告**（规则无动作）：
   后者不阻断（「先建规则再配动作」是正常流程），但会记 warning 并可审计，
   使「已启用但什么都不做」可诊断。11 个单测 + 2 个验收测试，拒绝路径已双向验证。
-- `RuleOutcome::Skipped` 从未被构造；`RuleTrace`（`api/rule.rs:303-310`）全仓无构造点
-- `ctx.trace` 被所有生产调用方丢弃（`interceptors/rule.rs:34,52,75,97,124`）
-- `relay_core_rule_exec_errors_total` 的唯一来源无发送方 ⇒ 指标恒为 0
+- 🟡 **部分修复**：
+  - ✅ **规则动作失败现在会被记录**：`executor.rs` 在产生 `RuleOutcome::Failed` 处直接 `warn`
+    （此前只写进被丢弃的 trace）；`RuleInterceptor` 在每个阶段后汇总并逐条上报失败。
+  - ✅ **错误指标已有生产者**：新增 `RuleService::report_rule_exec_error`，
+    `relay_core_rule_exec_errors_total` 不再是恒为 0 的假健康指标（含 2 个单测）。
+  - ⬜ `RuleOutcome::Skipped` 仍从未被构造（跳过原因不可表达）；
+  - ⬜ `RuleTrace`（`api/rule.rs:303-310`）仍无构造点，未通过任何适配器暴露给 UI/MCP。
 
 ### 24.7 模型与时间语义失真
 

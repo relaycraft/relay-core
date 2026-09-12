@@ -74,6 +74,49 @@ async fn finish_request_stage(
     Ok(RequestAction::Continue(forwarded))
 }
 
+/// Expose what a stage actually decided.
+///
+/// `ExecutionContext.trace` is discarded by every production caller, so before this a stage that
+/// matched nothing, skipped everything, or failed an action was indistinguishable from one that was
+/// never reached. The summary is logged, and failures also reach the metrics counter.
+fn report_stage_outcome(
+    rules: &Arc<dyn RuleService>,
+    stage: &RuleStage,
+    ctx: &relay_core_lib::rule::engine::ExecutionContext,
+) {
+    let failed = ctx
+        .trace
+        .iter()
+        .filter(|event| matches!(event.outcome, relay_core_api::rule::RuleOutcome::Failed(_)))
+        .count();
+
+    if failed > 0 {
+        for event in &ctx.trace {
+            if let relay_core_api::rule::RuleOutcome::Failed(reason) = &event.outcome {
+                tracing::warn!(
+                    rule_id = %event.rule_id,
+                    stage = ?stage,
+                    "Rule action failed: {}",
+                    reason
+                );
+            }
+        }
+        for _ in 0..failed {
+            rules.report_rule_exec_error();
+        }
+    }
+
+    let executed = ctx.trace.len();
+    if executed > 0 {
+        tracing::debug!(
+            stage = ?stage,
+            evaluated = executed,
+            failed,
+            "Rule stage completed"
+        );
+    }
+}
+
 #[async_trait]
 impl Interceptor for RuleInterceptor {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
@@ -92,6 +135,7 @@ impl Interceptor for RuleInterceptor {
         }
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
+        report_stage_outcome(&self.rules, &RuleStage::RequestHeaders, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestHeaders);
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
@@ -161,6 +205,7 @@ impl Interceptor for RuleInterceptor {
         }
 
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;
+        report_stage_outcome(&self.rules, &RuleStage::RequestBody, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestBody);
         finish_request_stage(&self.intercepts, flow, ctx, forwarded).await
     }
@@ -172,6 +217,7 @@ impl Interceptor for RuleInterceptor {
         }
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
+        report_stage_outcome(&self.rules, &RuleStage::ResponseHeaders, &ctx);
         mark_stage_executed(flow, &RuleStage::ResponseHeaders);
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
@@ -195,6 +241,7 @@ impl Interceptor for RuleInterceptor {
         let engine = self.rules.get_rule_engine().await;
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
             let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
+            report_stage_outcome(&self.rules, &RuleStage::ResponseBody, &ctx);
             mark_stage_executed(flow, &RuleStage::ResponseBody);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result =
@@ -223,6 +270,7 @@ impl Interceptor for RuleInterceptor {
                 ws.messages.push(message.clone());
             }
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
+            report_stage_outcome(&self.rules, &RuleStage::WebSocketMessage, &ctx);
             mark_stage_executed(flow, &RuleStage::WebSocketMessage);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 // `Action::MockWebSocketMessage` replaces the frame with the one the rule produced,
@@ -266,4 +314,136 @@ impl Interceptor for RuleInterceptor {
     async fn on_websocket_end(&self, _flow: &mut Flow, _close_code: u16, _close_reason: &str) {}
 
     async fn on_websocket_error(&self, _flow: &mut Flow, _error: &str) {}
+}
+
+#[cfg(test)]
+mod stage_outcome_tests {
+    use super::report_stage_outcome;
+    use async_trait::async_trait;
+    use relay_core_api::rule::{RuleOutcome, RuleStage, RuleTraceSummary};
+    use relay_core_lib::rule::RuleExecutionEvent;
+    use relay_core_lib::rule::engine::ExecutionContext;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts metric reports so the wiring can be asserted without a runtime.
+    struct CountingRules {
+        reported: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::services::RuleService for CountingRules {
+        async fn get_rules(&self) -> Vec<relay_core_lib::rule::Rule> {
+            Vec::new()
+        }
+        fn report_rule_exec_error(&self) {
+            self.reported.fetch_add(1, Ordering::Relaxed);
+        }
+        async fn get_rule_engine(&self) -> Arc<relay_core_lib::rule::RuleEngine> {
+            Arc::new(relay_core_lib::rule::RuleEngine::new(
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+            ))
+        }
+        async fn upsert_rule_from(
+            &self,
+            _actor: crate::audit::AuditActor,
+            _operation: &str,
+            _target: String,
+            _details: serde_json::Value,
+            _rule: relay_core_lib::rule::Rule,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn delete_rule_from(
+            &self,
+            _actor: crate::audit::AuditActor,
+            _operation: &str,
+            _target: String,
+            _details: serde_json::Value,
+            _rule_id: &str,
+        ) -> Result<bool, String> {
+            Ok(false)
+        }
+        async fn create_mock_response_rule_from(
+            &self,
+            _actor: crate::audit::AuditActor,
+            _target: String,
+            _details: serde_json::Value,
+            _config: crate::rule::MockResponseRuleConfig,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+        async fn create_intercept_rule_from(
+            &self,
+            _actor: crate::audit::AuditActor,
+            _target: String,
+            _details: serde_json::Value,
+            _config: crate::rule::InterceptRuleConfig,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    fn ctx_with(outcomes: Vec<RuleOutcome>) -> ExecutionContext {
+        ExecutionContext {
+            trace: outcomes
+                .into_iter()
+                .enumerate()
+                .map(|(i, outcome)| RuleExecutionEvent {
+                    rule_id: format!("r{i}"),
+                    stage: RuleStage::RequestHeaders,
+                    matched: true,
+                    duration_us: 0,
+                    outcome,
+                })
+                .collect(),
+            variables: Default::default(),
+            policy: None,
+            summary: RuleTraceSummary::NoMatch,
+            state_store: Arc::new(
+                relay_core_lib::rule::engine::state::InMemoryRuleStateStore::new(),
+            ),
+            throttle_bytes_per_sec: None,
+            connect_override: None,
+        }
+    }
+
+    /// `relay_core_rule_exec_errors_total` had no producer anywhere, so it read as a permanent zero.
+    #[test]
+    fn failed_actions_reach_the_error_counter() {
+        let reported = Arc::new(AtomicUsize::new(0));
+        let rules: Arc<dyn crate::services::RuleService> = Arc::new(CountingRules {
+            reported: reported.clone(),
+        });
+
+        let ctx = ctx_with(vec![
+            RuleOutcome::MatchedAndExecuted,
+            RuleOutcome::Failed("boom".to_string()),
+            RuleOutcome::Failed("boom again".to_string()),
+        ]);
+
+        report_stage_outcome(&rules, &RuleStage::RequestHeaders, &ctx);
+
+        assert_eq!(
+            reported.load(Ordering::Relaxed),
+            2,
+            "every failed action must reach the error counter"
+        );
+    }
+
+    #[test]
+    fn a_clean_stage_reports_no_errors() {
+        let reported = Arc::new(AtomicUsize::new(0));
+        let rules: Arc<dyn crate::services::RuleService> = Arc::new(CountingRules {
+            reported: reported.clone(),
+        });
+
+        let ctx = ctx_with(vec![RuleOutcome::MatchedAndExecuted]);
+        report_stage_outcome(&rules, &RuleStage::RequestHeaders, &ctx);
+
+        assert_eq!(reported.load(Ordering::Relaxed), 0);
+    }
 }

@@ -248,6 +248,27 @@ impl RuleEngine {
                     outcome: rule_outcome.clone(),
                 });
 
+                // A failing rule used to be recorded only in the trace, which every caller discards,
+                // so an action that could not run was invisible. Log it where it happens.
+                if let RuleOutcome::Failed(reason) = &rule_outcome {
+                    tracing::warn!(
+                        rule_id = %rule.id,
+                        stage = ?stage,
+                        "Rule action failed: {}",
+                        reason
+                    );
+                }
+
+                // A rule that is enabled but cannot be evaluated is indistinguishable from one that
+                // simply did not match, unless the skip is stated.
+                if matches!(rule_outcome, RuleOutcome::Skipped) {
+                    tracing::debug!(
+                        rule_id = %rule.id,
+                        stage = ?stage,
+                        "Rule skipped"
+                    );
+                }
+
                 if matches!(rule_outcome, RuleOutcome::MatchedAndExecuted) {
                     modified_rules.push(rule.id.clone());
                 }

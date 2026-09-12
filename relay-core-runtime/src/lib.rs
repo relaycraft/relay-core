@@ -43,7 +43,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::audit::{AuditActor, AuditEvent, AuditEventKind, AuditOutcome};
 use crate::lifecycle::LifecycleManager;
@@ -683,6 +683,13 @@ impl CoreState {
         rules.push(rule);
         self.set_rules_from(actor, operation, target, details, rules)
             .await
+    }
+
+    /// Count a rule action failure so it is visible in metrics, not only in a discarded trace.
+    pub fn report_rule_exec_error(&self) {
+        if let Err(e) = self.rule_store.try_send(RuleStoreMessage::ReportExecError) {
+            debug!("Failed to report rule exec error: {}", e);
+        }
     }
 
     pub async fn delete_rule_from(
