@@ -1577,3 +1577,77 @@ async fn wire_matrix_brotli_response_rewrite_stays_decodable() {
         "the upstream body must not survive a replacement"
     );
 }
+
+// ── zstd rewriting (§24.3, completing mitmproxy codec parity) ──────────────────────
+
+/// A real zstd frame produced by the `zstd` CLI.
+const ZSTD_RESPONSE: &[u8] = include_bytes!("fixtures/zstd_payload.bin");
+const ZSTD_PLAINTEXT: &str = "zstd-encoded-payload-for-relaycore-tests";
+
+#[tokio::test]
+async fn wire_matrix_zstd_response_rewrite_stays_decodable() {
+    init_crypto();
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let target = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: zstd\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            ZSTD_RESPONSE.len()
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(ZSTD_RESPONSE).await;
+        let _ = socket.flush().await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(ReplaceResponseBodyInterceptor {
+        replacement: "REWRITTEN-ZSTD-CONTENT",
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (bytes, encoding) = drive_and_read_raw_body(proxy_port, target).await;
+
+    assert_eq!(
+        encoding.as_deref(),
+        Some("zstd"),
+        "the upstream claimed zstd, so the rewrite must still be zstd"
+    );
+
+    let decoded = zstd::stream::decode_all(&bytes[..])
+        .expect("declared zstd encoding must decode the bytes that were sent");
+    let decoded = String::from_utf8(decoded).expect("utf-8");
+    assert_eq!(decoded, "REWRITTEN-ZSTD-CONTENT");
+    assert!(
+        !decoded.contains(ZSTD_PLAINTEXT),
+        "the upstream body must not survive a replacement"
+    );
+}

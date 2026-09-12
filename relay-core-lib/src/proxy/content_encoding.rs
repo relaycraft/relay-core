@@ -47,6 +47,7 @@ pub fn decode_for_inspection(
         "gzip" | "x-gzip" => read_all(GzDecoder::new(body)),
         "deflate" => read_all(DeflateDecoder::new(body)),
         "br" => decode_brotli(body),
+        "zstd" => decode_zstd(body),
         _ => None,
     };
 
@@ -78,6 +79,21 @@ fn decode_brotli(body: &[u8]) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+/// Decode a zstd frame. `zstd::stream::decode_all` errors on a malformed frame, which the caller
+/// treats as "leave the bytes alone".
+fn decode_zstd(body: &[u8]) -> Option<Vec<u8>> {
+    match zstd::stream::decode_all(body) {
+        Ok(out) if out.len() <= MAX_DECODED_BYTES => Some(out),
+        _ => None,
+    }
+}
+
+/// Compression level used when re-encoding a rewritten body.
+///
+/// Deliberately low: a rewritten body is usually small, latency matters more than ratio on the
+/// request path, and this matches what most servers use for dynamic responses.
+const ZSTD_LEVEL: i32 = 3;
 
 /// Upper bound on a decoded body.
 ///
@@ -135,6 +151,10 @@ pub fn encode_after_rewrite(
                 Err(_) => (body.to_vec(), None),
             }
         }
+        "zstd" => match zstd::stream::encode_all(body, ZSTD_LEVEL) {
+            Ok(encoded) => (encoded, Some("zstd".to_string())),
+            Err(_) => (body.to_vec(), None),
+        },
         // Not implemented: send plaintext and stop claiming an encoding we did not apply.
         _ => (body.to_vec(), None),
     }
@@ -149,7 +169,7 @@ pub fn content_encoding_of(headers: &[(String, String)]) -> Option<String> {
 }
 
 /// Encoding names this module can decode and re-encode.
-pub const SUPPORTED_ENCODINGS: [&str; 4] = ["gzip", "x-gzip", "deflate", "br"];
+pub const SUPPORTED_ENCODINGS: [&str; 5] = ["gzip", "x-gzip", "deflate", "br", "zstd"];
 
 /// Is this `Content-Encoding` one we can round-trip?
 pub fn is_supported(content_encoding: &str) -> bool {
@@ -243,9 +263,9 @@ mod tests {
     #[test]
     fn rewriting_an_unsupported_encoding_sends_plaintext_without_claiming_otherwise() {
         // An encoding we cannot produce must not be claimed: the header is dropped so that header and
-        // body still agree. `zstd` is the live example of this today; an unrewritten body is never
-        // touched, so this is the only place the limitation shows up.
-        for encoding_name in ["zstd", "x-weird"] {
+        // body still agree. An unrewritten body is never touched, so this path only affects rewrites
+        // of encodings we do not implement.
+        for encoding_name in ["x-weird", "gzip, br"] {
             let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN", Some(encoding_name));
 
             assert_eq!(
@@ -284,11 +304,9 @@ mod tests {
         assert_eq!(back, b"REWRITTEN-BR");
     }
 
-    /// `zstd` is the remaining gap: it is not in the dependency tree, so it is neither decoded nor
-    /// re-encoded. This test is the executable record of that gap — it starts passing the moment the
-    /// codec is added, which is when the ignore should be removed.
+    /// The fixture is a real frame from the `zstd` CLI, so the decoder is exercised against a genuine
+    /// stream rather than output produced by the same library.
     #[test]
-    #[ignore = "roadmap §24.3: zstd has no codec dependency yet (needs a crate download)"]
     fn zstd_fixture_decodes_then_round_trips() {
         let (plain, state) = decode_for_inspection(ZSTD_FIXTURE, Some("zstd"));
         assert_eq!(state, DecodedBody::Decoded);
@@ -319,15 +337,12 @@ mod tests {
     }
 
     #[test]
-    fn br_is_supported_and_zstd_is_not_yet() {
-        // Matching mitmproxy's gzip/deflate/br coverage; zstd remains open (roadmap §24.3).
-        for e in ["br", "gzip", "deflate"] {
+    fn codec_set_matches_mitmproxy_coverage() {
+        // mitmproxy 12.2.3 decodes and re-encodes gzip/deflate/br/zstd (see
+        // docs/mitmproxy-policy-benchmark.md §1.2); RelayCore now covers the same set.
+        for e in ["gzip", "x-gzip", "deflate", "br", "zstd"] {
             assert!(is_supported(e), "{e} should be supported");
         }
-        assert!(
-            !is_supported("zstd"),
-            "zstd must not claim support until a codec is wired in"
-        );
         for e in ["identity", "unknown-codec", "gzip, br"] {
             assert!(!is_supported(e), "{e} must not claim round-trip support");
         }

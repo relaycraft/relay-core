@@ -1014,19 +1014,19 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （`proxy/http_utils.rs:238-314`），TLS 上游走 h2 只是 ALPN 的副产物
 - 响应版本从不回传：`build_client_response_from_flow`（`http_utils.rs:437`）带
   `// TODO: Parse version...`，且无生产调用点
-- ✅ **部分修复（A7）**：新增 `proxy/content_encoding.rs`。`gzip` / `deflate` / **`br`** 会被解码，
-  规则看到的是明文；重写后按原编码**重新编码**，`Content-Encoding` 与所发字节一致。
-  `br` 支持意味着已对齐 mitmproxy 的 gzip/deflate/br 覆盖。
-  `zstd` 仍不解码，重写时**丢弃**该头并发送明文（而非继续宣称是压缩数据），
-  并打 `body-encoding-dropped` 标签使降级可见；未知编码从不猜测。
-  解码设有 **16 MiB 上限**以抵御压缩炸弹。
+- ✅ **已修复（A7）**：新增 `proxy/content_encoding.rs`，支持 **gzip / deflate / br / zstd** ——
+  与 mitmproxy 12.2.3 的编解码覆盖**完全对齐**。规则看到的是明文；重写后按原编码**重新编码**，
+  `Content-Encoding` 与所发字节始终一致，`content-length` 随之重算。
+  未知编码与堆叠编码（如 `gzip, br`）**从不猜测**：不重写则原样透传，重写则丢弃该头并发明文
+  （header 与 body 仍一致），并打 `body-encoding-dropped` 标签使降级可见。
+  解码统一设 **16 MiB 上限**以抵御压缩炸弹。
   测试使用 `zstd`/`brotli` CLI 生成的**真实帧 fixture**（`relay-core-lib/tests/fixtures/`），
-  避免「用同一库产出再喂回同一库」这种会掩盖格式误解的自证。
+  避免「用同一库产出再喂回同一库」这种会掩盖格式误解的自证；并有 wire 级测试逐一验证
+  gzip / br / zstd 改写后客户端按声明编码解码得到替换内容。
   契约由 `wire_matrix_gzip_response_rewrite_stays_decodable` 锁定（客户端按声明的编码解码必须得到替换内容），
   已双向验证：不重新编码时该测试必失败。
-- ⬜ 仍未实现：**`zstd`**（无 codec 依赖，需下载 crate；已用 `#[ignore]` 测试记录该缺口，
-  补上后该测试即通过）；请求方向的 `Content-Encoding` 处理；
-  规则匹配响应体时仍未对 compress 后的 body 做「解压→匹配→重编码」全链路（当前仅重写路径生效）
+- ⬜ 仍未实现：**请求方向**的 `Content-Encoding` 处理；
+  规则**匹配**响应体时仍看到压缩字节（「解压→匹配→重编码」目前只在**重写**路径生效）
 - 📊 **mitmproxy 12.2.3 实测对标**见 [`mitmproxy-policy-benchmark.md`](./mitmproxy-policy-benchmark.md)：
   mitmproxy 支持 gzip/deflate/**br**/**zstd** 且读写自动重编码（header 与字节始终一致）；
   但其**默认全量缓冲** body，流式与可读性互斥。RelayCore 的默认流式 + 有界前缀观察是更优取舍，
