@@ -1030,6 +1030,17 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   且**失败**的交换同样可算时长（此前失败请求的持续时间无从得知）。
   契约由 `wire_matrix_completed_flow_records_its_end_time` 与
   `wire_matrix_failed_flow_records_its_end_time` 锁定，两条均已双向验证。
+- ✅ **WebSocket 会话结束已可观测**：`handle_websocket_tunnel` 此前**任何出口都不发 Flow**——
+  `WebSocketLayer.closed` 恒为 `false`、`end_time` 恒为 `None`，因此 UI 会把**已结束**的会话
+  一直显示为进行中，长度也无从计算；HTTP 路径则在全部 14 个终止点都记录了两者。
+  现 4 个出口（正常关闭、帧发送失败、协议错误、空闲超时）统一走 `report_websocket_end`。
+  另外 **WS 握手失败**（上游拒绝升级 / 超时）此前**连 Flow 都不发**，交换在最需要被看到的
+  场景下完全不可见；现记录 `handshake_response.status`（502/504）、`closed` 与 `end_time` 后再发出。
+  契约由 `wire_matrix_ws_session_end_reaches_consumers` 与
+  `wire_matrix_failed_ws_handshake_is_recorded` 锁定（真实 WS 客户端 + 真实上游），均已双向验证。
+- ⬜ **WS 会话仍无类型化关闭原因**：现在能知道「结束了」，但不知道是正常关闭、对端重置还是
+  空闲超时——原因仍是 `on_websocket_error` / `on_websocket_end` 里被丢弃的字符串。
+  与 §24.8 的 `CloseReason` 缺口同源，需要先在 `Flow` 上落一个类型化字段。
 - `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
 - `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
 - 关闭/错误原因无枚举，仅为自由字符串 tag；文档中提到的 `"error"` tag **没有任何生产者**
@@ -1202,6 +1213,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ §24.1 `ForwardPort` host 已修复（此前 host 被丢弃，仅 port 生效）
 - ✅ §24.1 `MapRemote`(WS) 已修复
 - ✅ §24.1 `ForwardPort` 的 `target_host` 已修复
+- ✅ §24.7 WS 会话结束与握手失败现已可观测（此前 `closed`/`end_time` 恒缺失、失败握手无 Flow）
 - ✅ §24.8 SSE 帧契约已统一（`relay-core-api/src/sse.rs`，编解码双向同源 + round-trip 锁定）
 - ✅ §24.8 类型化事件已接线（intercept 暂停/恢复、规则改动归因；决策见 `decisions/0003`）
 - ⬜ §24.8 剩余：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived`/`Completed`/`Errored`

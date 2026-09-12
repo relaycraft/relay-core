@@ -2295,3 +2295,225 @@ async fn wire_matrix_response_version_matches_the_client_not_the_upstream() {
         head.lines().next().unwrap_or("<empty>")
     );
 }
+
+/// An upstream WebSocket that keeps the session open, so the client is the one that ends it.
+async fn spawn_holding_ws_upstream() -> SocketAddr {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind ws upstream");
+    let addr = listener.local_addr().expect("ws upstream addr");
+
+    tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+            return;
+        };
+        // Stay open: the test ends the session from the client side.
+        while let Some(Ok(_)) = futures_util::StreamExt::next(&mut ws).await {}
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    });
+
+    addr
+}
+
+/// A finished WebSocket session must be reported as finished.
+///
+/// The tunnel ended silently: no closing Flow was ever emitted, so `WebSocketLayer.closed` stayed
+/// `false` and `end_time` stayed `None`. A UI therefore showed an ended session as still open
+/// forever, and its duration was unknowable — while the HTTP path recorded both at all 14 of its
+/// terminal sites.
+#[tokio::test]
+async fn wire_matrix_ws_session_end_reaches_consumers() {
+    init_crypto();
+
+    let upstream_addr = spawn_holding_ws_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let request = format!(
+        "GET http://{upstream_addr}/ws HTTP/1.1\r\nHost: {upstream_addr}\r\nUpgrade: websocket\r\n\
+         Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write handshake");
+
+    let mut buf = vec![0u8; 4096];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("handshake timed out")
+        .expect("read handshake response");
+    let handshake = String::from_utf8_lossy(&buf[..read]).to_string();
+    assert!(
+        handshake.starts_with("HTTP/1.1 101"),
+        "the session must upgrade before its end can be observed, got {handshake:?}"
+    );
+
+    // Send one masked text frame so the tunnel is provably live, then close the session properly.
+    stream
+        .write_all(&[0x81, 0x82, 0x01, 0x02, 0x03, 0x04, b'h' ^ 1, b'i' ^ 2])
+        .await
+        .expect("write a frame");
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    stream
+        .write_all(&[0x88, 0x82, 0x01, 0x02, 0x03, 0x04, 0x03 ^ 1, 0xe8 ^ 2])
+        .await
+        .expect("write close frame");
+    let _ = stream.shutdown().await;
+
+    // Wait for the closing Flow rather than assuming it is already queued.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut closing: Option<relay_core_api::flow::Flow> = None;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) => {
+                if flow.end_time.is_some() {
+                    closing = Some(*flow);
+                    break;
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let closing = closing.expect(
+        "ending a WebSocket session must emit a closing Flow with end_time; \
+         without it a UI shows a finished session as still open",
+    );
+
+    match &closing.layer {
+        Layer::WebSocket(ws) => assert!(
+            ws.closed,
+            "the closing Flow must mark the session closed, got {ws:?}"
+        ),
+        other => panic!("expected a websocket layer, got {other:?}"),
+    }
+    assert!(
+        closing.end_time >= Some(closing.start_time),
+        "end_time must not precede start_time"
+    );
+}
+
+/// A WebSocket handshake that never reaches upstream must still be visible.
+///
+/// The failure arms returned an error response without ever emitting the Flow, so a failed WS
+/// handshake produced *no* traffic record at all — the exchange was invisible precisely when
+/// someone would want to look at it.
+#[tokio::test]
+async fn wire_matrix_failed_ws_handshake_is_recorded() {
+    init_crypto();
+
+    let upstream_addr = spawn_refusing_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let request = format!(
+        "GET http://{upstream_addr}/ws HTTP/1.1\r\nHost: {upstream_addr}\r\nUpgrade: websocket\r\n\
+         Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write handshake");
+
+    let mut buf = vec![0u8; 4096];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("handshake timed out")
+        .expect("read handshake response");
+    let response = String::from_utf8_lossy(&buf[..read]).to_string();
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "a refused upstream upgrade should surface as 502, got {response:?}"
+    );
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut recorded: Option<Flow> = None;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) if flow.end_time.is_some() => {
+                recorded = Some(*flow);
+                break;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let flow = recorded.expect("a failed WS handshake must still be recorded as a Flow");
+    match &flow.layer {
+        Layer::WebSocket(ws) => {
+            assert!(
+                ws.closed,
+                "a failed handshake is a finished session, got {ws:?}"
+            );
+            assert_eq!(
+                ws.handshake_response.status, 502,
+                "the recorded handshake response must match what the client was told"
+            );
+        }
+        other => panic!("expected a websocket layer, got {other:?}"),
+    }
+}

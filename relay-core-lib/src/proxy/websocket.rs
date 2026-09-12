@@ -449,14 +449,49 @@ where
                 ))
             }
         }
-        Ok(Err(e)) => Ok(create_error_response(
-            StatusCode::BAD_GATEWAY,
-            format!("Upstream Handshake Failed: {}", e),
-        )),
-        Err(_) => Ok(create_error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "Upstream Handshake Timed Out",
-        )),
+        // The handshake failed, so the session is over before it began — but the Flow was
+        // dropped without ever being emitted, leaving the exchange invisible in the UI.
+        Ok(Err(e)) => {
+            let detail = format!("Upstream Handshake Failed: {}", e);
+            if let Layer::WebSocket(ws) = &mut flow.layer {
+                ws.handshake_response.status = StatusCode::BAD_GATEWAY.as_u16();
+                ws.handshake_response.status_text = "Bad Gateway".to_string();
+                ws.closed = true;
+            }
+            report_websocket_end(&mut flow, &on_flow);
+            Ok(create_error_response(StatusCode::BAD_GATEWAY, detail))
+        }
+        Err(_) => {
+            if let Layer::WebSocket(ws) = &mut flow.layer {
+                ws.handshake_response.status = StatusCode::GATEWAY_TIMEOUT.as_u16();
+                ws.handshake_response.status_text = "Gateway Timeout".to_string();
+                ws.closed = true;
+            }
+            report_websocket_end(&mut flow, &on_flow);
+            Ok(create_error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Upstream Handshake Timed Out",
+            ))
+        }
+    }
+}
+
+/// Report that a WebSocket session is over.
+///
+/// The tunnel used to end silently: no closing Flow was ever emitted, so `WebSocketLayer.closed`
+/// stayed `false` and `end_time` stayed `None`. A consumer could not tell a live session from a
+/// finished one, and a finished session's duration was unknowable — while the HTTP path records
+/// both at every one of its terminal sites.
+fn report_websocket_end(flow: &mut Flow, on_flow: &Sender<FlowUpdate>) {
+    if let Layer::WebSocket(ws) = &mut flow.layer {
+        ws.closed = true;
+    }
+    flow.end_time = Some(chrono::Utc::now());
+    if on_flow
+        .try_send(FlowUpdate::Full(Box::new(flow.clone())))
+        .is_err()
+    {
+        crate::metrics::inc_flows_dropped();
     }
 }
 
@@ -521,6 +556,7 @@ async fn handle_websocket_tunnel(
                                         interceptor
                                             .on_websocket_error(&mut flow, &e.to_string())
                                             .await;
+                                        report_websocket_end(&mut flow, &on_flow);
                                         return Err(e.into());
                                     }
 
@@ -555,6 +591,7 @@ async fn handle_websocket_tunnel(
                                 interceptor
                                     .on_websocket_error(&mut flow, &e.to_string())
                                     .await;
+                                report_websocket_end(&mut flow, &on_flow);
                                 return Err(e.into());
                             }
                         }
@@ -563,6 +600,7 @@ async fn handle_websocket_tunnel(
                         interceptor
                             .on_websocket_error(&mut flow, &e.to_string())
                             .await;
+                        report_websocket_end(&mut flow, &on_flow);
                         return Err(e.into());
                     }
                     None => {
@@ -578,11 +616,14 @@ async fn handle_websocket_tunnel(
                 interceptor
                     .on_websocket_error(&mut flow, "WebSocket Idle Timeout")
                     .await;
+                report_websocket_end(&mut flow, &on_flow);
                 return Err("WebSocket Idle Timeout".into());
             }
         }
     }
 
+    // A clean close breaks out of the loop rather than returning, so the end is reported here too.
+    report_websocket_end(&mut flow, &on_flow);
     Ok(())
 }
 
