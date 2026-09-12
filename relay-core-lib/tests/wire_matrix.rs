@@ -435,12 +435,11 @@ async fn wire_matrix_response_header_mutation_reaches_client() {
 
 // ── Request body mutations ──────────────────────────────────────────────────────────
 //
-// Known gap (roadmap §24.1): `Action::SetRequestBody` writes `flow.layer.http.request.body`,
-// but the forwarded body is the separate `current_body` stream argument, so the upstream still
-// receives the original bytes. Un-ignore when the data plane is fixed (A5).
+// Fixed in A5b: when an interceptor replaced the request body, the Flow's bytes are materialized
+// and the request is reframed (content-length recomputed, transfer-encoding/content-encoding
+// dropped). An unreplaced body still streams.
 
 #[tokio::test]
-#[ignore = "roadmap §24.1: SetRequestBody writes the Flow, the wire keeps the original stream"]
 async fn wire_matrix_request_body_mutation_reaches_upstream() {
     const CASE: Case = Case {
         id: "request_body",

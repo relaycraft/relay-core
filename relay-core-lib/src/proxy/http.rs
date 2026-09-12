@@ -9,8 +9,9 @@ use crate::interceptor::{
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
-    build_client_response_head, build_forward_request, create_error_response, create_initial_flow,
-    mock_to_response, parse_request_meta, update_flow_with_response_headers,
+    build_client_response_head, build_forward_request, build_request_body_from_flow,
+    create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
+    request_body_from_flow_len, update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use crate::proxy::tap::TapBody;
@@ -263,12 +264,29 @@ where
         current_body = crate::proxy::throttle::ThrottleBody::new(current_body, bps).boxed();
     }
 
+    // Convergence: when an interceptor replaced the request body, the Flow holds the authoritative
+    // bytes. Materialize them and reframe, instead of forwarding the untouched client stream.
+    // A body nobody replaced keeps streaming — buffering it would cost the streaming property
+    // for nothing (roadmap §22).
+    let flow_request_body = match request_body_from_flow_len(&flow) {
+        Some(_) => match &flow.layer {
+            Layer::Http(http) => http.request.body.clone(),
+            _ => None,
+        },
+        None => None,
+    };
+    let body_replaced = flow_request_body.is_some();
+    if let Some(body_data) = &flow_request_body {
+        current_body = build_request_body_from_flow(body_data);
+    }
+
     let forward_req = match build_forward_request(
         &mut flow,
         current_body,
         target_addr,
         &policy,
         &loop_detector,
+        body_replaced,
     ) {
         Ok(req) => req,
         Err(res) => return Ok(res),

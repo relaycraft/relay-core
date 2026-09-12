@@ -917,7 +917,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 | `Add/Update/DeleteResponseHeader` | ✅ 已修复 | 由 Flow 重建响应头 | `proxy/http_utils.rs` `build_client_response_head` |
 | `SetResponseStatus` | ✅ 已修复 | 由 Flow 重建状态码 | 同上 |
 | `SetResponseBody` / `TransformResponseBody` | ⬜ 未修复 | 需先定义 body 替换后的 framing 语义（原定 A6/D） | `actions/http.rs:109-117, 351-359` |
-| `SetRequestBody` / `TransformRequestBody` | ⬜ 未修复 | 转发使用 `current_body`，非 `flow.request.body` | `actions/http.rs:91-98, 343-350`；`http.rs:268` |
+| `SetRequestBody` / `TransformRequestBody` | ✅ 已修复 | 检测到 Flow 持有替换体时改由 Flow 提供 body 并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`）；未被替换的 body 仍保持流式 | `proxy/http_utils.rs` `build_request_body_from_flow` / `reframe_request_headers_for_replaced_body` |
 | `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
 | `MockWebSocketMessage` | ⬜ 未修复 | 帧被 Drop 而非替换 | `interceptors/rule.rs:134`；`inspect.rs:37-43` |
 | WebSocket 握手响应头 | ⬜ 未修复 | WS 路径**从不调用** `on_response_headers`，101 直接由上游 `Parts` 构造 | `proxy/websocket.rs:293-299`；对照 `http.rs:96` |
@@ -1011,16 +1011,27 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - CI 无 soak、无 fuzz、无 mitmproxy differential、coverage 无阈值、
   无 cargo-audit/deny、macOS/Windows 仅构建不测试
 
+**已知的待办与代价（A5b）**
+
+- Tauri 宿主对**每个**携带 body 的请求都会 `collect()` 完整 body（`tauri/src/interceptor.rs:65,147`，
+  且不受 `rule_body_inspect_budget` 限制），因此该宿主下 body 恒为缓冲态；A5b 之后会再发生一次
+  「Flow → 线路」的物化。功能正确（非预算超限路径下字节等价），但属重复开销。
+  根治需要在 A6（BodyPlan）中统一 body 计划，而不是各处自行缓冲。
+- 未来在 `Flow.meta` 中引入「body 显式替换」标记，可让未被替换的 body 免于该次物化。
+
 **修复进度（2026-09-12）**
 
 - ✅ harness 可信化：就绪探测带 `--fail`、进程与端口预检、oha 成功率 DoD、
   RSS 不可测即失败、报告闸门、`CARGO_TARGET_DIR` 支持、`commit-baseline.sh` 拒绝非 PASS 报告
 - ✅ 上游性能上限解除：`benchmarks/rust_echo_server.rs` 取代饱和于 ~2.7k req/s 的 Python
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
-- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：5 个用例通过
-  （基线往返、请求头、响应头、响应状态、链式单次应用），2 个缺陷用 `#[ignore]` 钉住并各自
-  验证确实失败（请求 body、WS 握手响应头）
+- ✅ wire-level 矩阵（`relay-core-lib/tests/wire_matrix.rs`）：6 个用例通过
+  （基线往返、请求头、请求 body、响应头、响应状态、链式单次应用），1 个缺陷用 `#[ignore]`
+  钉住并已验证确实失败（WS 握手响应头）
 - ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
 - ✅ A5a HTTP 响应方向收敛（§24.1 响应头/状态已修复）
+- ✅ A5b 请求 body 替换生效并重建 framing（§24.1 `SetRequestBody` 已修复）
 - ✅ A1 双执行已修复（§24.4，stage_guard）
+- ⬜ §24.1 剩余：`SetResponseBody`/`TransformResponseBody`、WS 握手响应头、
+  `MockWebSocketMessage`、`MapRemote`(WS)、`ForwardPort` host、`SetTtl`
 - ⬜ §24.2–§24.9 的其余线路缺陷仍开放

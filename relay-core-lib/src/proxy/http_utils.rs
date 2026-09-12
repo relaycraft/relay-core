@@ -261,6 +261,59 @@ fn flow_response(flow: &Flow) -> Option<&HttpResponse> {
     }
 }
 
+/// Materialize an interceptor-replaced request body as a wire body with correct framing.
+///
+/// The request direction has the same divergence the response direction had: `Action::SetRequestBody`
+/// (and its transform variants) writes `flow.layer.http.request.body`, while the forwarded request
+/// carried the original `current_body` stream — so the upstream saw the unmodified body.
+///
+/// Taking the body from the Flow makes the Flow authoritative for request bodies too. The cost is
+/// losing the streaming property for requests whose body actually changed, so callers must only use
+/// this when the Flow holds a replaced body; a pass-through body must keep streaming.
+///
+/// Framing is rebuilt rather than inherited from the client: `content-length` is recomputed from
+/// the actual bytes, `transfer-encoding` is dropped because the replacement is a known-length
+/// buffer, and `content-encoding` is dropped because the replacement is plain bytes (keeping the
+/// client's `Content-Encoding` while sending an uncompressed body would be a lie).
+pub fn build_request_body_from_flow(body_data: &BodyData) -> HttpBody {
+    let bytes = body_data_to_bytes(Some(body_data));
+    Full::new(bytes).map_err(|e| e.into()).boxed()
+}
+
+/// Rewrite request headers for a request whose body was replaced by the Flow.
+pub fn reframe_request_headers_for_replaced_body(
+    headers: &[(String, String)],
+    body_len: usize,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = headers
+        .iter()
+        .filter(|(k, _)| {
+            !k.eq_ignore_ascii_case("content-length")
+                && !k.eq_ignore_ascii_case("transfer-encoding")
+                && !k.eq_ignore_ascii_case("content-encoding")
+        })
+        .cloned()
+        .collect();
+
+    out.push(("Content-Length".to_string(), body_len.to_string()));
+    out
+}
+
+/// Byte length of the request body the Flow currently holds, if any.
+///
+/// Used to decide whether replacing the streaming body is warranted: an unchanged body must keep
+/// streaming (roadmap §22 "无修改场景不无谓解压/缓冲").
+pub fn request_body_from_flow_len(flow: &Flow) -> Option<usize> {
+    match &flow.layer {
+        Layer::Http(http) => http
+            .request
+            .body
+            .as_ref()
+            .map(|b| body_data_to_bytes(Some(b)).len()),
+        _ => None,
+    }
+}
+
 /// Build the client-facing response directly from a `relay-core-api` `HttpResponse`.
 ///
 /// Used by the proxy wiring for terminal/mock/modified results, so it must produce the SAME
@@ -340,6 +393,7 @@ pub fn build_forward_request(
     target_addr: Option<SocketAddr>,
     policy: &ProxyPolicy,
     loop_detector: &LoopDetector,
+    body_replaced: bool,
 ) -> Result<Request<HttpBody>, Response<HttpBody>> {
     let current_req = if let Layer::Http(http) = &flow.layer {
         &http.request
@@ -389,7 +443,18 @@ pub fn build_forward_request(
 
     forward_req_builder = forward_req_builder.uri(target_url.as_str());
 
-    for (k, v) in &current_req.headers {
+    // When the body was replaced, framing must describe the NEW bytes: the client's
+    // content-length/transfer-encoding/content-encoding no longer apply.
+    let headers: Vec<(String, String)> = if body_replaced {
+        reframe_request_headers_for_replaced_body(
+            &current_req.headers,
+            request_body_from_flow_len(flow).unwrap_or(0),
+        )
+    } else {
+        current_req.headers.clone()
+    };
+
+    for (k, v) in &headers {
         // Filter out hop-by-hop headers to allow connection pooling
         if is_hop_by_hop(k) {
             continue;
