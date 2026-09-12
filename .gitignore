@@ -83,8 +83,12 @@ ca_cert.json
 # Benchmarks artifacts
 benchmarks/__pycache__/
 benchmarks/.bin/
-benchmarks/bench_*.json
-benchmarks/bench_*.md
+benchmarks/.tls/
+# Run artifacts land in benchmarks/results/ as well as benchmarks/, so match at any depth.
+# (`benchmarks/bench_*.json` alone never matched benchmarks/results/bench_*.json because
+# gitignore's `*` does not cross `/`.) Committed baselines stay tracked via the negation below.
+benchmarks/**/bench_*
+benchmarks/bench_*
 benchmarks/*.csv
 benchmarks/.bench_ca_cert.*
 benchmarks/.bench_ca_key.pem
