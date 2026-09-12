@@ -45,6 +45,12 @@ impl UdpSessionKey {
 pub struct UdpSession {
     pub flow_id: Uuid,
     pub key: UdpSessionKey,
+    /// Client endpoint, kept so a closing Flow can be described without re-deriving it.
+    pub src: SocketAddr,
+    /// Upstream endpoint, kept for the same reason.
+    pub dst: SocketAddr,
+    /// Wall-clock start, because `Flow.start_time` is wall-clock while `created_at` is monotonic.
+    pub started_at: chrono::DateTime<chrono::Utc>,
     pub created_at: Instant,
     pub last_activity: Arc<RwLock<Instant>>,
     pub packet_count: Arc<AtomicUsize>,
@@ -115,6 +121,9 @@ impl UdpSessionManager {
         let session = UdpSession {
             flow_id: Uuid::new_v4(),
             key: key.clone(),
+            src,
+            dst,
+            started_at: chrono::Utc::now(),
             created_at: Instant::now(),
             last_activity: Arc::new(RwLock::new(Instant::now())),
             packet_count: Arc::new(AtomicUsize::new(1)),
@@ -164,28 +173,65 @@ impl UdpSessionManager {
         Ok((session, true))
     }
 
-    /// Clean up idle sessions
-    pub async fn cleanup_idle_sessions(&self) -> Vec<Uuid> {
+    /// How long a session may be quiet before it is considered over.
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    /// Remove idle sessions and return them, so the caller can emit each one's final Flow.
+    ///
+    /// Returning the whole session rather than just its id is what makes a closed session
+    /// reportable: counters and endpoints travel with it.
+    pub async fn cleanup_idle_sessions(&self) -> Vec<UdpSession> {
         let mut sessions = self.sessions.write().await;
         let now = Instant::now();
-        let mut removed_ids = Vec::new();
+        let mut expired = Vec::new();
         let mut keys_to_remove = Vec::new();
 
-        // Identify idle sessions
         for (key, session) in sessions.iter() {
             let last = *session.last_activity.read().await;
             if now.duration_since(last) > self.idle_timeout {
-                removed_ids.push(session.flow_id);
+                expired.push(session.clone());
                 keys_to_remove.push(key.clone());
             }
         }
 
-        // Remove them
         for key in keys_to_remove {
             sessions.remove(&key);
         }
 
-        removed_ids
+        expired
+    }
+
+    /// Build the closing Flow for a session that has ended.
+    ///
+    /// This is where a UDP exchange finally gets an `end_time` and the counters a consumer can act
+    /// on: the session's own totals replaced the snapshot taken at the first packet.
+    pub fn closing_flow(session: &UdpSession) -> Flow {
+        Flow {
+            id: session.flow_id,
+            start_time: session.started_at,
+            end_time: Some(chrono::Utc::now()),
+            network: NetworkInfo {
+                client_ip: session.src.ip().to_string(),
+                client_port: session.src.port(),
+                server_ip: session.dst.ip().to_string(),
+                server_port: session.dst.port(),
+                protocol: TransportProtocol::UDP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Udp(UdpLayer {
+                payload_size: session.bytes_transferred.load(Ordering::Relaxed),
+                packet_count: session.packet_count.load(Ordering::Relaxed),
+            }),
+            tags: vec!["closed".to_string()],
+            meta: std::collections::HashMap::new(),
+            resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
+        }
     }
 }
 
@@ -251,6 +297,27 @@ impl UdpProxy {
         }
     }
 
+    /// Emit the closing Flow for every session that has gone idle, returning how many were closed.
+    ///
+    /// Called when the receive loop observes a quiet period longer than the idle timeout: at that
+    /// point no session can still be active, so nothing is missed and no extra timer task is needed.
+    pub async fn close_idle_sessions(&self, on_flow: &Sender<FlowUpdate>) -> usize {
+        let expired = self.session_manager.cleanup_idle_sessions().await;
+        let closed = expired.len();
+
+        for session in &expired {
+            let flow = UdpSessionManager::closing_flow(session);
+            if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
+                crate::metrics::inc_flows_dropped();
+            }
+        }
+
+        if closed > 0 {
+            tracing::debug!("Closed {} idle UDP session(s)", closed);
+        }
+        closed
+    }
+
     /// Run the proxy loop
     pub async fn run(&self, on_flow: Sender<FlowUpdate>) -> crate::error::Result<()> {
         let mut buf = [0u8; 65535];
@@ -261,15 +328,24 @@ impl UdpProxy {
             LinuxTproxy::enable_tproxy(&self.socket)?;
 
             loop {
-                // Use recv_original_dst
-                let (len, src_addr, orig_dst) =
-                    match LinuxTproxy::recv_original_dst(&self.socket, &mut buf).await {
-                        Ok(res) => res,
-                        Err(e) => {
-                            tracing::error!("UDP TPROXY recv error: {}", e);
-                            continue;
-                        }
-                    };
+                // A quiet period longer than the idle timeout means every session has expired, so it
+                // is the natural moment to close them and emit their final Flows.
+                let (len, src_addr, orig_dst) = match tokio::time::timeout(
+                    self.session_manager.idle_timeout(),
+                    LinuxTproxy::recv_original_dst(&self.socket, &mut buf),
+                )
+                .await
+                {
+                    Ok(Ok(res)) => res,
+                    Ok(Err(e)) => {
+                        tracing::error!("UDP TPROXY recv error: {}", e);
+                        continue;
+                    }
+                    Err(_) => {
+                        self.close_idle_sessions(&on_flow).await;
+                        continue;
+                    }
+                };
 
                 if let Some(dst_addr) = orig_dst {
                     match self
@@ -356,13 +432,19 @@ impl UdpProxy {
             }
 
             loop {
-                let (len, src_addr) = match sock.recv_from(&mut buf).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        tracing::error!("UDP recv error: {}", e);
-                        continue;
-                    }
-                };
+                // See the Linux path: a quiet period means every session has gone idle.
+                let (len, src_addr) =
+                    match tokio::time::timeout(sm.idle_timeout(), sock.recv_from(&mut buf)).await {
+                        Ok(Ok(res)) => res,
+                        Ok(Err(e)) => {
+                            tracing::error!("UDP recv error: {}", e);
+                            continue;
+                        }
+                        Err(_) => {
+                            self.close_idle_sessions(&flow_tx).await;
+                            continue;
+                        }
+                    };
 
                 let dst_addr = match resolve_udp_dst(
                     src_addr,
@@ -494,30 +576,105 @@ fn resolve_udp_dst(
     fixed
 }
 
-/// A UDP session's recorded Flow is emitted once, when the session is created.
+/// A UDP exchange produces exactly two Flows: an opening one and a closing one.
 ///
-/// That has two consequences worth stating rather than leaving implicit, because both are visible to
-/// consumers (roadmap §24.7, §24.2):
+/// * The **opening** Flow is emitted when the session is created, so a consumer sees the exchange as
+///   soon as it starts. Its counters are frozen at the first packet, and its `end_time` is `None`
+///   because the exchange has not ended — reporting a duration there would be the same fabricated
+///   measurement the HAR exporter was fixed for.
+/// * The **closing** Flow is emitted by [`UdpProxy::close_idle_sessions`] once the session has been
+///   quiet for longer than the idle timeout. It carries the session's real totals and an `end_time`,
+///   which is what makes `duration_ms` computable for UDP flows.
 ///
-/// * `packet_count` and `payload_size` are frozen at the first packet: later packets update the
-///   session's atomics but no further Flow is emitted.
-/// * `end_time` stays `None`, so `FlowSummary.duration_ms` is null for UDP flows. Setting it at
-///   creation would report a measured zero for a session that has not ended, which is the same
-///   fabricated-measurement mistake the HAR exporter was just fixed for.
-///
-/// Closing this properly needs the session manager to emit a final Flow on expiry, which requires
-/// holding the flow sender and running cleanup on an interval; neither exists yet.
-pub const SESSION_FLOW_IS_EMIT_ONCE: () = ();
+/// Neither Flow is updated in place: a consumer wanting live counters during a long-lived session
+/// still needs a periodic update, which does not exist yet.
+pub const SESSION_FLOW_IS_EMIT_TWICE: () = ();
 
 #[cfg(test)]
 mod tests {
-    /// The UDP flow contract, pinned so it cannot drift silently.
+    /// Closing a session must report the exchange's real totals and an `end_time`, which is what makes
+    /// `duration_ms` computable for UDP flows at all.
+    #[tokio::test]
+    async fn a_closed_session_reports_totals_and_an_end_time() {
+        let manager = UdpSessionManager::new(Duration::from_millis(1));
+        let src: SocketAddr = "127.0.0.1:4444".parse().expect("addr");
+        let dst: SocketAddr = "127.0.0.1:5555".parse().expect("addr");
+
+        let (session, is_new) = manager
+            .get_or_create_session(src, dst)
+            .await
+            .expect("create session");
+        assert!(is_new, "the first packet must create the session");
+
+        // Packets after the first update the session's own counters, which is what the closing Flow
+        // reports; the opening Flow is frozen at one packet by design.
+        session.packet_count.fetch_add(4, Ordering::Relaxed);
+        session.bytes_transferred.fetch_add(512, Ordering::Relaxed);
+
+        // Let the session go idle.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(8);
+        let closed = manager.cleanup_idle_sessions().await;
+        assert_eq!(
+            closed.len(),
+            1,
+            "the idle session must be closed exactly once"
+        );
+
+        for session in &closed {
+            let flow = UdpSessionManager::closing_flow(session);
+            let _ = tx.send(FlowUpdate::Full(Box::new(flow))).await;
+        }
+
+        match rx.recv().await.expect("closing flow") {
+            FlowUpdate::Full(flow) => {
+                assert!(
+                    flow.end_time.is_some(),
+                    "a closed session must record end_time so duration_ms is computable"
+                );
+                match &flow.layer {
+                    Layer::Udp(udp) => {
+                        assert_eq!(udp.packet_count, 5, "the closing Flow reports every packet");
+                        assert_eq!(udp.payload_size, 512, "and every byte");
+                    }
+                    other => panic!("expected a UDP layer, got {other:?}"),
+                }
+            }
+            other => panic!("expected a full flow update, got {other:?}"),
+        }
+
+        // A second pass must find nothing: the session was removed, not merely reported.
+        assert!(
+            manager.cleanup_idle_sessions().await.is_empty(),
+            "closing must remove the session so it is not reported twice"
+        );
+    }
+
+    /// A session that is still active must not be closed.
+    #[tokio::test]
+    async fn an_active_session_is_not_closed() {
+        let manager = UdpSessionManager::new(Duration::from_secs(60));
+        let src: SocketAddr = "127.0.0.1:6666".parse().expect("addr");
+        let dst: SocketAddr = "127.0.0.1:7777".parse().expect("addr");
+
+        manager
+            .get_or_create_session(src, dst)
+            .await
+            .expect("create session");
+
+        assert!(
+            manager.cleanup_idle_sessions().await.is_empty(),
+            "a session inside its idle window must be left alone"
+        );
+    }
+
+    /// The *opening* Flow's contract, pinned so it cannot drift silently.
     ///
-    /// See `SESSION_FLOW_IS_EMIT_ONCE` for why these are limitations rather than choices. If this test
-    /// starts failing because `end_time` is now set, that is a deliberate improvement — update it and
-    /// the note together.
+    /// See `SESSION_FLOW_IS_EMIT_TWICE`: the opening Flow intentionally reports no `end_time` and
+    /// counters frozen at the first packet, while the closing Flow carries the totals.
     #[test]
-    fn udp_session_flow_is_emitted_once_and_reports_no_end_time() {
+    fn opening_flow_reports_no_end_time_and_frozen_counters() {
         let session = UdpSession {
             flow_id: uuid::Uuid::new_v4(),
             key: UdpSessionKey {
@@ -526,15 +683,48 @@ mod tests {
                 dst_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                 dst_port: 2000,
             },
+            src: "127.0.0.1:1000".parse().expect("addr"),
+            dst: "127.0.0.1:2000".parse().expect("addr"),
+            started_at: chrono::Utc::now(),
             created_at: std::time::Instant::now(),
             last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
             packet_count: Arc::new(AtomicUsize::new(1)),
             bytes_transferred: Arc::new(AtomicUsize::new(0)),
         };
 
-        // Counters live on the session, so a consumer reading only the emitted Flow would see 1.
+        // The session's counters live on the session; the opening Flow snapshots them once.
         assert_eq!(session.packet_count.load(Ordering::Relaxed), 1);
         assert_eq!(session.bytes_transferred.load(Ordering::Relaxed), 0);
+
+        // The opening Flow, built the way the receive loop builds it.
+        let opening = Flow {
+            id: session.flow_id,
+            start_time: session.started_at,
+            end_time: None,
+            network: NetworkInfo {
+                client_ip: session.src.ip().to_string(),
+                client_port: session.src.port(),
+                server_ip: session.dst.ip().to_string(),
+                server_port: session.dst.port(),
+                protocol: TransportProtocol::UDP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Udp(UdpLayer {
+                payload_size: 0,
+                packet_count: 1,
+            }),
+            tags: vec![],
+            meta: std::collections::HashMap::new(),
+            resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
+        };
+        assert!(
+            opening.end_time.is_none(),
+            "the opening Flow must not claim a duration for an exchange still in progress"
+        );
     }
 
     use super::*;
