@@ -8,8 +8,8 @@
 //! - `tunnel`: HTTP CONNECT tunnel handling (blind TCP forwarding or MITM upgrade).
 //! - `websocket`: WebSocket framing, message interception, and forwarding.
 //! - `body_codec`: Chooses the `BodyData` representation for a body (utf-8 vs base64). It does
-//!   **not** decompress: no gzip/deflate/brotli/zstd handling exists anywhere in the engine yet,
-//!   so bodies are passed through in whatever encoding they arrived in (roadmap §24.9).
+//!   **not** decompress — `content_encoding` below owns that — so a caller that reaches for bytes
+//!   through this module gets them in whatever encoding they arrived in.
 //! - `body_plan`: Mechanics for carrying out a `BodyPlan` decision — bounded prefix retention for
 //!   observation, and bounded materialization when something must rewrite the body.
 //! - `content_encoding`: Decodes and re-encodes `Content-Encoding` around inspection, so a rule

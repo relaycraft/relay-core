@@ -961,15 +961,20 @@ interceptor 在**请求阶段**就把「需要响应 body」及预算写入 `Flo
 **顺序陷阱（已记录）**：`update_flow_with_response_headers` 会整体替换 `HttpResponse`，
 因此保留必须发生在其**之后**，否则刚记录的 body 会被丢弃。
 
-### 24.3 响应构造器 framing 不安全
+### 24.3 响应构造器 framing 不安全 —— ✅ 已修复（本节此前为过期描述）
 
-`mock_to_response`（`proxy/http_utils.rs:208-235`）是唯一的 Flow→线路响应构造器：
-- `:212-219` 原样复制全部 header，包括残留的 `Content-Length` / `Transfer-Encoding` / `Content-Encoding`
-- `:222` `Bytes::from(b.content)` 不按 `b.encoding` 解码，而 `BodySource::Base64` 确凿写入
-  `encoding: "base64"`（`rule/engine/actions/utils.rs:19-23`）⇒ 二进制 mock 会发出 base64 文本
+**历史问题**：`mock_to_response` 是唯一的 Flow→线路响应构造器，但它原样复制全部 header
+（含残留的 `Content-Length` / `Transfer-Encoding` / `Content-Encoding`），且 `Bytes::from(b.content)`
+不按 `b.encoding` 解码，而 `BodySource::Base64` 确凿写入 `encoding: "base64"`
+（`rule/engine/actions/utils.rs:19-23`）⇒ 二进制 mock 会发出 base64 文本。hyper 1.10.1 对调用方
+给出的 `Content-Length` 直接采信，release 下产生错帧。
 
-hyper 1.10.1 对调用方给出的 `Content-Length` 直接采信（`proto/h1/role.rs:695-717`）：
-release 下产生错帧，debug 下触发 `debug_assert!`。
+**现状（已核对代码）**：`mock_to_response` 已改为委托 `build_response_from_flow_response`
+（`proxy/http_utils.rs:430-441`），该函数会
+（a）**丢弃** `content-length` / `transfer-encoding` / `connection`，
+（b）仅当 body 仍是原编码时才保留 `content-encoding`，
+（c）经 `body_data_to_bytes` 对 `base64` 实际**解码**（`http_utils.rs:377-428`）。
+因此本节描述的两个问题都已不存在；此前本节未被标记，属于**反向失真**（文档比现实更差）。
 
 ### 24.4 重复执行与重复头部（Tauri 宿主）—— ✅ 已修复
 

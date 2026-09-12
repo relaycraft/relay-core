@@ -2629,3 +2629,155 @@ async fn wire_matrix_failed_ws_handshake_is_recorded() {
         other => panic!("expected a websocket layer, got {other:?}"),
     }
 }
+
+/// A plain HTTP upstream that honours keep-alive and serves every request on the connection.
+///
+/// The other recording upstreams answer once and then send `Connection: close`, which is enough to
+/// observe one exchange but cannot answer "does the proxy reuse a connection?" — a faithful proxy
+/// must relay that close, so the question is unanswerable with them.
+async fn spawn_keepalive_upstream() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let addr = listener.local_addr().expect("upstream addr");
+    let served = Arc::new(AtomicUsize::new(0));
+    let counter = served.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut pending = Vec::new();
+                loop {
+                    // Serve every complete request head that arrives on this connection.
+                    let head_end = loop {
+                        if let Some(pos) = find_subslice(&pending, b"\r\n\r\n") {
+                            break Some(pos + 4);
+                        }
+                        match socket.read(&mut buf).await {
+                            Ok(0) | Err(_) => break None,
+                            Ok(n) => pending.extend_from_slice(&buf[..n]),
+                        }
+                    };
+                    let Some(head_end) = head_end else { return };
+                    pending.drain(..head_end);
+                    counter.fetch_add(1, Ordering::Relaxed);
+
+                    let body = b"kept-alive";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                        body.len()
+                    );
+                    if socket.write_all(response.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if socket.write_all(body).await.is_err() {
+                        return;
+                    }
+                    let _ = socket.flush().await;
+                }
+            });
+        }
+    });
+
+    (addr, served)
+}
+
+/// Can the proxy serve two requests on one client connection?
+///
+/// The performance baseline is taken at `CONNECTIONS=25` because the harness concluded the proxy's
+/// responses carry `Connection: close`, which would prevent any client from reusing a connection and
+/// force a fresh ephemeral port per request. That conclusion is load-bearing: if it is wrong, the
+/// baseline is measured well below what the engine can do, and the workaround hides a real
+/// throughput ceiling rather than describing one.
+#[tokio::test]
+async fn wire_matrix_client_connection_is_reused_for_a_second_request() {
+    init_crypto();
+
+    let (upstream_addr, upstream_served) = spawn_keepalive_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // One client connection, two sequential requests.
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("proxy handshake");
+    let conn_task = tokio::spawn(conn);
+
+    let make_request = |target: SocketAddr| {
+        hyper::Request::builder()
+            .method("GET")
+            .uri(
+                format!("http://{target}/probe")
+                    .parse::<hyper::Uri>()
+                    .expect("uri"),
+            )
+            .header("host", target.to_string())
+            .body(String::new())
+            .expect("request")
+    };
+
+    let first = sender
+        .send_request(make_request(upstream_addr))
+        .await
+        .expect("first request on the connection");
+    let first_status = first.status();
+    let _ = first.into_body().collect().await.expect("first body");
+
+    // The decisive step: a second request on the same connection only works if the proxy kept it.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sender.send_request(make_request(upstream_addr)),
+    )
+    .await
+    .expect("the proxy closed the connection instead of reusing it")
+    .expect("second request on the same connection");
+
+    assert_eq!(first_status.as_u16(), 200);
+    assert_eq!(second.status().as_u16(), 200);
+    let _ = second.into_body().collect().await.expect("second body");
+
+    // The upstream must have been reached for both requests, or "reuse" would only describe the
+    // client half of the path.
+    assert_eq!(
+        upstream_served.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "both requests must reach the upstream"
+    );
+
+    conn_task.abort();
+}
