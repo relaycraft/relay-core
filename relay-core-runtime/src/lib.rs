@@ -765,6 +765,46 @@ impl CoreState {
         rules: Vec<Rule>,
     ) -> Result<(), String> {
         let rule_count = rules.len();
+
+        // Reject unusable rules before they are stored. Compilation degrades an invalid regex, glob
+        // or CIDR into a sentinel that never matches, so a rule with a typo used to be accepted,
+        // reported as enabled, and silently do nothing (roadmap §24.6). Validating here covers every
+        // path into the rule store, and reporting *all* problems at once avoids a fix-one-at-a-time
+        // loop for the caller.
+        let report = relay_core_lib::rule::engine::loader::validate_rules(rules.iter());
+
+        // Warnings do not block: a rule staged before its actions are configured is a normal
+        // workflow, but it is worth recording so "enabled but doing nothing" is diagnosable.
+        for warning in &report.warnings {
+            tracing::warn!("Rule validation warning: {}", warning);
+        }
+
+        if !report.is_ok() {
+            let summary = report
+                .errors
+                .iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            self.record_audit_event(AuditEvent::new(
+                actor,
+                AuditEventKind::RuleChanged,
+                target,
+                AuditOutcome::Failed,
+                json!({
+                    "operation": operation,
+                    "rule_count": rule_count,
+                    "details": details,
+                    "error": summary,
+                    "rejected": report.errors.len(),
+                    "warnings": report.warnings.len(),
+                }),
+            ));
+
+            return Err(format!("rule validation failed: {summary}"));
+        }
+
         if let Err(e) = self
             .rule_store
             .send(RuleStoreMessage::SetRules(rules))
@@ -2720,6 +2760,89 @@ mod tests {
             Some(0),
             "a disabled policy must not rewrite history"
         );
+    }
+
+    /// An unusable rule must be refused at the door, not stored and silently ignored.
+    #[tokio::test]
+    async fn storing_a_rule_with_an_invalid_regex_is_rejected() {
+        let state = CoreState::new(None).await;
+
+        let rule = Rule {
+            id: "bad-regex".to_string(),
+            name: "bad regex".to_string(),
+            active: true,
+            stage: relay_core_lib::rule::RuleStage::RequestHeaders,
+            priority: 0,
+            termination: relay_core_lib::rule::RuleTermination::Continue,
+            filter: relay_core_lib::rule::Filter::Url(relay_core_lib::rule::StringMatcher::Regex(
+                "([unclosed".to_string(),
+            )),
+            actions: vec![relay_core_lib::rule::Action::Tag {
+                key: "k".to_string(),
+                value: "v".to_string(),
+            }],
+            constraints: None,
+        };
+
+        let result = state
+            .upsert_rule_from(
+                AuditActor::Runtime,
+                "test",
+                "rule".to_string(),
+                serde_json::json!({}),
+                rule,
+            )
+            .await;
+
+        let err = result.expect_err("an invalid rule must not be accepted");
+        assert!(
+            err.contains("validation failed"),
+            "the error must say why, got: {err}"
+        );
+        assert!(
+            err.contains("url"),
+            "the error must locate the offending pattern, got: {err}"
+        );
+        assert!(
+            state.get_rules().await.is_empty(),
+            "a rejected rule must not be stored"
+        );
+    }
+
+    /// A usable rule must still be accepted, so validation does not become a blanket rejection.
+    #[tokio::test]
+    async fn storing_a_valid_rule_still_succeeds() {
+        let state = CoreState::new(None).await;
+
+        let rule = Rule {
+            id: "good".to_string(),
+            name: "good".to_string(),
+            active: true,
+            stage: relay_core_lib::rule::RuleStage::RequestHeaders,
+            priority: 0,
+            termination: relay_core_lib::rule::RuleTermination::Continue,
+            filter: relay_core_lib::rule::Filter::Host(relay_core_lib::rule::StringMatcher::Regex(
+                "^api\\.example\\.com$".to_string(),
+            )),
+            actions: vec![relay_core_lib::rule::Action::Tag {
+                key: "k".to_string(),
+                value: "v".to_string(),
+            }],
+            constraints: None,
+        };
+
+        state
+            .upsert_rule_from(
+                AuditActor::Runtime,
+                "test",
+                "rule".to_string(),
+                serde_json::json!({}),
+                rule,
+            )
+            .await
+            .expect("a valid rule must be accepted");
+
+        assert_eq!(state.get_rules().await.len(), 1);
     }
 
     /// Persisting flows with a bound set must actually evict old rows through the runtime, not just

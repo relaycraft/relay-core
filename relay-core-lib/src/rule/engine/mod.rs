@@ -13,6 +13,7 @@ pub mod actions;
 pub mod compiled;
 pub mod compiler;
 pub mod executor;
+pub mod loader;
 pub mod matcher;
 pub mod state;
 pub mod validator;

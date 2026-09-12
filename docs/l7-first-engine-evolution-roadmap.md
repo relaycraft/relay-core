@@ -982,8 +982,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.6 校验与结构化结果缺失
 
-- 非法 regex/glob/CIDR 降级为永不匹配的哨兵，无任何报错：`rule/engine/compiler.rs:52-57`、
-  `matcher.rs:110, 122`
+- ✅ **非法模式已改为加载期拒绝**：新增 `rule/engine/loader.rs`。此前非法 regex/glob/CIDR 被
+  编译成**永不匹配**的哨兵（`compiler.rs:52-57`），规则被接受、显示为启用、然后**静默不生效**——
+  这是最难从外部诊断的一类问题。现在 `validate_rule` 在**入库前**校验模式与阶段，
+  `set_rules_from` 拒绝并把**全部**问题一次性返回（避免改一个报一个的往返）。
+  校验区分**阻断性错误**（模式非法、阶段不匹配）与**警告**（规则无动作）：
+  后者不阻断（「先建规则再配动作」是正常流程），但会记 warning 并可审计，
+  使「已启用但什么都不做」可诊断。11 个单测 + 2 个验收测试，拒绝路径已双向验证。
 - `RuleOutcome::Skipped` 从未被构造；`RuleTrace`（`api/rule.rs:303-310`）全仓无构造点
 - `ctx.trace` 被所有生产调用方丢弃（`interceptors/rule.rs:34,52,75,97,124`）
 - `relay_core_rule_exec_errors_total` 的唯一来源无发送方 ⇒ 指标恒为 0
