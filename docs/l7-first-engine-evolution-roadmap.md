@@ -1013,8 +1013,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ **保留策略已建立**：`RetentionPolicy { max_flows, max_age_secs, max_audit_events }`
   + `Store::prune`（返回 `PrunedCounts`），默认 `unbounded()` 即保持既有行为不变。
   flows 与 summaries 按同一排序键裁剪以免两表漂移；audit 独立设界（合规记录不应被流量历史
-  挤掉）。若未接入调用方则不会自动生效——**接线到 runtime 仍待做**。
-  4 个测试覆盖：无界不删、按数量保留最新、按时间只删过期、audit 独立界不影响流量。
+  挤掉）。
+- ✅ **已接入 runtime**：`CoreState::set_retention_policy` 设定策略并启动后台裁剪任务
+  （30s 后首次、之后每 300s 一次，避免与启动竞争且不随流量波动）；
+  `prune_now()` 供测试与运维手动触发。**默认无界**，因此既有部署不会突然开始删除历史。
+  6 个测试覆盖：无界不删、按数量保留最新、按时间只删过期、audit 独立界、
+  经 runtime 落盘后被真实裁剪、未设策略时 `prune_now` 为空操作。
 - ✅ **落盘前脱敏已修复**：`FlowStoreActor` 持有与 `CoreState` **共享**的 `RedactionPolicy`
   （`update_policy_from` 同步更新），`persist_flow` 在序列化**之前**对 Flow 与 Summary 脱敏。
   此前脱敏只存在于输出路径，因此开启策略后**磁盘上仍是原始 headers/URL/body**——

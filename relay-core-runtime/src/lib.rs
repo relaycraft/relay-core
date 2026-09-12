@@ -322,6 +322,10 @@ pub struct CoreState {
     pub policy_tx: watch::Sender<ProxyPolicy>,
     /// Redaction view used when persisting, kept in step with `policy_tx`'s redaction section.
     pub(crate) redaction_handle: Arc<std::sync::RwLock<RedactionPolicy>>,
+    /// Connection string for the store, kept so retention can prune in the background.
+    db_url: Option<String>,
+    /// How much history to keep. `unbounded()` leaves the store untouched.
+    retention: Arc<std::sync::RwLock<relay_core_storage::RetentionPolicy>>,
     pub flows_dropped: Arc<AtomicUsize>,
     audit_events_total: Arc<AtomicUsize>,
     audit_events_failed: Arc<AtomicUsize>,
@@ -338,7 +342,7 @@ impl CoreState {
     pub async fn new(db_url: Option<String>) -> Self {
         const AUDIT_HISTORY_LIMIT: usize = 200;
 
-        let store = if let Some(url) = db_url {
+        let store = if let Some(url) = db_url.clone() {
             match Store::connect(&url).await {
                 Ok(s) => {
                     if let Err(e) = s.init().await {
@@ -387,6 +391,10 @@ impl CoreState {
             script_interceptor: Arc::new(script_interceptor),
             policy_tx,
             redaction_handle,
+            db_url,
+            retention: Arc::new(std::sync::RwLock::new(
+                relay_core_storage::RetentionPolicy::unbounded(),
+            )),
             flows_dropped: Arc::new(AtomicUsize::new(0)),
             audit_events_total: Arc::new(AtomicUsize::new(0)),
             audit_events_failed: Arc::new(AtomicUsize::new(0)),
@@ -816,6 +824,96 @@ impl CoreState {
                 e
             })
             .unwrap_or_else(|_| Arc::new(RuleEngine::new(Vec::new(), Vec::new(), None, None)))
+    }
+
+    /// Set how much history the store keeps, and start pruning in the background.
+    ///
+    /// The policy is opt-in: the default keeps everything, so an existing deployment is unaffected
+    /// until a bound is set. Pruning runs on an interval rather than per write, so a busy instance
+    /// does not pay for a delete pass on every flow.
+    pub fn set_retention_policy(&self, policy: relay_core_storage::RetentionPolicy) {
+        if let Ok(mut current) = self.retention.write() {
+            *current = policy;
+        }
+        self.spawn_retention_task();
+    }
+
+    /// The active retention policy.
+    pub fn retention_policy(&self) -> relay_core_storage::RetentionPolicy {
+        self.retention
+            .read()
+            .map(|p| *p)
+            .unwrap_or_else(|_| relay_core_storage::RetentionPolicy::unbounded())
+    }
+
+    /// Run one prune pass now, returning what was removed. Useful for tests and for an operator
+    /// triggered cleanup.
+    pub async fn prune_now(&self) -> Option<relay_core_storage::PrunedCounts> {
+        let url = self.db_url.clone()?;
+        let policy = self.retention_policy();
+        if policy.is_unbounded() {
+            return None;
+        }
+
+        let store = match Store::connect(&url).await {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::error!("Retention: could not open the store: {}", e);
+                return None;
+            }
+        };
+
+        match store.prune(policy).await {
+            Ok(counts) => {
+                if counts.total() > 0 {
+                    tracing::info!(
+                        "Retention pruned {} flows, {} summaries, {} audit events",
+                        counts.flows,
+                        counts.flow_summaries,
+                        counts.audit_events
+                    );
+                }
+                Some(counts)
+            }
+            Err(e) => {
+                tracing::error!("Retention prune failed: {}", e);
+                None
+            }
+        }
+    }
+
+    fn spawn_retention_task(&self) {
+        let Some(url) = self.db_url.clone() else {
+            return;
+        };
+        let retention = self.retention.clone();
+
+        tokio::spawn(async move {
+            // A short initial delay avoids competing with startup, and the interval keeps the work
+            // predictable rather than tied to traffic.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                ticker.tick().await;
+
+                let policy = retention
+                    .read()
+                    .map(|p| *p)
+                    .unwrap_or_else(|_| relay_core_storage::RetentionPolicy::unbounded());
+                if policy.is_unbounded() {
+                    continue;
+                }
+
+                match Store::connect(&url).await {
+                    Ok(store) => {
+                        if let Err(e) = store.prune(policy).await {
+                            tracing::error!("Retention prune failed: {}", e);
+                        }
+                    }
+                    Err(e) => tracing::error!("Retention: could not open the store: {}", e),
+                }
+            }
+        });
     }
 
     pub fn update_policy(&self, policy: ProxyPolicy) {
@@ -2490,6 +2588,58 @@ mod tests {
         assert!(text.contains("relay_core_audit_events_lagged_total 4"));
         assert!(text.contains("relay_core_oldest_intercept_age_ms 0"));
         assert!(text.contains("relay_core_oldest_ws_message_age_ms 0"));
+    }
+
+    /// Persisting flows with a bound set must actually evict old rows through the runtime, not just
+    /// through the storage API.
+    #[tokio::test]
+    async fn retention_evicts_persisted_flows_through_the_runtime() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+        state.set_retention_policy(relay_core_storage::RetentionPolicy {
+            max_flows: Some(2),
+            ..Default::default()
+        });
+
+        for (i, ts) in [1_700_000_001_000i64, 1_700_000_002_000, 1_700_000_003_000]
+            .into_iter()
+            .enumerate()
+        {
+            let flow = sample_http_flow("api.example.com", &format!("/f{i}"), "GET", 200, ts);
+            state.upsert_flow(Box::new(flow));
+            // Let the actor drain so the row is actually written before pruning.
+            sleep(Duration::from_millis(30)).await;
+        }
+        sleep(Duration::from_millis(80)).await;
+
+        let pruned = state.prune_now().await.expect("prune should report counts");
+        assert!(
+            pruned.total() > 0,
+            "a bounded policy must evict something once flows exceed the bound"
+        );
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        assert_eq!(
+            store.count_flows().await.expect("count"),
+            2,
+            "the store must retain exactly the configured number of flows"
+        );
+    }
+
+    /// The default is unbounded, so an existing deployment must not start deleting history.
+    #[tokio::test]
+    async fn pruning_is_a_no_op_until_a_policy_is_set() {
+        let state = CoreState::new(Some(sqlite_url())).await;
+        let flow = sample_http_flow("api.example.com", "/keep", "GET", 200, 1_700_000_020_000);
+        state.upsert_flow(Box::new(flow));
+        sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            state.prune_now().await.is_none(),
+            "an unbounded policy must not prune, so history is kept by default"
+        );
     }
 
     /// A configured redaction policy must apply **before** persistence, not only on output.
