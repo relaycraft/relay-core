@@ -221,14 +221,23 @@ where
             }
             if let Some(conn_override) = &ctx.connect_override {
                 match conn_override {
-                    ConnectOverride::ForwardPort { host: _, port } => {
-                        connect_target = Some(SocketAddr::new(
-                            target_addr
-                                .map(|a| a.ip())
-                                .unwrap_or(IpAddr::from([0, 0, 0, 0])),
-                            *port,
-                        ));
-                        tracing::debug!("Connect stage ForwardPort -> port {}", port);
+                    ConnectOverride::ForwardPort { host, port } => {
+                        // The rule may name a host, not just a port. Previously the host was
+                        // discarded and only the port was honoured, which sent traffic to the
+                        // original destination's IP on a new port instead of to the named host.
+                        match resolve_forward_port_target(host, *port, target_addr.map(|a| a.ip()))
+                        {
+                            Some(addr) => {
+                                connect_target = Some(addr);
+                                tracing::debug!("Connect stage ForwardPort -> {}", addr);
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "Connect stage ForwardPort has no resolvable target; leaving the \
+                                     connection target unchanged"
+                                );
+                            }
+                        }
                     }
                     ConnectOverride::RedirectIp { ip } => {
                         let port = connect_target.map(|a| a.port()).unwrap_or(0);
@@ -308,4 +317,80 @@ where
     }
 
     Ok(())
+}
+
+/// Resolve a `ForwardPort` connect override to a concrete address.
+///
+/// `host` may be empty (keep the original IP, change only the port), an IP literal, or a hostname.
+/// Returns `None` when nothing can be resolved, so the caller leaves the target unchanged rather
+/// than dialling `0.0.0.0`.
+pub(crate) fn resolve_forward_port_target(
+    host: &str,
+    port: u16,
+    original_ip: Option<IpAddr>,
+) -> Option<SocketAddr> {
+    let ip = match host {
+        "" => original_ip,
+        host => match host.parse::<IpAddr>() {
+            Ok(ip) => Some(ip),
+            Err(_) => match std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) {
+                Ok(mut addrs) => addrs.next().map(|a| a.ip()),
+                Err(e) => {
+                    tracing::warn!("ForwardPort could not resolve {}: {}", host, e);
+                    None
+                }
+            },
+        },
+    };
+
+    ip.or(original_ip).map(|ip| SocketAddr::new(ip, port))
+}
+
+#[cfg(test)]
+mod forward_port_tests {
+    use super::resolve_forward_port_target;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn empty_host_keeps_the_original_ip_and_changes_only_the_port() {
+        let original = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(
+            resolve_forward_port_target("", 8443, Some(original)),
+            Some(SocketAddr::new(original, 8443))
+        );
+    }
+
+    #[test]
+    fn ip_literal_is_used_directly() {
+        assert_eq!(
+            resolve_forward_port_target("127.0.0.1", 9443, None),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9443))
+        );
+    }
+
+    #[test]
+    fn hostname_is_resolved_rather_than_ignored() {
+        // "localhost" must resolve to a loopback address; before the fix the host was discarded
+        // entirely and the original IP was reused.
+        let resolved =
+            resolve_forward_port_target("localhost", 8081, None).expect("localhost should resolve");
+        assert!(resolved.ip().is_loopback(), "got {}", resolved.ip());
+        assert_eq!(resolved.port(), 8081);
+    }
+
+    #[test]
+    fn unresolvable_host_falls_back_to_the_original_ip() {
+        let original = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let resolved =
+            resolve_forward_port_target("this-host-does-not-exist.invalid", 8080, Some(original));
+        assert_eq!(resolved, Some(SocketAddr::new(original, 8080)));
+    }
+
+    #[test]
+    fn nothing_to_resolve_yields_none_instead_of_a_wildcard_address() {
+        assert_eq!(
+            resolve_forward_port_target("this-host-does-not-exist.invalid", 8080, None),
+            None
+        );
+    }
 }
