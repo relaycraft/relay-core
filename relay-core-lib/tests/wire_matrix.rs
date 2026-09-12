@@ -85,6 +85,7 @@ enum Phase {
     RequestHeaders,
     RequestBody,
     ResponseHeaders,
+    ResponseStatus,
     ResponseBody,
 }
 
@@ -132,6 +133,15 @@ impl Interceptor for MutateInterceptor {
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> InterceptionResult {
+        if self.phase == Phase::ResponseStatus {
+            // Mirror `Action::SetResponseStatus`.
+            if let Layer::Http(http) = &mut flow.layer
+                && let Some(res) = &mut http.response
+            {
+                res.status = 418;
+            }
+            return InterceptionResult::Continue;
+        }
         if self.phase != Phase::ResponseHeaders {
             return InterceptionResult::Continue;
         }
@@ -399,12 +409,11 @@ async fn wire_matrix_request_header_mutation_reaches_upstream() {
 
 // ── Response-direction mutations ────────────────────────────────────────────────────
 //
-// Known gap (roadmap §24.1): the client-facing response is built from the upstream `res_parts`
-// captured in `handle_http_request`, so response header/status mutations only change the Flow.
-// Un-ignore when the data plane is fixed (A5: single source of truth).
+// Fixed in A5: the client response head is rebuilt from the Flow by
+// `build_client_response_head`, so status/header mutations reach the client while the body
+// still streams from the upstream.
 
 #[tokio::test]
-#[ignore = "roadmap §24.1: response header mutation does not reach the wire (res_parts wins)"]
 async fn wire_matrix_response_header_mutation_reaches_client() {
     const CASE: Case = Case {
         id: "response_headers",
@@ -497,4 +506,126 @@ async fn wire_matrix_mutation_is_applied_once_per_chain() {
         CASE.id, occurrences, upstream.head
     );
     assert!(client.contains("STATUS 200"), "[{}] expected 200", CASE.id);
+}
+
+// ── Response status mutation ────────────────────────────────────────────────────────
+//
+// Asserted on the status line rather than a header, so a regression in status handling is
+// distinguishable from one in header handling.
+
+#[tokio::test]
+async fn wire_matrix_response_status_mutation_reaches_client() {
+    const CASE: Case = Case {
+        id: "response_status",
+        phase: Phase::ResponseStatus,
+        request: "POST /probe HTTP/1.1",
+        body: "payload",
+    };
+
+    let (client, _upstream) = run_case(&CASE).await;
+
+    assert!(
+        client.contains("STATUS 418"),
+        "[{}] a response-status mutation must reach the client, got:\n{client}",
+        CASE.id
+    );
+}
+
+// ── WebSocket handshake ─────────────────────────────────────────────────────────────
+//
+// Known gap: the WebSocket path builds the client's `101 Switching Protocols` response straight
+// from the upstream `Parts` (`proxy/websocket.rs:293-299`) and never calls
+// `Interceptor::on_response_headers` — it is the only hook the WS path skips. So handshake
+// response-header mutations cannot reach the client, and `flow.handshake_response` is never
+// updated (see the comment at `proxy/websocket.rs:314-318`).
+//
+// Un-ignore together with the WebSocket response-head convergence work.
+
+/// Upstream that accepts a WebSocket upgrade so RelayCore has a real 101 to relay.
+async fn spawn_ws_upstream() -> SocketAddr {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind ws upstream");
+    let addr = listener.local_addr().expect("ws upstream addr");
+
+    tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let _ = tokio_tungstenite::accept_async(stream).await;
+        // Hold the socket open briefly so the handshake relay completes.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    });
+
+    addr
+}
+
+#[tokio::test]
+#[ignore = "roadmap §24.1: WS handshake response headers are never interceptable"]
+async fn wire_matrix_ws_handshake_response_header_reaches_client() {
+    init_crypto();
+
+    let upstream_addr = spawn_ws_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor {
+        phase: Phase::ResponseHeaders,
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // Raw handshake so we can read the 101 headers the client actually receives.
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let request = format!(
+        "GET http://{upstream_addr}/ws HTTP/1.1\r\n\
+         Host: {upstream_addr}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write handshake");
+
+    let mut buf = vec![0u8; 8192];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("handshake timed out")
+        .expect("read handshake response");
+    let head = String::from_utf8_lossy(&buf[..read]).to_string();
+
+    assert!(
+        head.starts_with("HTTP/1.1 101"),
+        "expected a 101 upgrade, got:\n{head}"
+    );
+    assert!(
+        head.to_lowercase()
+            .contains("x-wire-probe: from-interceptor"),
+        "a WS handshake response-header mutation must reach the client, got:\n{head}"
+    );
 }

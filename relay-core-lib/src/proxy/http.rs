@@ -9,8 +9,8 @@ use crate::interceptor::{
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
-    build_forward_request, create_error_response, create_initial_flow, mock_to_response,
-    parse_request_meta, update_flow_with_response_headers,
+    build_client_response_head, build_forward_request, create_error_response, create_initial_flow,
+    mock_to_response, parse_request_meta, update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use crate::proxy::tap::TapBody;
@@ -481,6 +481,10 @@ where
     {
         current_res_body = crate::proxy::throttle::ThrottleBody::new(current_res_body, bps).boxed();
     }
+
+    // Convergence: the Flow is the single source of truth for the response head, so mutations made
+    // by any interceptor reach the client. Only the body still streams from the upstream.
+    let res_parts = build_client_response_head(&flow, &res_parts);
 
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
         tracing::error!("Failed to send final flow update: {}", e);

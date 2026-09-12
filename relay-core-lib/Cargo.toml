@@ -59,6 +59,8 @@ etherparse = "0.13"
 [dev-dependencies]
 tempfile = "3.10"
 criterion = { package = "codspeed-criterion-compat", version = "2", features = ["html_reports"] }
+# Drives real WebSocket handshakes/upgrades in the wire-level matrix (tests/wire_matrix.rs).
+tokio-tungstenite = { version = "0.28.0" }
 
 [[bench]]
 name = "rule_engine"

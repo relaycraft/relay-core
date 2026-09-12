@@ -905,23 +905,27 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 
 ### 24.1 规则动作已接受但未作用于线路（非 Tauri 宿主）
 
-`handle_http_request` 在 `relay-core-lib/src/proxy/http.rs:374` 取得上游 `res_parts` 后，
-仅由 `:377` 的 `apply_quic_downgrade` 修改，最终于 `:496` 原样发回客户端；
-`on_response_headers`（`:393`）只修改 Flow 副本。因此以下 Action 只改 Flow、不改线路：
+> **部分修复（A5a，2026-09-12）**：HTTP 响应方向已收敛到「Flow 为单一事实来源」——
+> `handle_http_request` 现通过 `build_client_response_head` 从 Flow 重建客户端响应头与状态码
+> （`proxy/http_utils.rs`），同时 body 仍保持上游流式传输。以下动作因此恢复生效并有
+> wire-level 断言：`Add/Update/DeleteResponseHeader`、`SetResponseStatus`。
+>
+> 仍开放的项见下方表格。
 
-| Action | 说明 | 位置 |
-|---|---|---|
-| `Add/Update/DeleteResponseHeader` | 客户端收到原响应头 | `rule/engine/actions/http.rs:197-251` vs `http.rs:496` |
-| `SetResponseStatus` | 同上 | `actions/http.rs:101-108` |
-| `SetResponseBody` / `TransformResponseBody` | 同上 | `actions/http.rs:109-117, 351-359` |
-| `SetRequestBody` / `TransformRequestBody` | 转发使用 `current_body`，非 `flow.request.body` | `actions/http.rs:91-98, 343-350`；`http.rs:268` |
-| `SetTtl` | 明确未实现（自带告警日志） | `proxy/server.rs:238-247` |
-| `MockWebSocketMessage` | 帧被 Drop 而非替换 | `interceptors/rule.rs:134`；`inspect.rs:37-43` |
-| `MapRemote`（WebSocket 握手） | 目标取自 `meta.url_str` 原值 | `proxy/websocket.rs:213` |
-| `ForwardPort` 的 `target_host` | 仅 `port` 生效 | `proxy/server.rs:224-231` |
+| Action | 状态 | 说明 | 位置 |
+|---|---|---|---|
+| `Add/Update/DeleteResponseHeader` | ✅ 已修复 | 由 Flow 重建响应头 | `proxy/http_utils.rs` `build_client_response_head` |
+| `SetResponseStatus` | ✅ 已修复 | 由 Flow 重建状态码 | 同上 |
+| `SetResponseBody` / `TransformResponseBody` | ⬜ 未修复 | 需先定义 body 替换后的 framing 语义（原定 A6/D） | `actions/http.rs:109-117, 351-359` |
+| `SetRequestBody` / `TransformRequestBody` | ⬜ 未修复 | 转发使用 `current_body`，非 `flow.request.body` | `actions/http.rs:91-98, 343-350`；`http.rs:268` |
+| `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
+| `MockWebSocketMessage` | ⬜ 未修复 | 帧被 Drop 而非替换 | `interceptors/rule.rs:134`；`inspect.rs:37-43` |
+| WebSocket 握手响应头 | ⬜ 未修复 | WS 路径**从不调用** `on_response_headers`，101 直接由上游 `Parts` 构造 | `proxy/websocket.rs:293-299`；对照 `http.rs:96` |
+| `MapRemote`（WebSocket 握手） | ⬜ 未修复 | 目标取自 `meta.url_str` 原值 | `proxy/websocket.rs:213` |
+| `ForwardPort` 的 `target_host` | ⬜ 未修复 | 仅 `port` 生效 | `proxy/server.rs:224-231` |
 
 Tauri 宿主经 `TauriInterceptor` → `ModifiedResponse` 使多数项生效（`tauri/src/interceptor.rs:123-128`），
-但其代价见 24.3。
+但其代价见 24.4。
 
 ### 24.2 Body-stage 规则在非 Tauri 宿主无法匹配
 
@@ -1008,7 +1012,9 @@ release 下产生错帧，debug 下触发 `debug_assert!`。
   RSS 不可测即失败、报告闸门、`CARGO_TARGET_DIR` 支持、`commit-baseline.sh` 拒绝非 PASS 报告
 - ✅ 上游性能上限解除：`benchmarks/rust_echo_server.rs` 取代饱和于 ~2.7k req/s 的 Python
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
-- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：基线通过，
-  3 个 §24.1/§24.4 缺陷已用 `#[ignore]` 钉住并各自验证确实失败
+- ✅ wire-level 矩阵已建立（`relay-core-lib/tests/wire_matrix.rs`）：4 个用例通过
+  （基线往返、请求头、响应头、响应状态），3 个缺陷用 `#[ignore]` 钉住并各自验证确实失败
+  （请求 body、链式重复应用、WS 握手响应头）
 - ⬜ **0.10.0 baseline 待产出**（harness 已就绪）
-- ⬜ §24.1–§24.9 的线路缺陷仍全部未修复，按 Phase A 的 A4/A5 推进
+- ⬜ §24.2–§24.9 的其余线路缺陷仍开放；§24.1 的 HTTP 响应方向已修复（A5a）
+- ⬜ A1（Tauri 双执行）仍阻塞于 24.4 的设计收敛

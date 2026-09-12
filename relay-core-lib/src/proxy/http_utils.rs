@@ -205,6 +205,62 @@ pub fn create_error_response(status: StatusCode, message: impl Into<Bytes>) -> R
         })
 }
 
+/// Rebuild the client-facing response head from the Flow.
+///
+/// This is the response-direction counterpart of [`build_forward_request`]: it makes the Flow the
+/// single source of truth for status and headers. Before this existed, the client received the
+/// `res_parts` captured straight from the upstream, so any response-header or status mutation
+/// (rules, scripts, manual intercept) changed the Flow and the UI but never the wire.
+///
+/// Framing caveat: `content-length` / `transfer-encoding` are carried over from `upstream_parts`
+/// because the body returned here is still the upstream body. When a caller replaces the body it
+/// must supply corrected framing itself (see [`crate::proxy::http_utils::build_response_from_flow_response`]).
+pub fn build_client_response_head(
+    flow: &Flow,
+    upstream_parts: &hyper::http::response::Parts,
+) -> hyper::http::response::Parts {
+    // Start from the upstream parts so extensions and framings the body still depends on
+    // (content-length, transfer-encoding, and any extension state) survive untouched.
+    let mut parts = upstream_parts.clone();
+
+    if let Some(response) = flow_response(flow) {
+        parts.status = StatusCode::from_u16(response.status).unwrap_or(upstream_parts.status);
+
+        // Drop the upstream's non-framing headers, then lay down the Flow's set. `insert`
+        // semantics mean a mutation replaces rather than duplicates.
+        let mut headers = hyper::HeaderMap::new();
+        for (name, value) in upstream_parts.headers.iter() {
+            if name == hyper::header::CONTENT_LENGTH || name == hyper::header::TRANSFER_ENCODING {
+                headers.insert(name, value.clone());
+            }
+        }
+        for (k, v) in &response.headers {
+            // Framing belongs to the body, which is still the upstream stream in this path.
+            if k.eq_ignore_ascii_case("content-length")
+                || k.eq_ignore_ascii_case("transfer-encoding")
+            {
+                continue;
+            }
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, value);
+            }
+        }
+        parts.headers = headers;
+    }
+
+    parts
+}
+
+fn flow_response(flow: &Flow) -> Option<&HttpResponse> {
+    match &flow.layer {
+        Layer::Http(http) => http.response.as_ref(),
+        _ => None,
+    }
+}
+
 /// Build the client-facing response directly from a `relay-core-api` `HttpResponse`.
 ///
 /// Used by the proxy wiring for terminal/mock/modified results, so it must produce the SAME
