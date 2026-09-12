@@ -306,8 +306,17 @@ start_proxy() {
     sleep 0.1
     waited=$((waited + 1))
   done
-  fail "Proxy did not start listening on $PROXY_PORT"
-  [[ -f /tmp/relay_bench_proxy.log ]] && tail -n 5 /tmp/relay_bench_proxy.log >&2
+  # Report what actually happened rather than only that startup timed out: an empty log usually
+  # means the binary never ran (wrong path, not executable), while output means it failed on its way
+  # up. A flush delay avoids racing the child's first write.
+  sleep 0.3
+  if [[ -s /tmp/relay_bench_proxy.log ]]; then
+    fail "Proxy did not start listening on $PROXY_PORT; last output:"
+    tail -n 10 /tmp/relay_bench_proxy.log >&2
+  else
+    fail "Proxy did not start listening on $PROXY_PORT and produced no output — binary did not run?"
+    info "Binary: $PROXY_BIN (exists=$([[ -x "$PROXY_BIN" ]] && echo yes || echo no))"
+  fi
   return 1
 }
 
