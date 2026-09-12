@@ -2529,6 +2529,14 @@ async fn wire_matrix_ws_session_end_reaches_consumers() {
         closing.end_time >= Some(closing.start_time),
         "end_time must not precede start_time"
     );
+
+    // Which side closed first is known at the point the stream ends, so it is recorded rather than
+    // collapsed into a generic "it finished". This client sent the close frame.
+    assert_eq!(
+        closing.close_reason,
+        Some(CloseReason::ClientClosed),
+        "the side that ended the session must be recorded"
+    );
 }
 
 /// A WebSocket handshake that never reaches upstream must still be visible.

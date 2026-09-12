@@ -1051,13 +1051,15 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   | 上游超时 / WS 空闲超时 / WS 握手超时 | `Timeout { kind: "total" \| "websocket_idle" \| "handshake" }` |
   | WS 帧发送失败或被重置 | `Reset` |
   | WS 帧解析错误 | `ParserError { detail }` |
+  | WS 中**客户端先关闭** / **上游先关闭** | `ClientClosed` / `UpstreamClosed` |
   | UDP 空闲关闭 | `Completed` |
   契约由 `wire_matrix_a_finished_exchange_reports_its_close_reason_once`（**恰好一次**）、
   `wire_matrix_dropped_exchange_is_not_reported_as_completed`、
   `wire_matrix_failed_flow_records_its_end_time` 与 3 个 serde 兼容测试锁定，均已双向验证。
 - ⬜ `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
 - ⬜ `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
-- ⬜ `CloseReason::ClientClosed` / `TlsError` 目前**没有生产者**（语义已在枚举里，尚无终局映射到它）
+- ⬜ `CloseReason::TlsError` 目前**没有生产者**：MITM 握手失败发生在 Flow 建立之前，
+  没有可承载原因的 Flow（语义已在枚举里，尚无终局映射到它）
 
 ### 24.8 事件与存储
 

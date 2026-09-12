@@ -531,6 +531,11 @@ async fn handle_websocket_tunnel(
 
     interceptor.on_websocket_start(&mut flow).await;
 
+    // Which side ended the stream, when it ended cleanly. Every other exit (an error or the idle
+    // timeout) reports its own reason before returning, so this is only assigned on the clean path.
+    #[allow(unused_assignments)]
+    let mut ended_by: Option<CloseReason> = None;
+
     loop {
         let event = tokio::time::timeout(idle_timeout_duration, async {
             tokio::select! {
@@ -625,6 +630,14 @@ async fn handle_websocket_tunnel(
                         interceptor
                             .on_websocket_end(&mut flow, 1000, "normal")
                             .await;
+                        // `dir` says which side ended the stream, so "who closed first" is known
+                        // here rather than guessed. Both are normal endings, and 1000/"normal" is
+                        // what the interceptor hook is told either way.
+                        ended_by = Some(if dir == Direction::ClientToServer {
+                            CloseReason::ClientClosed
+                        } else {
+                            CloseReason::UpstreamClosed
+                        });
                         break;
                     }
                 }
@@ -647,8 +660,8 @@ async fn handle_websocket_tunnel(
     }
 
     // A clean close breaks out of the loop rather than returning, so the end is reported here too.
-    // `on_websocket_end` is told 1000/"normal" for the same reason.
-    report_websocket_end(&mut flow, &on_flow, CloseReason::Completed);
+    let reason = ended_by.unwrap_or(CloseReason::Completed);
+    report_websocket_end(&mut flow, &on_flow, reason);
     Ok(())
 }
 
