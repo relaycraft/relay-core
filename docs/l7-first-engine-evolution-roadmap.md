@@ -645,7 +645,13 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 5. backpressure、channel full、subscriber lagged 可观测
 6. 取消、超时、shutdown 不泄漏 task/connection
 7. 2h soak，核心场景定期运行
-8. parser/codec/rule fuzz targets
+8. 🟡 **parser/codec/rule 模糊与对抗测试已建立**（确定性、随常规测试运行，无需 nightly）：
+   - `content_encoding::adversarial_tests`（6 项）：在每个长度截断合法帧、伪造魔数、
+     堆叠编码（`gzip, br`）、畸形编码名（含空/逗号/unicode）、**解压炸弹**（64 MiB 展开必须被拒
+     且原样透传，已双向验证）、任意字节重编码必须不 panic 且**只在真正应用编码时才声明**。
+   - `loader::adversarial_tests`（5 项）：灾难性回溯正则、深度嵌套 `Not`/组合过滤器、
+     全阶段 × 全过滤器形状、畸形 CIDR、畸形 transform 模式——不变量是**永远返回判定且不 panic**。
+   - ⬜ 仍缺：`cargo-fuzz` 长期模糊（需 nightly 与独立目标）、soak 长稳测试。
 9. metrics 区分：
    - connections
    - HTTP flows

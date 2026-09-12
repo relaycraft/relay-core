@@ -365,3 +365,159 @@ mod tests {
         assert_eq!(content_encoding_of(&[]), None);
     }
 }
+
+/// Adversarial and malformed inputs (roadmap §24.10 "parser/codec fuzz targets").
+///
+/// A general-purpose fuzzer needs a nightly toolchain and a separate build; these cases are
+/// deterministic, run in the normal suite, and target the failures that actually matter for a
+/// decoder sitting in the traffic path: truncated frames, wrong magic bytes, stacked encodings,
+/// expansion bombs, and inputs that must never panic.
+#[cfg(test)]
+mod adversarial_tests {
+    use super::{DecodedBody, decode_for_inspection, encode_after_rewrite};
+
+    /// Truncating a valid frame at every length must never panic and must never yield a bogus
+    /// decode: either it decodes or the caller gets the bytes back untouched.
+    #[test]
+    fn truncated_frames_are_handled_at_every_length() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, b"payload-that-compresses").expect("write");
+        let full = encoder.finish().expect("finish");
+
+        for cut in 0..full.len() {
+            let (decoded, state) = decode_for_inspection(&full[..cut], Some("gzip"));
+            match state {
+                // A complete-but-smaller decode is impossible here, so decoding must not claim success
+                // unless it really produced the payload.
+                DecodedBody::Decoded => assert_eq!(
+                    decoded, b"payload-that-compresses",
+                    "a truncated frame must not decode to something else"
+                ),
+                DecodedBody::AsReceived => assert_eq!(
+                    decoded,
+                    &full[..cut],
+                    "an undecodable prefix must be returned unchanged"
+                ),
+            }
+        }
+    }
+
+    /// A body that claims an encoding it does not have must be passed through, never guessed at.
+    #[test]
+    fn wrong_magic_bytes_are_not_guessed_at() {
+        let impostors: [&[u8]; 5] = [
+            b"\x1f\x8b\x08\x00",     // gzip magic, but truncated garbage
+            b"\x28\xb5\x2f\xfd\x00", // zstd magic, but not a frame
+            b"not compressed at all",
+            b"\x00\x01\x02\x03\x04\x05",
+            b"",
+        ];
+
+        for encoding in ["gzip", "deflate", "br", "zstd"] {
+            for body in impostors {
+                let (decoded, state) = decode_for_inspection(body, Some(encoding));
+                assert_eq!(
+                    decoded, body,
+                    "{encoding} must return undecodable bytes unchanged"
+                );
+                if body.is_empty() {
+                    continue;
+                }
+                assert_eq!(
+                    state,
+                    DecodedBody::AsReceived,
+                    "{encoding} must not claim to have decoded {body:?}"
+                );
+            }
+        }
+    }
+
+    /// Stacked encodings are not decoded: applying one decoder to a two-layer body would produce
+    /// garbage, so the input must survive untouched.
+    #[test]
+    fn stacked_encodings_are_left_alone() {
+        let body = b"anything";
+        let (decoded, state) = decode_for_inspection(body, Some("gzip, br"));
+        assert_eq!(state, DecodedBody::AsReceived);
+        assert_eq!(decoded, body);
+    }
+
+    /// Encoding names arrive from the wire, so they may be arbitrarily malformed.
+    #[test]
+    fn malformed_encoding_names_do_not_panic() {
+        for encoding in [
+            "",
+            " ",
+            ",",
+            "gzip,",
+            ",gzip",
+            "GZIP",
+            "gzip;q=1",
+            "unknown-encoding-with-unicode-编码",
+            "\u{0}",
+        ] {
+            let (decoded, _) = decode_for_inspection(b"body", Some(encoding));
+            assert_eq!(
+                decoded, b"body",
+                "encoding {encoding:?} must not corrupt the body"
+            );
+        }
+    }
+
+    /// A tiny compressed body can expand enormously. The decoder must refuse rather than allocate
+    /// without bound, and must not panic.
+    #[test]
+    fn an_expansion_bomb_is_refused_rather_than_materialized() {
+        // ~64 MiB of zeros compresses to a few KiB under gzip.
+        let bomb_plain = vec![0u8; 64 * 1024 * 1024];
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        std::io::Write::write_all(&mut encoder, &bomb_plain).expect("write");
+        let bomb = encoder.finish().expect("finish");
+
+        assert!(
+            bomb.len() < 1024 * 1024,
+            "precondition: the bomb must be small relative to what it expands to"
+        );
+
+        let (decoded, state) = decode_for_inspection(&bomb, Some("gzip"));
+        assert_eq!(
+            state,
+            DecodedBody::AsReceived,
+            "an expansion past the cap must be refused, not decoded"
+        );
+        assert_eq!(
+            decoded, bomb,
+            "a refused bomb must be passed through unchanged"
+        );
+    }
+
+    /// Re-encoding must never panic on arbitrary input, and must only claim an encoding it applied.
+    #[test]
+    fn re_encoding_arbitrary_bytes_never_panics() {
+        let inputs: [&[u8]; 4] = [b"", b"x", &[0u8; 1024], &[0xffu8; 300]];
+
+        for encoding in ["gzip", "deflate", "br", "zstd", "x-unknown"] {
+            for input in inputs {
+                let (encoded, claimed) = encode_after_rewrite(input, Some(encoding));
+                if let Some(claimed) = claimed {
+                    // If an encoding is claimed, the bytes must genuinely be in that encoding.
+                    let (round_tripped, state) = decode_for_inspection(&encoded, Some(&claimed));
+                    assert_eq!(
+                        state,
+                        DecodedBody::Decoded,
+                        "claimed {claimed} but produced undecodable bytes"
+                    );
+                    assert_eq!(
+                        round_tripped, input,
+                        "a claimed encoding must round-trip the input"
+                    );
+                } else {
+                    assert_eq!(
+                        encoded, input,
+                        "unclaimed output must be the input verbatim"
+                    );
+                }
+            }
+        }
+    }
+}

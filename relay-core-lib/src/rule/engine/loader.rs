@@ -553,3 +553,146 @@ mod tests {
         assert_eq!(errors[0].0, "r");
     }
 }
+
+/// Adversarial rule inputs (roadmap §24.10).
+///
+/// Rules arrive from users, APIs and MCP tools, so validation is fed hostile and degenerate input.
+/// The contract is that validation always returns a verdict and never panics — a validator that
+/// panics on a crafted rule crashes the engine that is supposed to be protecting traffic.
+#[cfg(test)]
+mod adversarial_tests {
+    use super::validate_rule;
+    use crate::rule::model::{
+        Action, BodyTransform, Filter, Rule, RuleStage, RuleTermination, StringMatcher,
+    };
+
+    fn rule(stage: RuleStage, filter: Filter, actions: Vec<Action>) -> Rule {
+        Rule {
+            id: "r".to_string(),
+            name: "r".to_string(),
+            active: true,
+            stage,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter,
+            actions,
+            constraints: None,
+        }
+    }
+
+    fn tag() -> Action {
+        Action::Tag {
+            key: "k".to_string(),
+            value: "v".to_string(),
+        }
+    }
+
+    /// Patterns that are pathological for a regex engine must be rejected or accepted, never crash.
+    #[test]
+    fn regex_catastrophic_patterns_do_not_panic() {
+        let patterns = [
+            "(a+)+$",            // classic catastrophic backtracking
+            "((((((((a))))))))", // deep nesting
+            "[",                 // unclosed class
+            "(?P<",              // broken group
+            "\\",                // dangling escape
+            "a{999999999999}",   // absurd quantifier
+            &"(".repeat(200),    // pathological nesting
+            "\u{1F600}+",        // non-ASCII
+            "",                  // empty pattern
+        ];
+
+        for pattern in patterns {
+            let r = rule(
+                RuleStage::RequestHeaders,
+                Filter::Url(StringMatcher::Regex(pattern.to_string())),
+                vec![tag()],
+            );
+            // The contract is a verdict; which verdict is the engine's business.
+            let _ = validate_rule(&r);
+        }
+    }
+
+    /// Deeply nested logical filters must not blow the stack.
+    #[test]
+    fn deeply_nested_filters_are_handled() {
+        let mut filter = Filter::All;
+        for _ in 0..500 {
+            filter = Filter::Not(Box::new(filter));
+        }
+
+        let r = rule(RuleStage::RequestHeaders, filter, vec![tag()]);
+        let _ = validate_rule(&r);
+    }
+
+    /// Every stage must produce a verdict for every filter shape.
+    #[test]
+    fn every_stage_is_checked_against_every_filter_shape() {
+        let stages = [
+            RuleStage::Connect,
+            RuleStage::RequestHeaders,
+            RuleStage::RequestBody,
+            RuleStage::ResponseHeaders,
+            RuleStage::ResponseBody,
+            RuleStage::WebSocketMessage,
+        ];
+        let filters = [
+            Filter::All,
+            Filter::SrcIp("10.0.0.0/8".to_string()),
+            Filter::DstPort(443),
+            Filter::Url(StringMatcher::Contains("x".to_string())),
+            Filter::ResponseBody(StringMatcher::Contains("x".to_string())),
+            Filter::WebSocketMessage(StringMatcher::Contains("x".to_string())),
+        ];
+
+        for stage in stages {
+            for filter in filters.clone() {
+                let r = rule(stage.clone(), filter, vec![tag()]);
+                let _ = validate_rule(&r);
+            }
+        }
+    }
+
+    /// A malformed CIDR must be reported rather than silently never matching.
+    #[test]
+    fn malformed_cidrs_are_reported() {
+        for cidr in [
+            "",
+            "not-an-ip",
+            "10.0.0.0/33",
+            "::/129",
+            "10.0.0.0/-1",
+            "1.2.3",
+        ] {
+            let r = rule(
+                RuleStage::Connect,
+                Filter::SrcIp(cidr.to_string()),
+                vec![tag()],
+            );
+            let report = validate_rule(&r);
+            assert!(
+                !report.errors.is_empty(),
+                "CIDR {cidr:?} must be reported as invalid rather than silently never matching"
+            );
+        }
+    }
+
+    /// A rule whose transform action carries a malformed pattern must still validate without panic:
+    /// the action's own pattern is the engine's concern, but validation must survive it.
+    #[test]
+    fn malformed_transform_patterns_do_not_panic() {
+        for pattern in ["(", "[", "\\", ""] {
+            let r = rule(
+                RuleStage::ResponseBody,
+                Filter::All,
+                vec![Action::TransformResponseBody {
+                    transform: BodyTransform::RegexReplace {
+                        pattern: pattern.to_string(),
+                        replacement: "x".to_string(),
+                    },
+                }],
+            );
+            let _ = validate_rule(&r);
+        }
+    }
+}
