@@ -16,7 +16,8 @@ use rmcp::{
         CallToolRequestParams, CallToolResult, ErrorCode, Implementation,
         ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
         RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult,
-        ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo,
+        ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo, SubscribeRequestParams,
+        UnsubscribeRequestParams,
     },
     service::{NotificationContext, RequestContext, RoleServer},
 };
@@ -232,11 +233,29 @@ impl ProbeServer {
     }
 }
 
+/// Can a client subscribe to this URI?
+///
+/// Kept as a free function so the rule is testable without standing up a server, and so the
+/// subscription surface is stated in one place instead of being implied by the push loop.
+fn subscribable_uri(uri: &str) -> bool {
+    uri == "flows://"
+        || uri == "rules://"
+        || uri == "proxy://status"
+        || uri == "audit://recent"
+        || uri.starts_with("flows://")
+}
+
 impl ServerHandler for ProbeServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_resources()
+                // The subscription loop below pushes `notify_resource_updated` and
+                // `notify_resource_list_changed`, and a client is only entitled to receive those if
+                // it could subscribe. Declaring the capability is what makes the notifications
+                // legitimate rather than unsolicited.
+                .enable_resources_subscribe()
+                .enable_resources_list_changed()
                 .enable_tools()
                 .build(),
         )
@@ -294,6 +313,43 @@ impl ServerHandler for ProbeServer {
         Ok(ReadResourceResult::new(contents))
     }
 
+    /// Accept a subscription for the URIs this server pushes updates for.
+    ///
+    /// The push loop notifies `flows://…`, `rules://`, `proxy://status` and `audit://recent`, so
+    /// those are what a client may subscribe to. Anything else is refused rather than silently
+    /// accepted: a subscription that can never produce an update tells a client to wait forever.
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        if subscribable_uri(&request.uri) {
+            Ok(())
+        } else {
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!(
+                    "{} is not subscribable; this server pushes updates for                      flows://, flows://{{id}}, rules://, proxy://status and audit://recent",
+                    request.uri
+                ),
+                None,
+            ))
+        }
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        // Subscriptions are not tracked: the push loop broadcasts to whoever is connected, and this
+        // server has no per-subscriber routing to switch off. Accepting the call keeps a well-behaved
+        // client from failing when it is done, which is what the protocol expects. Tracking them
+        // would mean buffering per subscriber, which this server deliberately does not do.
+        let _ = request.uri;
+        Ok(())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -331,5 +387,41 @@ impl ServerHandler for ProbeServer {
 
     async fn on_initialized(&self, _ctx: NotificationContext<RoleServer>) {
         tracing::info!("relay-core-probe: MCP client connected");
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::subscribable_uri;
+
+    /// The subscription surface must match what the push loop actually notifies. Declaring the
+    /// capability while refusing the URIs it pushes would leave a client unable to receive the
+    /// updates this server sends it.
+    #[test]
+    fn the_uris_that_are_pushed_are_the_uris_that_can_be_subscribed_to() {
+        for uri in [
+            "flows://",
+            "flows://00000000-0000-0000-0000-000000000001",
+            "rules://",
+            "proxy://status",
+            "audit://recent",
+        ] {
+            assert!(
+                subscribable_uri(uri),
+                "{uri} is pushed and must be subscribable"
+            );
+        }
+    }
+
+    /// A subscription that can never produce an update must be refused, not accepted: accepting it
+    /// tells the client to wait for something that will not arrive.
+    #[test]
+    fn an_unknown_uri_is_refused() {
+        for uri in ["ca://install", "flows:", "http://example.com", ""] {
+            assert!(
+                !subscribable_uri(uri),
+                "{uri} is not pushed and must not be accepted"
+            );
+        }
     }
 }

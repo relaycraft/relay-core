@@ -2860,6 +2860,16 @@ mod tests {
         let url = sqlite_url();
         let state = CoreState::new(Some(url.clone())).await;
 
+        // Redaction is on by default now, and this test is about the off → on transition, so the
+        // starting state has to be stated explicitly rather than inherited.
+        state.update_policy(ProxyPolicy {
+            redaction: RedactionPolicy {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
         // Persist while redaction is off, so the raw secret really is written.
         let mut flow = sample_http_flow("api.example.com", "/old", "GET", 200, 1_700_000_030_000);
         if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {

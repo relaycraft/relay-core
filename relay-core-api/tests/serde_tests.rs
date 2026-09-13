@@ -134,7 +134,13 @@ fn test_proxy_policy_defaults_via_deserialize() {
     assert_eq!(policy.max_body_size, 10 * 1024 * 1024);
     assert_eq!(policy.transparent_log_level, TransparentLogLevel::Info);
     assert_eq!(policy.quic_mode, QuicMode::Downgrade);
-    assert!(!policy.redaction.enabled);
+    // Redaction is on by default: an omitted policy must not mean "serve credentials verbatim".
+    assert!(
+        policy.redaction.enabled,
+        "a default policy must redact sensitive headers and query keys"
+    );
+    // Bodies stay opt-in, because redacting them changes payload content that rules and scripts may
+    // legitimately need.
     assert!(!policy.redaction.redact_bodies);
     assert!(
         policy

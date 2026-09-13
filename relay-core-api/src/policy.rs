@@ -123,9 +123,16 @@ impl Eq for UpstreamProxyConfig {}
 impl Default for RedactionPolicy {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // On by default. It was off, which meant `Authorization`, `Cookie` and API keys were
+            // persisted verbatim and served verbatim — to any consumer, including an agent reading
+            // traffic over MCP. A default that leaks credentials the moment someone connects is not a
+            // neutral default, and the cost of the alternative is bounded: header and query names are
+            // matched against a fixed list, so nothing is guessed at and no body is touched.
+            enabled: true,
             sensitive_header_names: default_sensitive_header_names(),
             sensitive_query_keys: default_sensitive_query_keys(),
+            // Bodies stay opt-in: redacting them changes payload content, which rules and scripts
+            // may legitimately need to see, so that choice belongs to the operator.
             redact_bodies: false,
         }
     }
