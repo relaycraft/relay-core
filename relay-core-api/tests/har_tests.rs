@@ -51,6 +51,7 @@ fn flow_with_timing(timing: ResponseTiming) -> Flow {
                     encoding: "utf-8".to_string(),
                     content: "hello".to_string(),
                     size: 5,
+                    grpc: None,
                 }),
                 trailers: vec![],
                 timing,

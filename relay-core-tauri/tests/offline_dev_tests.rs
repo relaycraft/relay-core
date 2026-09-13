@@ -235,6 +235,7 @@ async fn test_websocket_interception_workflow() {
             encoding: "text".to_string(),
             content: "ping".to_string(),
             size: 4,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };
@@ -387,6 +388,7 @@ async fn test_rule_engine_binary_websocket_mock() {
                 encoding: "base64".to_string(),
                 content: "base64_content".to_string(),
                 size: 14,
+                grpc: None,
             },
             opcode: "Binary".to_string(),
         });
@@ -458,6 +460,7 @@ async fn test_rule_engine_websocket_modification() {
             encoding: "text".to_string(),
             content: "original".to_string(),
             size: 8,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };
@@ -541,6 +544,7 @@ async fn test_rule_engine_websocket_mock() {
                 encoding: "text".to_string(),
                 content: "ping-original".to_string(),
                 size: 13,
+                grpc: None,
             },
             opcode: "Text".to_string(),
         });

@@ -658,6 +658,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "hello".to_string(),
                 size: 5,
+                grpc: None,
             },
             opcode: "Text".to_string(),
         };
@@ -905,6 +906,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "hello".to_string(),
                 size: 5,
+                grpc: None,
             },
             opcode: "Text".to_string(),
         };

@@ -146,6 +146,7 @@ async fn flow_event_hub_trait_dispatches_redact() {
             encoding: "utf-8".to_string(),
             content: "secret".to_string(),
             size: 6,
+            grpc: None,
         },
     };
     let redacted = hub.redact_flow_update_for_output(update);

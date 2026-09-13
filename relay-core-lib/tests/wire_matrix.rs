@@ -144,6 +144,7 @@ impl Interceptor for MutateInterceptor {
                 encoding: "utf-8".to_string(),
                 content: "REPLACED".to_string(),
                 size: "REPLACED".len() as u64,
+                grpc: None,
             });
         }
         Ok(RequestAction::Continue(body))
@@ -1006,6 +1007,7 @@ impl Interceptor for ResponseBodyReplaceInterceptor {
                 encoding: "utf-8".to_string(),
                 content: "REPLACED-RESPONSE".to_string(),
                 size: "REPLACED-RESPONSE".len() as u64,
+                grpc: None,
             });
         }
         Ok(ResponseAction::Continue(body))
@@ -1415,6 +1417,7 @@ impl Interceptor for ReplaceResponseBodyInterceptor {
                 encoding: "utf-8".to_string(),
                 content: self.replacement.to_string(),
                 size: self.replacement.len() as u64,
+                grpc: None,
             });
         }
         Ok(ResponseAction::Continue(body))
@@ -1938,6 +1941,7 @@ impl Interceptor for ReplaceRequestBodyInterceptor {
                 encoding: "utf-8".to_string(),
                 content: self.replacement.to_string(),
                 size: self.replacement.len() as u64,
+                grpc: None,
             });
         }
         Ok(RequestAction::Continue(body))

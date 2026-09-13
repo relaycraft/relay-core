@@ -426,6 +426,7 @@ where
                         encoding: "utf-8".to_string(),
                         content: String::from_utf8_lossy(&body_bytes).to_string(),
                         size: body_bytes.len() as u64,
+                        grpc: None,
                     }),
                     trailers: vec![],
                     timing: ResponseTiming {
@@ -696,6 +697,7 @@ fn tungstenite_to_flow_msg(msg: Message, dir: Direction) -> Option<WebSocketMess
             encoding: encoding.to_string(),
             content,
             size: size as u64,
+            grpc: None,
         },
         opcode: opcode.to_string(),
     })

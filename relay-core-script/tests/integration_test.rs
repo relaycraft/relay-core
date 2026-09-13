@@ -78,6 +78,7 @@ async fn test_deno_script_on_websocket_message() {
             encoding: "utf-8".to_string(),
             content: "Hello".to_string(),
             size: 5,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };
@@ -159,6 +160,7 @@ async fn test_deno_script_on_websocket_binary_message() {
             encoding: "base64".to_string(),
             content: "SGVsbG8=".to_string(),
             size: 5,
+            grpc: None,
         },
         opcode: "Binary".to_string(),
     };

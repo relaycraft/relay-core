@@ -243,6 +243,7 @@ mod tests {
             encoding: "utf-8".to_string(),
             content: content.to_string(),
             size: content.len() as u64,
+            grpc: None,
         }
     }
 

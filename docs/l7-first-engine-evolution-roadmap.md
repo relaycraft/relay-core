@@ -1168,6 +1168,16 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   脱敏同样覆盖（`grpc-message` 是服务端自由文本，可按敏感名屏蔽）。
   契约：`wire_matrix_h2c_upstream_is_reachable` 现在同时断言**转发到客户端**与**记录进 Flow**，
   以及 `tap.rs` 的单测（既报 body 也报 trailers）。已双向验证。
+- 🟡 **gRPC 消息级 framing：解析层完成，捕获层未落地**（2026-09-13）。
+  已完成并有测试：`relay-core-api/src/grpc.rs`（5 字节前缀解析：单条/多条/空体/二进制/截断报错/
+  尾部残字节计数，7 个单测；`application/grpc-web` **有意排除**——它复用 framing 但状态在 body 内的
+  编码 trailer 里，混用会给出「一个协议的分帧 + 另一个协议的状态语义」）；`BodyData.grpc` 可加字段；
+  `process_body_with_framing` 在两条 body 物化路径上接线（2 个单测）。
+  ⬜ **未落地**：端到端捕获断言。实测在「无 body 阶段规则 + `BodyObservation::Full`」下，
+  请求与响应 body 都没有进入 Flow（与 §3 已记录的「`Full` 对请求 body 被忽略、除非存在
+  请求 body 阶段规则」同源），流式增量更新路径也未产出 framing。因此**当前不得宣称
+  「捕获里能看到 gRPC 消息」**——解析能力就绪，但还没有证据表明它能到达消费者。
+  下一步需要先查清这两条路径为何不产出，再补端到端契约。
 - ⬜ 请求方向的 trailers 未记录；RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断未做。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议

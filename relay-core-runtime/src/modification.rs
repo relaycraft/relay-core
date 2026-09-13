@@ -40,6 +40,7 @@ pub fn apply_flow_modification(
             req.body = Some(BodyData {
                 encoding: "utf-8".to_string(),
                 size: b.len() as u64,
+                grpc: None,
                 content: b,
             });
         }
@@ -76,6 +77,7 @@ pub fn apply_flow_modification(
             res.body = Some(BodyData {
                 encoding: "utf-8".to_string(),
                 size: b.len() as u64,
+                grpc: None,
                 content: b,
             });
         }
@@ -235,6 +237,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: content.to_string(),
                 size: content.len() as u64,
+                grpc: None,
             },
             opcode: "Text".to_string(),
         }

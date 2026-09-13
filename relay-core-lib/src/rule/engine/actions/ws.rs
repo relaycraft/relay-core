@@ -11,6 +11,7 @@ pub async fn execute(action: &Action, flow: &mut Flow) -> ActionOutcome {
                         encoding: "utf-8".to_string(),
                         content: message.clone(),
                         size: message.len() as u64,
+                        grpc: None,
                     };
                     msg.direction = match direction {
                         WebSocketDirection::Incoming => Direction::ServerToClient,

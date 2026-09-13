@@ -255,6 +255,7 @@ mod tests {
                         encoding: "utf-8".to_string(),
                         content: "x".repeat(size as usize),
                         size,
+                        grpc: None,
                     }),
                 },
                 response: None,

@@ -2254,6 +2254,7 @@ mod tests {
                         encoding: "utf-8".to_string(),
                         content: "secret request body".to_string(),
                         size: 19,
+                        grpc: None,
                     }),
                 },
                 response: Some(HttpResponse {
@@ -2269,6 +2270,7 @@ mod tests {
                         encoding: "utf-8".to_string(),
                         content: "secret response body".to_string(),
                         size: 20,
+                        grpc: None,
                     }),
                     trailers: vec![],
                     timing: ResponseTiming {
@@ -3207,6 +3209,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "top-secret-payload".to_string(),
                 size: 18,
+                grpc: None,
             });
         }
 
@@ -3442,6 +3445,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "super-secret".to_string(),
                 size: 12,
+                grpc: None,
             },
         };
         let redacted = state.redact_flow_update_for_output(update);

@@ -241,6 +241,7 @@ async fn test_core_state_pending_ws_message_lifecycle() {
             encoding: "utf-8".to_string(),
             content: "hello".to_string(),
             size: 5,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };
@@ -288,6 +289,7 @@ async fn test_core_state_ws_message_buffer_capped_at_2000() {
                 encoding: "utf-8".to_string(),
                 content: format!("m{}", i),
                 size: 2,
+                grpc: None,
             },
             opcode: "Text".to_string(),
         };
@@ -343,6 +345,7 @@ async fn test_core_state_update_http_body_request_and_response() {
             encoding: "utf-8".to_string(),
             content: "request-body".to_string(),
             size: 12,
+            grpc: None,
         },
         Direction::ClientToServer,
     );
@@ -352,6 +355,7 @@ async fn test_core_state_update_http_body_request_and_response() {
             encoding: "utf-8".to_string(),
             content: "response-body".to_string(),
             size: 13,
+            grpc: None,
         },
         Direction::ServerToClient,
     );
@@ -386,6 +390,7 @@ async fn test_core_state_update_http_body_missing_flow_is_noop() {
             encoding: "utf-8".to_string(),
             content: "ignored".to_string(),
             size: 7,
+            grpc: None,
         },
         Direction::ClientToServer,
     );
@@ -444,6 +449,7 @@ async fn test_core_state_metrics_reflect_flow_and_intercept_lifecycle() {
                     encoding: "utf-8".to_string(),
                     content: "metric-msg".to_string(),
                     size: 10,
+                    grpc: None,
                 },
                 opcode: "Text".to_string(),
             },
@@ -684,6 +690,7 @@ async fn test_rule_interceptor_mock_websocket_message_replaces_frame() {
             encoding: "utf-8".to_string(),
             content: "original".to_string(),
             size: 8,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };

@@ -224,6 +224,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "hello from upstream".to_string(),
                 size: 19,
+                grpc: None,
             },
         })
         .expect("broadcast should have a receiver");

@@ -5,7 +5,7 @@
 //! handling lives next to the `Body` types it manipulates.
 
 use crate::interceptor::{BoxError, HttpBody};
-use crate::proxy::body_codec::process_body;
+use crate::proxy::body_codec::process_body_with_framing;
 use http_body_util::BodyExt as _;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer};
 
@@ -209,10 +209,11 @@ pub fn record_body_on_flow(
     total_bytes: u64,
     header_source: &[(String, String)],
 ) {
-    let (encoding, content) = process_body(bytes, header_source);
+    let (encoding, content, grpc) = process_body_with_framing(bytes, header_source);
     let body_data = BodyData {
         encoding,
         content,
+        grpc,
         // Report the real transfer size even when the recorded content is truncated.
         size: total_bytes,
     };

@@ -624,6 +624,7 @@ pub fn update_flow_with_response_body(flow: &mut Flow, body_bytes: Bytes) {
         encoding: resp_encoding,
         content: resp_content,
         size: body_bytes.len() as u64,
+        grpc: None,
     };
 
     match &mut flow.layer {
@@ -773,6 +774,7 @@ mod tests {
                 encoding: "base64".to_string(),
                 content: data_encoding::BASE64.encode(&decoded),
                 size: decoded.len() as u64,
+                grpc: None,
             }),
         );
 
@@ -942,6 +944,7 @@ mod tests {
                 encoding: "utf-8".to_string(),
                 content: "hello".to_string(),
                 size: 5,
+                grpc: None,
             });
         }
 

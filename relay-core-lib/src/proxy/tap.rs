@@ -1,5 +1,5 @@
 use crate::interceptor::{BoxError, HttpBody};
-use crate::proxy::body_codec::process_body;
+use crate::proxy::body_codec::process_body_with_framing;
 use crate::proxy::body_plan::{PrefixBuffer, buffer_prefix};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
@@ -95,12 +95,17 @@ impl Body for TapBody {
             }
             Poll::Ready(None) => {
                 let snapshot = self.inner.snapshot();
-                let (encoding, content) = process_body(&snapshot.bytes, &self.headers);
+                // Framing is reported alongside the representation: this is the path that feeds
+                // captures of *streamed* bodies, so a gRPC call would otherwise be visible only as
+                // base64 even though the request never needed buffering.
+                let (encoding, content, grpc) =
+                    process_body_with_framing(&snapshot.bytes, &self.headers);
                 let body_data = BodyData {
                     encoding,
                     content,
                     // Report the observed transfer size, not the truncated buffer length.
                     size: snapshot.total_bytes,
+                    grpc,
                 };
 
                 let _ = self.on_flow.try_send(FlowUpdate::HttpBody {

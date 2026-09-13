@@ -28,6 +28,7 @@ impl Interceptor for MetricsInterceptor {
                     encoding: "utf-8".to_string(),
                     content: text.clone(),
                     size: text.len() as u64,
+                    grpc: None,
                 };
 
                 let response = HttpResponse {
@@ -63,6 +64,7 @@ impl Interceptor for MetricsInterceptor {
                     encoding: "utf-8".to_string(),
                     content: json.clone(),
                     size: json.len() as u64,
+                    grpc: None,
                 };
 
                 let response = HttpResponse {

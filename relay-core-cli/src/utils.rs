@@ -130,6 +130,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                                 encoding: "utf-8".to_string(),
                                 content: text.to_string(),
                                 size: text.len() as u64,
+                                grpc: None,
                             }
                         }),
                     },
@@ -162,6 +163,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                                     .to_string(),
                                 content: text.to_string(),
                                 size: response["content"]["size"].as_u64().unwrap_or(0),
+                                grpc: None,
                             }
                         }),
                         trailers: vec![],

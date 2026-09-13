@@ -15,11 +15,13 @@ pub async fn resolve_body_source(
             encoding: "utf-8".to_string(),
             content: t.clone(),
             size: t.len() as u64,
+            grpc: None,
         }),
         BodySource::Base64(b) => Some(BodyData {
             encoding: "base64".to_string(),
             content: b.clone(),
             size: b.len() as u64, // Approximate
+            grpc: None,
         }),
         BodySource::File(path) => {
             let root = if let Some(p) = policy
@@ -56,6 +58,7 @@ pub async fn resolve_body_source(
                             encoding: "utf-8".to_string(),
                             content: text,
                             size: bytes.len() as u64,
+                            grpc: None,
                         })
                     } else {
                         // Fallback to Base64
@@ -64,6 +67,7 @@ pub async fn resolve_body_source(
                             encoding: "base64".to_string(),
                             content: BASE64.encode(&bytes),
                             size: bytes.len() as u64,
+                            grpc: None,
                         })
                     }
                 } else {

@@ -77,6 +77,7 @@ fn test_flow_update_tagged_serialization() {
             encoding: "utf-8".to_string(),
             content: "hello".to_string(),
             size: 5,
+            grpc: None,
         },
     };
 
@@ -95,6 +96,7 @@ fn test_flow_update_websocket_message_roundtrip() {
             encoding: "utf-8".to_string(),
             content: "pong".to_string(),
             size: 4,
+            grpc: None,
         },
         opcode: "Text".to_string(),
     };

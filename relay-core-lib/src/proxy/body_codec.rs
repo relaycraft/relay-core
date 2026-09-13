@@ -41,3 +41,76 @@ pub fn process_body(bytes: &[u8], headers: &[(String, String)]) -> (String, Stri
         Err(_) => ("base64".to_string(), BASE64.encode(bytes)),
     }
 }
+
+/// Choose the representation for a body **and** describe its gRPC framing when it has any.
+///
+/// The framing lives next to the representation because it is decided from the same two inputs — the
+/// bytes and the content type — and the two must agree: a body reported as `base64` with a gRPC
+/// summary is a captured call a consumer can read, whereas either alone is not.
+pub fn process_body_with_framing(
+    bytes: &[u8],
+    headers: &[(String, String)],
+) -> (String, String, Option<relay_core_api::grpc::GrpcBody>) {
+    let (encoding, content) = process_body(bytes, headers);
+
+    let content_type = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default();
+
+    let grpc = if relay_core_api::grpc::is_grpc_content_type(content_type) {
+        // A body that does not parse is reported as "no framing" rather than as a partial one: the
+        // messages that did fit are not a smaller call, they are a truncated capture, and the
+        // trailing-byte count would be mistaken for the whole picture.
+        relay_core_api::grpc::parse_messages(bytes).ok()
+    } else {
+        None
+    };
+
+    (encoding, content, grpc)
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::process_body_with_framing;
+
+    fn headers(content_type: &str) -> Vec<(String, String)> {
+        vec![("content-type".to_string(), content_type.to_string())]
+    }
+
+    fn frame(payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8];
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn a_grpc_body_gains_framing_and_a_normal_body_does_not() {
+        let body = frame(b"");
+
+        let (_, _, grpc) = process_body_with_framing(&body, &headers("application/grpc+proto"));
+        let parsed = grpc.expect("a grpc body must carry framing");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].length, 2);
+        assert!(parsed.is_unary());
+
+        let (_, _, none) = process_body_with_framing(&body, &headers("application/octet-stream"));
+        assert!(none.is_none(), "a non-grpc body has no framing to report");
+    }
+
+    /// A truncated capture must not be presented as a smaller call.
+    #[test]
+    fn an_unparsable_grpc_body_reports_no_framing_rather_than_partial() {
+        let mut body = frame(b"complete");
+        body.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x20, b'x']);
+
+        let (_, _, grpc) = process_body_with_framing(&body, &headers("application/grpc"));
+
+        assert!(
+            grpc.is_none(),
+            "a short frame is a truncated capture, not a one-message call"
+        );
+    }
+}

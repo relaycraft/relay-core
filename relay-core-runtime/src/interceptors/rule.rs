@@ -92,6 +92,7 @@ async fn finish_request_stage(
                     encoding: "utf-8".to_string(),
                     content: String::new(),
                     size: 0,
+                    grpc: None,
                 });
                 let new_body =
                     relay_core_lib::proxy::http_utils::build_request_body_from_flow(&body_data);
@@ -728,6 +729,7 @@ mod intercept_resolution_tests {
                         encoding: "utf-8".to_string(),
                         content: "EDITED-BY-USER".to_string(),
                         size: 14,
+                        grpc: None,
                     }),
                 }),
             });
@@ -834,6 +836,7 @@ mod intercept_resolution_tests {
                         encoding: "utf-8".to_string(),
                         content: "EDITED-BY-USER".to_string(),
                         size: 14,
+                        grpc: None,
                     }),
                 }),
             });

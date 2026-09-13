@@ -298,6 +298,7 @@ impl<R: Runtime> TauriInterceptor<R> {
                 encoding,
                 content,
                 size: bytes.len() as u64,
+                grpc: None,
             });
         }
     }
@@ -316,6 +317,7 @@ impl<R: Runtime> TauriInterceptor<R> {
                 encoding,
                 content,
                 size: bytes.len() as u64,
+                grpc: None,
             });
         }
     }

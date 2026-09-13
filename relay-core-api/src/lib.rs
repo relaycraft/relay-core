@@ -8,6 +8,7 @@ pub mod body_plan;
 pub mod event;
 pub mod flow;
 pub mod flow_query;
+pub mod grpc;
 pub mod har;
 pub mod modification;
 pub mod policy;

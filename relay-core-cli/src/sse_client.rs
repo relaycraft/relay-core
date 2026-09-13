@@ -204,6 +204,7 @@ data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_
                     encoding: "utf-8".to_string(),
                     content: "frame".to_string(),
                     size: 5,
+                    grpc: None,
                 },
                 opcode: "Text".to_string(),
             },
@@ -215,6 +216,7 @@ data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_
                 encoding: "utf-8".to_string(),
                 content: "streamed".to_string(),
                 size: 8,
+                grpc: None,
             },
         };
 

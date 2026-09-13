@@ -445,6 +445,7 @@ mod tests {
                             encoding: "utf-8".into(),
                             content: "{}".into(),
                             size: 2,
+                            grpc: None,
                         })
                     } else {
                         None

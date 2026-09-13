@@ -262,6 +262,7 @@ impl relay_core_lib::interceptor::Interceptor for RewriteResponseBody {
                 encoding: "utf-8".to_string(),
                 content: self.replacement.to_string(),
                 size: self.replacement.len() as u64,
+                grpc: None,
             });
         }
         Ok(relay_core_lib::interceptor::ResponseAction::Continue(body))
