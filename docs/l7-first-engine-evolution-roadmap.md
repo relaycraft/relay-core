@@ -1140,8 +1140,18 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ **顺带修掉一个由此暴露的真实缺陷**：转发请求此前**无条件**带上入站版本，于是 h2c 入站会让
   hyper 拒绝发送（`Connection is HTTP/1, but request requires HTTP/2` → 502）。现在
   **只传播 HTTP/1.x**；H2 入站的协议由上游连接（URL/ALPN）决定，不由客户端决定。
-- ⬜ HTTP/2 仍未覆盖的部分：CONNECT 隧道内的 h2c、RST_STREAM/GOAWAY/取消、`:authority` 与
-  CONNECT 目标不一致的诊断。
+- ✅ **CONNECT 隧道内的 h2c 已支持**（2026-09-13）：隧道此前**无条件做 TLS 终止**，因此
+  「CONNECT 之后讲 HTTP/2 前言」的客户端握手失败、完全抓不到——而这正是**配了 `HTTP_PROXY`
+  的 gRPC 客户端针对明文目标的行为**。现在隧道先读取客户端**前几个字节**再决定协议
+  （TLS ClientHello / HTTP/2 前言 / 明文 HTTP/1.x），三条路径共用一个 H1+H2 服务配置。
+  已读的字节**会按原样交回**给接手的一方（TLS 路径同样如此，因为 ClientHello 已被部分消耗）。
+  顺带修好：**明文 HTTP/1.x 走 CONNECT** 此前同样不可用；明文隧道的 Flow 现在如实记录
+  `http://` 与 `tls = false`（此前会谎报 `https` + TLS）。
+  契约由 `wire_matrix_h2c_inside_a_connect_tunnel_is_captured` 锁定（`CONNECT → h2c → 规则改写 →
+  Flow 的 URL/版本/tls`），已双向验证（强制走 TLS 分支 → 测试失败）。
+  独立客户端复核：`curl --proxytunnel --http2-prior-knowledge -x <proxy> http://<target>/` → `HTTP/2 200`；
+  `--proxytunnel` 的 HTTP/1.1 对照 → 200/1.1；TLS 路径（`https://example.com`）→ 200，无回归。
+- ⬜ HTTP/2 仍未覆盖的部分：RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
   （此前恒为 builder 默认的 HTTP/1.1）。新增 `parse_http_version` 解析 `Flow` 中

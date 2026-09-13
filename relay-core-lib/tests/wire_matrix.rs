@@ -2971,3 +2971,147 @@ async fn wire_matrix_h2c_ingress_is_captured_and_forwarded() {
 
     conn_task.abort();
 }
+
+/// `h2c` inside a CONNECT tunnel must be captured — this is the shape a gRPC client with
+/// `HTTP_PROXY` produces for a plaintext target.
+///
+/// The tunnel used to terminate TLS unconditionally, so a client that sent an HTTP/2 preface instead
+/// of a ClientHello failed its handshake and nothing was captured. The tunnel now reads the client's
+/// first bytes and serves whichever protocol they announce, which also makes plaintext HTTP/1.x
+/// through CONNECT work. Independently confirmed with
+/// `curl --proxytunnel --http2-prior-knowledge -x <proxy> http://<target>/`, which returns
+/// `HTTP/2 200` here while the HTTP/1.1 and TLS controls still work.
+#[tokio::test]
+async fn wire_matrix_h2c_inside_a_connect_tunnel_is_captured() {
+    init_crypto();
+
+    let (upstream_addr, upstream_served, _upstream_connections) = spawn_keepalive_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor {
+        phase: Phase::ResponseHeaders,
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // 1. CONNECT to the upstream through the proxy.
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    stream
+        .write_all(
+            format!("CONNECT {upstream_addr} HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n").as_bytes(),
+        )
+        .await
+        .expect("write CONNECT");
+
+    let mut buf = vec![0u8; 1024];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("CONNECT must be answered")
+        .expect("read CONNECT response");
+    let response = String::from_utf8_lossy(&buf[..read]).to_string();
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "the tunnel must open, got {response:?}"
+    );
+
+    // 2. Speak h2c inside it, with origin-form paths — the tunnel's CONNECT target is the authority.
+    let (mut sender, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .timer(hyper_util::rt::TokioTimer::new())
+            .handshake(TokioIo::new(stream))
+            .await
+            .expect("the tunnel must accept an h2c preface instead of demanding a ClientHello");
+
+    let conn_task = tokio::spawn(conn);
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sender.send_request(
+            hyper::Request::builder()
+                .method("GET")
+                .uri("/plaintext-h2c-probe")
+                .body(String::new())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("an h2c request in the tunnel must not hang")
+    .expect("an h2c request in the tunnel must be forwarded");
+
+    assert_eq!(response.version(), hyper::Version::HTTP_2);
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-wire-probe")
+            .map(|v| v.to_str().unwrap_or("")),
+        Some("from-interceptor"),
+        "a rule must reach an h2c client inside a CONNECT tunnel"
+    );
+    let _ = response.into_body().collect().await.expect("body");
+
+    assert_eq!(
+        upstream_served.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the tunnelled h2c request must reach the upstream"
+    );
+
+    // 3. The Flow must describe the exchange truthfully: the CONNECT target with an `http` scheme
+    // (no TLS was terminated), over HTTP/2.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut observed: Option<(String, String, bool)> = None;
+    while tokio::time::Instant::now() < deadline && observed.is_none() {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) => {
+                if let Layer::Http(http) = &flow.layer
+                    && http.request.url.as_str().contains("/plaintext-h2c-probe")
+                {
+                    observed = Some((
+                        http.request.url.to_string(),
+                        http.request.version.clone(),
+                        flow.network.tls,
+                    ));
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let (url, version, tls) = observed.expect("the tunnelled h2c exchange must be recorded");
+    assert_eq!(
+        url,
+        format!("http://{upstream_addr}/plaintext-h2c-probe"),
+        "the URL must come from the CONNECT target and the plaintext scheme"
+    );
+    assert_eq!(version, "HTTP/2.0");
+    assert!(
+        !tls,
+        "no TLS was terminated, so the Flow must not claim there was"
+    );
+
+    conn_task.abort();
+}
