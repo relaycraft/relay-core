@@ -17,6 +17,12 @@ pub struct TapBody {
     on_flow: Sender<FlowUpdate>,
     direction: Direction,
     headers: Vec<(String, String)>,
+    /// Whether the recorded body has been reported yet.
+    ///
+    /// The report must happen exactly once, and it must happen even when the consumer never polls for
+    /// the final `None`: hyper finishes a body as soon as `is_end_stream()` says so, so relying on the
+    /// end-of-stream poll alone silently loses the body from the capture.
+    reported: std::sync::atomic::AtomicBool,
 }
 
 impl TapBody {
@@ -35,6 +41,48 @@ impl TapBody {
             on_flow,
             direction,
             headers,
+            reported: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Report the body once, from whichever signal arrives first.
+    ///
+    /// Two signals because either can be the last one a consumer sees: the end-of-stream poll, and
+    /// `is_end_stream()` (which hyper consults to decide the body is finished, and which does not
+    /// require another poll). Reporting from only one of them loses bodies from the capture.
+    fn report_once(&self) {
+        use std::sync::atomic::Ordering;
+        if self.reported.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
+        let snapshot = self.inner.snapshot();
+        // Framing is reported alongside the representation: this is the path that feeds captures of
+        // *streamed* bodies, so a gRPC call would otherwise be visible only as base64 even though the
+        // request never needed buffering.
+        let (encoding, content, grpc) = process_body_with_framing(&snapshot.bytes, &self.headers);
+        let body_data = BodyData {
+            encoding,
+            content,
+            // Report the observed transfer size, not the truncated buffer length.
+            size: snapshot.total_bytes,
+            grpc,
+        };
+
+        let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
+            flow_id: self.flow_id.clone(),
+            direction: self.direction.clone(),
+            body: body_data,
+        });
+
+        // P1: Notify budget exceeded for streaming-first pipeline
+        if snapshot.truncated {
+            crate::metrics::inc_proxy_body_degraded();
+            crate::metrics::inc_proxy_stream_mode_degrade();
+            let _ = self.on_flow.try_send(FlowUpdate::BodyBudgetExceeded {
+                flow_id: self.flow_id.clone(),
+                direction: self.direction.clone(),
+            });
         }
     }
 
@@ -94,36 +142,7 @@ impl Body for TapBody {
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
-                let snapshot = self.inner.snapshot();
-                // Framing is reported alongside the representation: this is the path that feeds
-                // captures of *streamed* bodies, so a gRPC call would otherwise be visible only as
-                // base64 even though the request never needed buffering.
-                let (encoding, content, grpc) =
-                    process_body_with_framing(&snapshot.bytes, &self.headers);
-                let body_data = BodyData {
-                    encoding,
-                    content,
-                    // Report the observed transfer size, not the truncated buffer length.
-                    size: snapshot.total_bytes,
-                    grpc,
-                };
-
-                let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
-                    flow_id: self.flow_id.clone(),
-                    direction: self.direction.clone(),
-                    body: body_data,
-                });
-
-                // P1: Notify budget exceeded for streaming-first pipeline
-                if snapshot.truncated {
-                    crate::metrics::inc_proxy_body_degraded();
-                    crate::metrics::inc_proxy_stream_mode_degrade();
-                    let _ = self.on_flow.try_send(FlowUpdate::BodyBudgetExceeded {
-                        flow_id: self.flow_id.clone(),
-                        direction: self.direction.clone(),
-                    });
-                }
-
+                self.report_once();
                 Poll::Ready(None)
             }
             other => other,
@@ -131,7 +150,17 @@ impl Body for TapBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        let ended = self.inner.is_end_stream();
+        // Only for a body that actually streamed something. `is_end_stream` is also true before
+        // anything is read (an empty body, or a length-delimited one at the moment it is built), and
+        // reporting there would record an empty body and then suppress the real report through the
+        // once-guard — trading a missing body for a wrong one.
+        if ended && self.inner.observed_bytes() > 0 {
+            // hyper may treat this as the last word on the body and never poll again, so the capture
+            // is written here rather than waiting for a poll that will not come.
+            self.report_once();
+        }
+        ended
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -253,5 +282,83 @@ mod tests {
             Some(vec![("x-trailer".to_string(), "value".to_string())]),
             "trailers must be reported as an incremental update, not only forwarded"
         );
+    }
+}
+
+#[cfg(test)]
+mod report_once_tests {
+    use super::TapBody;
+    use http_body_util::BodyExt;
+    use hyper::body::{Body, Bytes, Frame};
+    use relay_core_api::flow::{Direction, FlowUpdate};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A body that says it is finished without ever yielding the final `None`.
+    ///
+    /// This is what hyper does with a length-delimited body: it consults `is_end_stream` and stops
+    /// polling. Reporting only from `Poll::Ready(None)` therefore lost the body from the capture.
+    struct EndsByHint {
+        sent: bool,
+    }
+
+    impl Body for EndsByHint {
+        type Data = Bytes;
+        type Error = crate::interceptor::BoxError;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            if self.sent {
+                return Poll::Ready(None);
+            }
+            self.sent = true;
+            Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"payload")))))
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.sent
+        }
+    }
+
+    #[tokio::test]
+    async fn a_body_that_ends_by_hint_is_still_reported() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(8);
+        let body = TapBody::new(
+            EndsByHint { sent: false }
+                .map_err(|e| -> crate::interceptor::BoxError { e })
+                .boxed(),
+            "flow-hint".to_string(),
+            tx,
+            Direction::ServerToClient,
+            1024,
+            vec![("content-type".to_string(), "text/plain".to_string())],
+        );
+
+        // Read the data frame, then stop — hyper does exactly this and then consults
+        // `is_end_stream` instead of polling for the final `None`, so the report must come from there.
+        let mut body = body;
+        {
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            let frame = Pin::new(&mut body).poll_frame(&mut cx);
+            assert!(
+                matches!(frame, Poll::Ready(Some(Ok(_)))),
+                "precondition: the data frame is available"
+            );
+        }
+        assert!(
+            body.is_end_stream(),
+            "precondition: the body now reports finished"
+        );
+
+        let update = rx.try_recv().expect("the body must still be reported");
+        match update {
+            FlowUpdate::HttpBody { body, .. } => {
+                assert_eq!(body.content, "payload");
+            }
+            other => panic!("expected an HttpBody update, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "a body must be reported once");
     }
 }
