@@ -35,8 +35,15 @@ We strictly follow **Test-Driven Development (TDD)** and **Offline-First** princ
     edit). Exploratory or internal discussion stays in `.ai/`, which is gitignored. Archive by
     **moving, never deleting**.
 *   **Local build note**: global `~/.cargo/config.toml` may set `target-dir` outside the repo.
-    If `cargo` fails with `Operation not permitted`, re-run with
-    `CARGO_TARGET_DIR="$PWD/target-dsh"` (gitignored).
+    Two different problems look the same here, so check both before working around it:
+    1. **The configured directory does not exist** — e.g. an external volume that is not mounted.
+       Create it (`mkdir -p <configured path>`); that is usually the whole fix.
+    2. **The sandbox forbids writing outside the workspace**, so `cargo` reports
+       `Operation not permitted` even though the path exists.
+
+    Only for case 2, re-run with `CARGO_TARGET_DIR="$PWD/target-dsh"` (gitignored). Prefer fixing
+    case 1 first: the workaround puts a full build cache **inside the repo**, which on one machine
+    reached 50 GB and left the internal disk at 99% used.
 
 ## 4. Architecture Overview
 *   **`relay-core-lib`**: The packet/connection engine (capture, proxy, MITM, protocol parsing, interception hooks).
