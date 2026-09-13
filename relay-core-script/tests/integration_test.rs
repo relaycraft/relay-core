@@ -908,3 +908,52 @@ async fn test_relay_fetch_success_against_local_server() {
         flow.tags
     );
 }
+
+/// The fetch allowlist must be settable *after* construction, not only through the constructor.
+///
+/// Every host builds the interceptor with `ScriptInterceptor::new()`, so a config only reachable via
+/// `new_with_env_and_fetch` left `relay.fetch` impossible to enable from any host: the engine logic
+/// and its rejection tests existed, but nothing could turn the feature on.
+#[tokio::test]
+async fn set_fetch_allow_enables_fetch_after_construction() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+
+    // A fetch to a host that is not allowlisted: the *reason* it is refused tells us which
+    // configuration is in force, without performing any network I/O.
+    let script = r#"
+        globalThis.onRequestHeaders = (ctx, flow) => {
+            const r = relay.fetch("http://untrusted.example.com/api");
+            flow.tags.push(r.error || "no-error");
+            return flow;
+        };
+    "#;
+
+    // Nothing asked for fetch, so it must be off.
+    interceptor.load_script(script).await.unwrap();
+    let mut default_flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut default_flow).await;
+    assert!(
+        default_flow
+            .tags
+            .contains(&"script fetch disabled".to_string()),
+        "relay.fetch must stay off until a host asks for it, got {:?}",
+        default_flow.tags
+    );
+
+    // A host asks for it, then loads its script — the order every host uses, because engines take
+    // their configuration when they are built.
+    interceptor
+        .set_fetch_allow(true, HashSet::from(["trusted.example.com".to_string()]))
+        .await;
+    interceptor.load_script(script).await.unwrap();
+
+    let mut enabled_flow = create_dummy_flow();
+    let _ = interceptor.on_request_headers(&mut enabled_flow).await;
+    assert!(
+        enabled_flow
+            .tags
+            .contains(&"host not in allowlist".to_string()),
+        "once enabled, the allowlist must be what refuses the fetch, got {:?}",
+        enabled_flow.tags
+    );
+}

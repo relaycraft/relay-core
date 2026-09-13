@@ -276,6 +276,7 @@ pub async fn execute(
     #[cfg(feature = "script")] script: Option<PathBuf>,
     #[cfg(feature = "script")] script_watch: bool,
     #[cfg(feature = "script")] script_env_allow: Option<String>,
+    #[cfg(feature = "script")] script_fetch_allow: Option<String>,
     ui: bool,
     web: bool,
     theme: Option<String>,
@@ -444,6 +445,19 @@ pub async fn execute(
                 .filter(|s| !s.is_empty())
                 .collect();
             state.set_script_env_allow(env_allow).await;
+        }
+
+        // `relay.fetch` is off unless a host asks for it. Without this the allowlist existed but no
+        // host could enable the feature at all, so the setting was unreachable in practice.
+        #[cfg(feature = "script")]
+        if let Some(ref allowed) = script_fetch_allow {
+            let hosts: std::collections::HashSet<String> = allowed
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != "*")
+                .collect();
+            let enabled = !allowed.trim().is_empty();
+            state.set_script_fetch_allow(enabled, hosts).await;
         }
 
         let mut watcher: Option<RecommendedWatcher> = None;

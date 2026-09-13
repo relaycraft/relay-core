@@ -227,6 +227,39 @@ pub struct ProxyPolicy {
     /// Upstream (parent) proxy configuration. None = direct connection mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<UpstreamProxyConfig>,
+
+    /// How much history the store may keep. Every field `None` means unbounded, which is the
+    /// pre-existing behaviour: nothing pruned the database before this, so a long-running instance
+    /// grew until the disk filled.
+    ///
+    /// It lives in the policy rather than behind a host-specific command because every host already
+    /// sets policy, and because a bound a user cannot reach is not a bound at all — the pruning
+    /// implementation existed without any caller outside its own test.
+    #[serde(default)]
+    pub retention: RetentionPolicy,
+}
+
+/// Storage bounds, mirroring the store's own policy so a host can set them without depending on the
+/// storage crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RetentionPolicy {
+    /// Keep at most this many flows and summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_flows: Option<usize>,
+    /// Drop flows older than this many seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u64>,
+    /// Keep at most this many audit events. Bounded separately: audit is a compliance record and
+    /// should not be evicted by traffic history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_audit_events: Option<usize>,
+}
+
+impl RetentionPolicy {
+    /// Does this policy bound anything at all?
+    pub const fn is_unbounded(&self) -> bool {
+        self.max_flows.is_none() && self.max_age_secs.is_none() && self.max_audit_events.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,6 +311,7 @@ impl Default for ProxyPolicy {
             quic_downgrade_clear_cache: false,
             redaction: RedactionPolicy::default(),
             upstream: None,
+            retention: RetentionPolicy::default(),
         }
     }
 }

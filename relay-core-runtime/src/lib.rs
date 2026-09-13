@@ -899,13 +899,24 @@ impl CoreState {
             }
         };
 
+        Self::redact_history_with(&store, &policy).await
+    }
+    /// Rewrite stored history under a redaction policy.
+    ///
+    /// Shared by the explicit [`CoreState::redact_stored_history`] entry point and by
+    /// [`CoreState::update_policy_from`], which runs it the moment redaction is switched on —
+    /// otherwise enabling redaction would only protect writes made *after* the switch, leaving every
+    /// secret already on disk readable forever.
+    async fn redact_history_with(store: &Store, policy: &RedactionPolicy) -> Option<u64> {
+        if !policy.enabled {
+            return Some(0);
+        }
+
         // Reuse the exact helpers the output and persistence paths use, so the three cannot diverge.
         let flows = store
             .redact_existing_flows(|value| {
                 match serde_json::from_value::<Flow>(value.clone()) {
-                    Ok(flow) => {
-                        serde_json::to_value(redact_flow(flow, &policy)).unwrap_or_default()
-                    }
+                    Ok(flow) => serde_json::to_value(redact_flow(flow, policy)).unwrap_or_default(),
                     // Unreadable row: leave it untouched rather than replacing it with null.
                     Err(_) => value.clone(),
                 }
@@ -915,7 +926,7 @@ impl CoreState {
         let summaries = store
             .redact_existing_flow_summaries(|value| {
                 match serde_json::from_value::<FlowSummary>(value.clone()) {
-                    Ok(summary) => serde_json::to_value(redact_flow_summary(summary, &policy))
+                    Ok(summary) => serde_json::to_value(redact_flow_summary(summary, policy))
                         .unwrap_or_default(),
                     Err(_) => value.clone(),
                 }
@@ -943,6 +954,22 @@ impl CoreState {
     /// The policy is opt-in: the default keeps everything, so an existing deployment is unaffected
     /// until a bound is set. Pruning runs on an interval rather than per write, so a busy instance
     /// does not pay for a delete pass on every flow.
+    /// Apply the policy's storage bounds, if any.
+    ///
+    /// Unbounded is a no-op rather than a reconfiguration: the background pruning task is only
+    /// started once a bound exists, so a host that never sets one pays nothing.
+    fn apply_retention_from(&self, retention: &relay_core_api::policy::RetentionPolicy) {
+        if retention.is_unbounded() {
+            return;
+        }
+
+        self.set_retention_policy(relay_core_storage::RetentionPolicy {
+            max_flows: retention.max_flows,
+            max_age_secs: retention.max_age_secs,
+            max_audit_events: retention.max_audit_events,
+        });
+    }
+
     pub fn set_retention_policy(&self, policy: relay_core_storage::RetentionPolicy) {
         if let Ok(mut current) = self.retention.write() {
             *current = policy;
@@ -1052,11 +1079,36 @@ impl CoreState {
             "redact_bodies": policy.redaction.redact_bodies
         });
 
+        // Read the previous value before overwriting it: turning redaction *on* has to cover what is
+        // already on disk, or the secrets written under the old policy stay readable forever.
+        let redaction_was_enabled = self.current_redaction_policy().enabled;
+        let redaction_now_enabled = policy.redaction.enabled;
+
         // Keep the persistence-time redaction view in step with the output-time view.
         if let Ok(mut current) = self.redaction_handle.write() {
             *current = policy.redaction.clone();
         }
+        let effective_policy = policy.clone();
         self.policy_tx.send_replace(policy);
+
+        // Retention travels with policy, so a host that can set policy can bound storage. Applying
+        // it here (rather than behind a dedicated command) is what makes the bound reachable at all.
+        self.apply_retention_from(&effective_policy.retention);
+
+        if should_redact_history(redaction_was_enabled, redaction_now_enabled)
+            && let Some(store) = self.store.clone()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            let redaction = effective_policy.redaction;
+            tokio::spawn(async move {
+                if let Some(rows) = CoreState::redact_history_with(&store, &redaction).await {
+                    tracing::info!(
+                        "Redaction enabled: rewrote {} previously stored row(s)",
+                        rows
+                    );
+                }
+            });
+        }
         self.record_audit_event(AuditEvent::new(
             actor,
             AuditEventKind::PolicyUpdated,
@@ -1422,6 +1474,22 @@ impl CoreState {
     #[cfg(feature = "script")]
     pub async fn set_script_env_allow(&self, env_allow: std::collections::HashSet<String>) {
         self.script_interceptor.set_env_allow(env_allow).await;
+    }
+
+    /// Allow `relay.fetch` to reach the given hosts (empty set means "any", once enabled).
+    ///
+    /// Both halves are needed: enabling with an empty allowlist means "any host", so a host that
+    /// wants a narrow allowlist must pass it, and a host that wants none must leave this unset —
+    /// `relay.fetch` stays disabled until a host asks for it.
+    #[cfg(feature = "script")]
+    pub async fn set_script_fetch_allow(
+        &self,
+        enabled: bool,
+        allow_hosts: std::collections::HashSet<String>,
+    ) {
+        self.script_interceptor
+            .set_fetch_allow(enabled, allow_hosts)
+            .await;
     }
 
     fn record_audit_event(&self, event: AuditEvent) {
@@ -1911,7 +1979,16 @@ fn redaction_set(values: &[String]) -> HashSet<String> {
         .collect()
 }
 
-#[derive(Clone)]
+/// Does this policy change mean history already on disk must be rewritten?
+///
+/// Only the off → on transition: re-running the pass on every policy edit would rewrite the whole
+/// database for changes that cannot have exposed anything new, and turning redaction *off* must
+/// never rewrite (the user is asking to stop, not to lose data).
+fn should_redact_history(was_enabled: bool, now_enabled: bool) -> bool {
+    !was_enabled && now_enabled
+}
+
+#[derive(Debug, Clone)]
 pub struct ProxyConfig {
     pub port: u16,
     pub ca_cert_path: std::path::PathBuf,
@@ -2760,7 +2837,9 @@ mod tests {
             "precondition: the secret is on disk before redaction is enabled"
         );
 
-        // Now turn redaction on and ask for a retroactive pass.
+        // Turning redaction on must rewrite history by itself: an entry point only a test can reach
+        // protects nothing. The pass runs in the background, so wait for the outcome rather than for
+        // a return value.
         state.update_policy(ProxyPolicy {
             redaction: RedactionPolicy {
                 enabled: true,
@@ -2769,13 +2848,24 @@ mod tests {
             },
             ..Default::default()
         });
-        let changed = state
-            .redact_stored_history()
-            .await
-            .expect("retroactive pass should report");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut redacted = false;
+        while tokio::time::Instant::now() < deadline {
+            let row = store
+                .load_flow(&flow.id.to_string())
+                .await
+                .expect("load")
+                .expect("row");
+            if !row.to_string().contains("legacy-secret") {
+                redacted = true;
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
         assert!(
-            changed > 0,
-            "at least one stored row should have been rewritten"
+            redacted,
+            "enabling redaction must rewrite the secret already on disk, without being asked twice"
         );
 
         let after = store
@@ -2786,6 +2876,44 @@ mod tests {
         assert!(
             !after.to_string().contains("legacy-secret"),
             "history persisted before redaction was enabled must be rewritten"
+        );
+    }
+
+    /// Asking for a second pass after the automatic one is a no-op.
+    ///
+    /// This is what makes the automatic pass safe to run on every off → on transition: it cannot
+    /// churn the database repeatedly, because a row that is already redacted is not rewritten again.
+    #[tokio::test]
+    async fn a_second_retroactive_pass_rewrites_nothing() {
+        let state = CoreState::new(Some(sqlite_url())).await;
+        state.update_policy(ProxyPolicy {
+            redaction: RedactionPolicy {
+                enabled: true,
+                sensitive_header_names: vec!["authorization".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        assert_eq!(
+            state.redact_stored_history().await,
+            Some(0),
+            "history is already redacted, so an explicit pass has nothing to rewrite"
+        );
+    }
+
+    /// Only the off → on transition rewrites history.
+    #[test]
+    fn only_turning_redaction_on_rewrites_history() {
+        assert!(should_redact_history(false, true));
+        assert!(!should_redact_history(false, false));
+        assert!(
+            !should_redact_history(true, true),
+            "re-applying an already-on policy must not rewrite the database again"
+        );
+        assert!(
+            !should_redact_history(true, false),
+            "turning redaction off is not a request to rewrite history"
         );
     }
 
@@ -2919,6 +3047,73 @@ mod tests {
             2,
             "the store must retain exactly the configured number of flows"
         );
+    }
+
+    /// A bound must be reachable by setting policy, not only by calling the runtime's own setter.
+    ///
+    /// `set_retention_policy` had no caller outside this test module, so the pruning implementation
+    /// was unreachable from every host: the documented answer to "the database grows forever" could
+    /// not be used by anyone. Policy is what every host already sets, so the bound travels with it.
+    #[tokio::test]
+    async fn a_policy_can_bound_storage_from_any_host() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+
+        for (i, ts) in [1_700_000_011_000i64, 1_700_000_012_000, 1_700_000_013_000]
+            .into_iter()
+            .enumerate()
+        {
+            let flow = sample_http_flow("api.example.com", &format!("/p{i}"), "GET", 200, ts);
+            state.upsert_flow(Box::new(flow));
+            sleep(Duration::from_millis(30)).await;
+        }
+        sleep(Duration::from_millis(80)).await;
+
+        // The host-facing path: one policy update, no direct call to the storage setter.
+        state.update_policy(ProxyPolicy {
+            retention: relay_core_api::policy::RetentionPolicy {
+                max_flows: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let pruned = state.prune_now().await.expect("prune should report counts");
+        assert!(
+            pruned.total() > 0,
+            "a policy that bounds storage must take effect for the host that set it"
+        );
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        assert_eq!(
+            store.count_flows().await.expect("count"),
+            1,
+            "the store must honour the bound carried by policy"
+        );
+    }
+
+    /// An unbounded policy must not start a pruning task or delete anything.
+    #[tokio::test]
+    async fn an_unbounded_policy_leaves_storage_alone() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+        let flow = sample_http_flow("api.example.com", "/keep", "GET", 200, 1_700_000_021_000);
+        state.upsert_flow(Box::new(flow));
+        sleep(Duration::from_millis(80)).await;
+
+        state.update_policy(ProxyPolicy::default());
+
+        assert!(
+            state.prune_now().await.is_none(),
+            "the default policy is unbounded, so pruning must not even run"
+        );
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        assert_eq!(store.count_flows().await.expect("count"), 1);
     }
 
     /// The default is unbounded, so an existing deployment must not start deleting history.

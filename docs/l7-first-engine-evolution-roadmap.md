@@ -11,6 +11,8 @@
   - [`proxelar-rama-learning-directions.md`](./proxelar-rama-learning-directions.md)：外部参考项目审计与借鉴优先级
   - `.ai/archived/relaycraft-integration/056-relaycraft-mitmproxy-migration-checklist.md`：RelayCraft 接入与契约迁移清单（已归档，仅作背景）
   - `.ai/archived/2026-h2-roadmap/`：历史里程碑与 1.0 规划（已归档，仅作背景）
+  - [`engine-capability-status.md`](./engine-capability-status.md)：**能力现状盘点**（实测 + file:line 证据）。
+    本文档是**规划**权威；该文档回答「现状是什么」。两者冲突时以代码与实测为准，并应回来修正本文档。
   - `AGENTS.md`：工程纪律、TDD、Offline-First 与发布要求
 
 ---
@@ -928,7 +930,7 @@ RelayCraft 的接入应成为这套底座成熟度的证明，而不是底座设
 | Action | 状态 | 说明 | 位置 |
 |---|---|---|---|
 | `Add/Update/DeleteResponseHeader` | ✅ 已修复 | 由 Flow 重建响应头 | `proxy/http_utils.rs` `build_client_response_head` |
-| `SetResponseStatus` | ✅ 已修复 | 由 Flow 重建状态码 | 同上 |
+| `SetResponseStatus` | ✅ 已修复 | 由 Flow 重建状态码 | 同上；线路用例 `wire_matrix_response_status_mutation_reaches_client` |
 | `SetResponseBody` / `TransformResponseBody` | ✅ 已修复 | 响应 body 替换后由 Flow 提供字节并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`），与请求方向对称 | `proxy/http_utils.rs` `build_response_body_from_flow` / `reframe_response_headers_for_replaced_body`；`proxy/http.rs` |
 | `SetRequestBody` / `TransformRequestBody` | ✅ 已修复 | 检测到 Flow 持有替换体时改由 Flow 提供 body 并重建 framing（`content-length` 重算，丢弃 `transfer-encoding`/`content-encoding`）；未被替换的 body 仍保持流式 | `proxy/http_utils.rs` `build_request_body_from_flow` / `reframe_request_headers_for_replaced_body` |
 | `SetTtl` | ⬜ 未实现 | 自带告警日志，属有意未实现 | `proxy/server.rs:238-247` |
@@ -1168,12 +1170,27 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.10 验证体系基线
 
-- 全 workspace **493 个测试**，其中 socket 级 E2E **仅 22 个**，全部位于 `relay-core-lib/tests/`
-- **不存在任何**「修改后断言上游/客户端实际收到的字节」的测试
+- **计数已过期（本节此前为 493/22）**：截至 2026-09-13 实测 `cargo test --workspace` 为
+  **661 passed / 0 failed**（测试属性计数 838）；`relay-core-lib/tests/` 中 socket 级 E2E
+  `wire_matrix.rs` 为 **27 个用例，0 个 `#[ignore]`**。
+- **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
+  head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
 - 两个 UDP E2E 为 `#[cfg(not(target_os = "linux"))]`（`udp_integration_test.rs:45,101`）
   ⇒ 在唯一的阻塞门禁 Linux 上被跳过
-- CI 无 soak、无 fuzz、无 mitmproxy differential、coverage 无阈值、
-  无 cargo-audit/deny、macOS/Windows 仅构建不测试
+- ✅ **依赖审计已接入 CI**（2026-09-13）：新增 `deny.toml` 与 `audit` job，licences/bans 为**阻塞门禁**
+  （实测通过），advisories 先作为追踪项。首次运行即暴露存量漏洞，其中最严重的是
+  **`rustls-webpki 0.101.7` 的 3 条证书校验漏洞**与 **`h2 0.4.15` 的 DoS**——两者都在本引擎的
+  威胁模型内。清单与处置建议见 [`engine-capability-status.md`](./engine-capability-status.md) §2.5。
+- ✅ **差分套件现在会真的失败**：新增 `differential` job（安装 mitmproxy + `REQUIRE_MITMPROXY=1`）。
+  在此之前没有任何 workflow 设置该变量，3 个 fixture 在 CI 上恒为 `ok` 且什么都没比较。
+- ⬜ CI 仍无 soak、无 fuzz、coverage 无阈值、macOS/Windows 仅构建不测试。
+  **mitmproxy differential 更严重：没有任何 workflow 设置 `REQUIRE_MITMPROXY`，也不安装 mitmproxy，
+  而该套件在工具缺失时打印 skip 后返回成功 ⇒ 3 个 fixture 在 CI 上恒为 ok 且什么都没比较。**
+- **HTTP/2 无任何线路用例**：唯一 H2 测试是一次单请求且断言与版本无关；`wire_matrix.rs` 全为 H1 socket
+- 透明捕获三个平台 provider（`linux_tproxy.rs` / `macos_pf.rs` / `windows.rs`）**各有 0 个测试**，
+  测试全部基于 mock ⇒ 「Linux/macOS 可用」目前没有平台级证据
+- **MCP 资源不可订阅却在推送**：capabilities 未声明 `subscribe`，`subscribe` 方法未实现
+  ⇒ 通知发给无法合法订阅的客户端
 
 **载荷生成器上限（重要）**
 

@@ -18,6 +18,59 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::TlsConnector;
 
+/// Adds a response header, mirroring `Action::AddResponseHeader`.
+///
+/// The H2 path used `NoOpInterceptor`, so the test could not tell whether a mutation reaches an H2
+/// client at all — the gap §6's acceptance criteria are about (multi-stream + rules applied).
+struct H2ResponseHeaderInterceptor;
+
+#[async_trait::async_trait]
+impl relay_core_lib::interceptor::Interceptor for H2ResponseHeaderInterceptor {
+    // The three required hooks pass through untouched: this interceptor only exists to prove a
+    // response-header mutation survives the H2 path.
+    async fn on_request(
+        &self,
+        _flow: &mut relay_core_api::flow::Flow,
+        body: relay_core_lib::interceptor::HttpBody,
+    ) -> Result<relay_core_lib::interceptor::RequestAction, relay_core_lib::interceptor::BoxError>
+    {
+        Ok(relay_core_lib::interceptor::RequestAction::Continue(body))
+    }
+
+    async fn on_response(
+        &self,
+        _flow: &mut relay_core_api::flow::Flow,
+        body: relay_core_lib::interceptor::HttpBody,
+    ) -> Result<relay_core_lib::interceptor::ResponseAction, relay_core_lib::interceptor::BoxError>
+    {
+        Ok(relay_core_lib::interceptor::ResponseAction::Continue(body))
+    }
+
+    async fn on_websocket_message(
+        &self,
+        _flow: &mut relay_core_api::flow::Flow,
+        message: relay_core_api::flow::WebSocketMessage,
+    ) -> Result<
+        relay_core_lib::interceptor::WebSocketMessageAction,
+        relay_core_lib::interceptor::BoxError,
+    > {
+        Ok(relay_core_lib::interceptor::WebSocketMessageAction::Continue(message))
+    }
+
+    async fn on_response_headers(
+        &self,
+        flow: &mut relay_core_api::flow::Flow,
+    ) -> relay_core_lib::interceptor::InterceptionResult {
+        if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer
+            && let Some(res) = &mut http.response
+        {
+            res.headers
+                .push(("x-h2-probe".to_string(), "from-interceptor".to_string()));
+        }
+        relay_core_lib::interceptor::InterceptionResult::Continue
+    }
+}
+
 // Helper to create a self-signed server cert
 fn make_server_cert() -> (
     Vec<rustls::pki_types::CertificateDer<'static>>,
@@ -308,7 +361,7 @@ async fn test_https_mitm_h2() {
     let proxy_port = listener.local_addr().unwrap().port();
 
     let source = TcpCaptureSource::new(listener);
-    let interceptor = Arc::new(NoOpInterceptor {});
+    let interceptor = Arc::new(H2ResponseHeaderInterceptor);
     let ca = Arc::new(CertificateAuthority::new().expect("Failed to create CA"));
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(100);
@@ -404,32 +457,67 @@ async fn test_https_mitm_h2() {
         .body(Full::new(Bytes::new()))
         .unwrap();
 
-    let res = sender.send_request(req).await.expect("H2 request failed");
-    assert!(res.status().is_success());
+    // Two concurrent streams on the one H2 connection, so "multi-stream" is exercised rather than
+    // a single request that any implementation would satisfy.
+    let first = sender.send_request(req).await.expect("H2 request failed");
+    let second = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://127.0.0.1:{}/second", h2_echo_port))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .expect("second H2 stream failed");
 
-    let body = res.collect().await.unwrap().to_bytes();
+    assert!(first.status().is_success());
+    assert!(second.status().is_success());
+
+    // A rule mutation must reach an H2 client, not only an H1 one.
+    for (label, res) in [("first", &first), ("second", &second)] {
+        assert_eq!(
+            res.headers()
+                .get("x-h2-probe")
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("from-interceptor"),
+            "the {label} H2 stream must carry the mutated response header"
+        );
+    }
+
+    let body = first.collect().await.unwrap().to_bytes();
     assert_eq!(body, "H2 Secured");
+    let second_body = second.collect().await.unwrap().to_bytes();
+    assert_eq!(second_body, "H2 Secured");
 
-    // 6. Verify Interception Flow
+    // 6. Verify Interception Flow: both streams are recorded, and the Flow states the protocol the
+    // client actually spoke rather than the builder's H1 default.
+    let mut versions = Vec::new();
     loop {
         match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(Some(FlowUpdate::Full(flow))) => {
-                if let relay_core_api::flow::Layer::Http(http) = flow.layer {
-                    // Check if version is HTTP/2
-                    // Note: relay-core might normalize to HTTP/1.1 in Flow struct if it converts,
-                    // but let's check what we have.
-                    // Actually, the `http` struct in `relay-core-api` might have a version field.
-                    // If not, we just check we got the flow.
-                    if http.request.url.as_str().contains("https") {
+                if let relay_core_api::flow::Layer::Http(http) = flow.layer
+                    && http.request.url.as_str().contains("https")
+                {
+                    versions.push(http.request.version.clone());
+                    if versions.len() == 2 {
                         break;
                     }
                 }
             }
             Ok(None) => panic!("Channel closed"),
-            Err(_) => panic!("Timeout waiting for H2 flow update"),
+            Err(_) => panic!(
+                "timeout waiting for both H2 flows, only saw {} so far: {versions:?}",
+                versions.len()
+            ),
             Ok(Some(_)) => continue,
         }
     }
+
+    assert_eq!(versions.len(), 2, "both H2 streams must be recorded");
+    assert!(
+        versions.iter().all(|v| v == "HTTP/2.0"),
+        "the Flow must record the protocol the client actually spoke, got {versions:?}"
+    );
 }
 
 #[tokio::test]

@@ -61,9 +61,9 @@
 
 | API | 调用者 | 后果 |
 |---|---|---|
-| `CoreState::set_retention_policy` | **只有测试**（`runtime/src/lib.rs:2892`） | retention 默认 `unbounded()`，**任何宿主都无法设置** ⇒ §13「不允许无限增长」在磁盘上不成立 |
-| `CoreState::redact_stored_history` | **只有测试**（`runtime/lib.rs:2773,2797`） | 通过 `PATCH /api/v1/policy` 打开脱敏**不会重写既有历史**，此前的密钥永久留在磁盘上 ⇒ §24.8 的 ✅ 高估了可达性 |
-| `ScriptEngine::set_fetch_config` | **零调用者** | 脚本 `fetch` 白名单**永远无法启用**，`relay.fetch` 在任何宿主下都不可用 |
+| `CoreState::set_retention_policy` | **已接线**：`ProxyPolicy.retention` → `update_policy_from` | 任何能设策略的宿主（HTTP `PATCH /policy`、Tauri、MCP）现在都能给存储设界；未设界时仍不启动裁剪任务 |
+| `CoreState::redact_stored_history` | **已接线**：脱敏 `false → true` 时自动执行（后台） | 打开脱敏现在会重写既有历史；只重写历史、不再重复重写（已锁测试） |
+| `ScriptEngine::set_fetch_config` | **已接线**：`--script-fetch-allow` → `CoreState::set_script_fetch_allow` → 引擎 | `relay.fetch` 首次可由宿主启用；**必须在 `load_script` 之前设置**（引擎在构造时快照配置），该顺序要求已写在 setter 文档上 |
 | `QuicMode::ExperimentalMitm` | **零调用者**（cfg 门控变体） | 与 §20「暂不投入」边界一致，但它是「未接线的 API 枚举」，正是该条禁止的形态 |
 | `get_flows_dropped()` | **零调用者** | 真实存在的代理侧丢弃计数没有出口 |
 
@@ -84,7 +84,23 @@
 1. **CA 私钥以 `0644` 落盘。** `relay-core-lib/src/tls/ca.rs:247-251` 用普通 `fs::write`，工作区内**没有任何** `set_permissions`；本机实测 `ca_key.pem` 为 `-rw-r--r--`（仓库根与 `relay-core-cli/` 各一份）。
    好消息：这两个文件**未被 git 跟踪**且被 `.gitignore:80` 覆盖，因此没有泄漏进版本库；坏消息是同一台机器上的任何用户都能读走签发任意站点的能力。
 2. **脱敏默认关闭。** `RedactionPolicy::default()` 为 `enabled:false` + `redact_bodies:false`（`relay-core-api/src/policy.rs:126-131`）⇒ `Authorization` / `Cookie` / body 默认**原样写入 SQLite 并原样由 API 返回**。脱敏链路本身是完整的（落盘前、输出前、快照路径都过），但默认值使 §16 的隐私条目在默认配置下不成立。
-3. **无依赖漏洞门禁。** 仓库内无 `deny.toml` / `audit.toml` / `dependabot.yml`，CI 也无 `cargo-audit`/`cargo-deny` 步骤。
+3. **依赖漏洞门禁（本次新增后暴露出一批真实漏洞）。** 此前无 `deny.toml`、无 `cargo-deny`/`cargo-audit` 步骤、无 dependabot。
+   现在 CI 有 `audit` job：**licences 与 bans 为阻塞门禁**（已实测通过），advisories 先作为**追踪项**（见下）。
+
+   实测 `cargo deny check advisories` 的存量清单（2026-09-13，`Cargo.lock`）：
+
+   | 依赖 | 问题 | 与本项目的关系 |
+   |---|---|---|
+   | `rustls-webpki 0.101.7` | **3 条证书校验漏洞**：URI name constraints 被错误接受、wildcard name constraints 被接受、CRL 解析可 panic | 直击威胁模型：本引擎做上游证书校验 |
+   | `h2 0.4.15` | 空 DATA 帧无界（DoS） | MITM 后的 H2 路径正在用 |
+   | `quick-xml 0.39.4` | 属性名重复检查为二次复杂度；`NsReader` 命名空间分配无界 | 间接依赖 |
+   | `rustls-pemfile 2.2.0` | 已停止维护 | 与证书 PEM 解析相关 |
+   | `lru 0.16.4` | `LruCache::pop()` 缺 panic 安全，潜在 UAF（unsound） | 间接依赖 |
+   | `atomic` | `fmt::Pointer` 实现中无效指针解引用 | 间接依赖 |
+   | `spin 0.9.8` | 版本被 yank | 经 `sqlx-sqlite` → `flume` |
+
+   **未做任何 ignore**：把其中任何一条写进 `ignore` 等于替团队做了一次安全决策，因此这些条目只报告、不被接受。
+   多数属补丁级升级（`cargo update -p <crate>`）可解，但需要独立提交与验证，属待办。
 
 另有一处能力缺口值得单列：**没有「按 host 决定 MITM / passthrough / drop」的策略**。每个 CONNECT 都无条件 MITM（`proxy/http.rs:46-96` → `tunnel.rs:41`），因此使用证书 pinning 的客户端只能失败——而 §8 的验收标准正是「可按策略 passthrough 而非只能失败」。
 

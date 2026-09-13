@@ -34,6 +34,9 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+// Exactly one of these is constructed, once, at process start — so the size difference between
+// variants costs nothing, and clap's derive reads better than a boxed payload would.
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Start the proxy server
     Run {
@@ -116,6 +119,12 @@ pub enum Commands {
         #[cfg(feature = "script")]
         #[arg(long)]
         script_env_allow: Option<String>,
+
+        /// Comma-separated host allowlist for relay.fetch in scripts. Setting it enables
+        /// relay.fetch; leaving it unset keeps it disabled. Use "*" to allow any host.
+        #[cfg(feature = "script")]
+        #[arg(long)]
+        script_fetch_allow: Option<String>,
 
         /// Upstream proxy URL, e.g. "http://corp-proxy:8080" or "https://secure-proxy:8443"
         #[arg(long)]

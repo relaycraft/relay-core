@@ -183,6 +183,27 @@ impl ScriptInterceptor {
         *guard = env_allow;
     }
 
+    /// Enable or disable `relay.fetch` and replace its host allowlist, keeping everything else.
+    ///
+    /// Narrower than [`Self::set_fetch_config`] on purpose: a host should not have to know
+    /// `max_concurrency`, `timeout_ms` or — critically — `proxy_listen_port`, which is what stops a
+    /// script from fetching back through the proxy itself. Passing a whole config from a host would
+    /// silently reset that guard.
+    ///
+    /// **Call this before [`Self::load_script`].** Engines take a snapshot of this configuration when
+    /// they are built, so changing it afterwards has no effect until the next script load — the same
+    /// ordering requirement `set_env_allow` has. A host that sets it later gets a silent no-op rather
+    /// than an error, which is why the order is stated here.
+    pub async fn set_fetch_allow(&self, enabled: bool, allow_hosts: HashSet<String>) {
+        let mut config = {
+            let guard = self.fetch_config.read().await;
+            guard.clone()
+        };
+        config.enabled = enabled;
+        config.allow_hosts = allow_hosts;
+        self.set_fetch_config(config).await;
+    }
+
     pub async fn set_fetch_config(&self, config: deno_engine::ScriptFetchConfig) {
         let mut guard = self.fetch_config.write().await;
         *guard = config;

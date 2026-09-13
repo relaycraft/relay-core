@@ -23,32 +23,43 @@
 //!
 //! ## Status of cases
 //!
-//! Cases that expose a known gap (roadmap §24) are marked `#[ignore]` with the §24 reference so
-//! the suite stays green while the gap is open. **Do not delete an assertion to make a case
-//! pass** — remove the `#[ignore]` only when the data plane is actually fixed.
+//! Every case in this file passes and **none is `#[ignore]`d**: a case is added when the data plane
+//! actually works, and a capability with no case is listed as untested below rather than parked as
+//! a skipped test. **Do not delete an assertion to make a case pass.**
 //!
 //! ## Action coverage inventory
 //!
 //! The full public action set is `relay-core-api/src/rule.rs` (30 variants). This table is the
 //! single tracking point for "has a real wire-level assertion yet". Per roadmap §22 a capability
-//! may not be reported `Stable` while its row is `none` or `gap`.
+//! may not be reported `Stable` while its row reads *untested*.
 //!
 //! | Action | Wire status | Case |
 //! |---|---|---|
-//! | `Add/Update/DeleteRequestHeader` | **pass** | `wire_matrix_request_header_mutation_reaches_upstream` |
-//! | `SetRequestMethod` / `SetRequestUrl` | pass (same rebuild path as request headers) | – |
-//! | `SetRequestBody` / `TransformRequestBody` | **gap — §24.1** | `wire_matrix_request_body_mutation_reaches_upstream` |
-//! | `Add/Update/DeleteResponseHeader` | **gap — §24.1** | `wire_matrix_response_header_mutation_reaches_client` |
-//! | `SetResponseStatus` | gap — §24.1 (same `res_parts` path) | – |
-//! | `SetResponseBody` / `TransformResponseBody` | gap — §24.1 | – |
-//! | `MockWebSocketMessage` | gap — §24.1 (frame is dropped) | – |
-//! | `SetTtl` | gap — unimplemented by design | – |
-//! | `MapRemote` (WebSocket handshake) | gap — §24.1 | – |
-//! | `ForwardPort` (`target_host`) | gap — §24.1 | – |
-//! | `Drop` / `Abort` | covered elsewhere (`udp_integration_test`) | – |
-//! | `MapLocal` / `MapRemote` (HTTP) / `Redirect` / `MockResponse` | none yet | – |
-//! | `Delay` / `Throttle` / `RateLimit` | none yet | – |
-//! | `Tag` / `SetVariable` / `Inspect` | Flow-metadata only, no wire effect by design | – |
+//! | `Add/Update/DeleteRequestHeader` | **verified** | `wire_matrix_request_header_mutation_reaches_upstream` |
+//! | `Add/Update/DeleteResponseHeader` | **verified** | `wire_matrix_response_header_mutation_reaches_client` |
+//! | `SetResponseStatus` | **verified** | `wire_matrix_response_status_mutation_reaches_client` |
+//! | `SetRequestBody` / `TransformRequestBody` | **verified** | `wire_matrix_request_body_mutation_reaches_upstream` |
+//! | `SetResponseBody` / `TransformResponseBody` | **verified** | `wire_matrix_response_body_replacement_reaches_client` |
+//! | `TransformResponseBody` under `Content-Encoding` | **verified** (gzip / br / zstd) | `wire_matrix_{gzip,brotli,zstd}_response_rewrite_stays_decodable` |
+//! | `TransformRequestBody` under `Content-Encoding` | **verified** (plaintext + header dropped) | `wire_matrix_compressed_request_rewrite_is_sent_as_plaintext_without_a_false_header` |
+//! | `MockWebSocketMessage` | **interceptor-level only** — the frame is replaced, but no socket assertion exists | `relay-core-runtime/tests/actor_tests.rs` |
+//! | `MapRemote` (WebSocket handshake) | **verified** | `wire_matrix_ws_handshake_target_rewrite_is_honoured` |
+//! | rule matching on a retained body (request / response) | **verified** | `wire_matrix_body_stage_rule_matches_on_the_body`, `wire_matrix_response_body_rule_matches_on_the_body` |
+//! | rule matching through `Content-Encoding` | **verified** | `wire_matrix_body_filter_matches_through_content_encoding`, `..._verdict_is_matched_not_missed_on_gzip` |
+//! | chain applies a mutation once | **verified** | `wire_matrix_stage_guard_applies_mutation_once_per_chain` |
+//! | exchange lifecycle (`end_time`, close reason, drops) | **verified** | `wire_matrix_completed_flow_records_its_end_time`, `..._failed_flow_records_its_end_time`, `..._a_finished_exchange_reports_its_close_reason_once`, `..._dropped_exchange_is_not_reported_as_completed` |
+//! | WebSocket session end / failed handshake | **verified** | `wire_matrix_ws_session_end_reaches_consumers`, `wire_matrix_failed_ws_handshake_is_recorded` |
+//! | ingress/response HTTP version, client connection reuse | **verified** | `wire_matrix_forwarded_request_carries_the_client_version`, `..._response_version_matches_the_client_not_the_upstream`, `..._client_connection_is_reused_for_a_second_request` |
+//! | `SetRequestMethod` / `SetRequestUrl` | **untested** (same rebuild path as request headers) | – |
+//! | `MapLocal` / `MapRemote` (HTTP) / `Redirect` / `MockResponse` | **untested** | – |
+//! | `Delay` / `Throttle` / `RateLimit` | **untested** (`Throttle` has a wrapper-level timing test) | – |
+//! | `ForwardPort` / `RedirectIp` | **untested** (embedded transparent-TCP path only) | – |
+//! | `SetTtl` | **no wire effect anywhere** (warn-only stub) | – |
+//! | `Tag` / `SetVariable` | Flow-metadata only by design | – |
+//! | `Inspect` | pauses the exchange for up to 60s; **no wire case** | – |
+//!
+//! Rows marked *untested* are the gap list for this file: an action may be `untested` and still
+//! work, but per roadmap §22 it may not be reported `Stable`.
 
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
@@ -459,6 +470,34 @@ async fn wire_matrix_response_header_mutation_reaches_client() {
             .to_lowercase()
             .contains("x-wire-probe: from-interceptor"),
         "[{}] a response-header mutation must reach the client socket, got:\n{client}",
+        CASE.id
+    );
+}
+
+/// `SetResponseStatus` reaches the client as a status line, not just as a Flow field.
+///
+/// The `Phase::ResponseStatus` scaffolding existed but no case selected it, so the roadmap's claim
+/// that this action is wire-verified was unsupported: a status mutation that only changed `Flow`
+/// would have looked identical to a working one.
+#[tokio::test]
+async fn wire_matrix_response_status_mutation_reaches_client() {
+    const CASE: Case = Case {
+        id: "response_status",
+        phase: Phase::ResponseStatus,
+        request: "GET /probe HTTP/1.1",
+        body: "",
+    };
+
+    let (client, _upstream) = run_case(&CASE).await;
+
+    assert!(
+        client.contains("418"),
+        "[{}] a status mutation must reach the client status line, got:\n{client}",
+        CASE.id
+    );
+    assert!(
+        !client.contains("200 OK"),
+        "[{}] the upstream status must not also be sent, got:\n{client}",
         CASE.id
     );
 }

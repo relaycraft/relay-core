@@ -54,6 +54,50 @@ jobs:
           cargo build --release --package relay-core-cli --target x86_64-pc-windows-msvc
           cargo build --release --package relay-core-probe --target x86_64-pc-windows-msvc
 
+  # The mitmproxy differential fixtures are the only evidence that RelayCore's client-observable
+  # bytes match the reference implementation. They skip themselves when mitmdump is missing, and a
+  # skipped test is reported as `ok` — so without this job and REQUIRE_MITMPROXY they could never
+  # fail, no matter what the engine did.
+  differential:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/rust-workspace
+
+      - name: Install mitmproxy
+        run: pipx install mitmproxy
+
+      - name: Differential fixtures (must not skip)
+        env:
+          REQUIRE_MITMPROXY: "1"
+        run: cargo test --package relay-core-lib --test mitmproxy_differential
+
+  # Nothing checked dependencies for vulnerabilities or licence drift before this.
+  audit:
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@cargo-deny
+
+      # Enforcing: licence and dependency policy is currently satisfied, so a regression should fail.
+      - name: Check licences and dependency policy
+        run: cargo deny check licenses bans
+
+      # Tracking, not yet gating. The tree has a backlog of real advisories (three certificate
+      # validation bugs in rustls-webpki, an h2 DoS, an unmaintained rustls-pemfile, an unsound lru,
+      # a yanked spin), and deciding to accept any of them is a security decision nobody has taken —
+      # so they are reported on every run instead of being written into an ignore list. Make this
+      # blocking once the backlog is triaged or upgraded; see docs/engine-capability-status.md §2.5.
+      - name: Report dependency advisories (non-blocking until triaged)
+        continue-on-error: true
+        run: cargo deny check advisories
+
   coverage:
     runs-on: ubuntu-latest
     needs: quality
