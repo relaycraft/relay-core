@@ -745,6 +745,11 @@ impl CoreState {
     ) -> Result<String, String> {
         let rule_id = config.rule_id.clone();
         let mut rules = self.get_rules().await;
+        // Replace rather than append. Appending on a repeated call left two rules sharing an id — or
+        // `{id}-0` / `{id}-1` for a two-stage rule — which made them indistinguishable and impossible
+        // to remove by id. A caller re-sending an id means "this rule", not "one more like it".
+        let stage_prefix = format!("{rule_id}-");
+        rules.retain(|existing| existing.id != rule_id && !existing.id.starts_with(&stage_prefix));
         rules.extend(build_intercept_rules(config));
         self.set_rules_from(actor, "rule.intercept_create", target, details, rules)
             .await
@@ -3066,6 +3071,53 @@ mod tests {
             .expect("a valid rule must be accepted");
 
         assert_eq!(state.get_rules().await.len(), 1);
+    }
+
+    /// Re-sending the same intercept rule must replace it, not add a second copy.
+    ///
+    /// The rule id is what a caller uses to remove it again, so two rules sharing one id are not just
+    /// untidy: neither can be addressed. An agent that retries a tool call is the ordinary way this
+    /// happens.
+    #[tokio::test]
+    async fn creating_the_same_intercept_rule_twice_replaces_it() {
+        use crate::rule::InterceptRuleConfig;
+
+        let state = CoreState::new(None).await;
+        let config = || InterceptRuleConfig {
+            rule_id: "probe-intercept-abc".to_string(),
+            active: true,
+            url_pattern: "example.com/api".to_string(),
+            method: None,
+            phase: "request".to_string(),
+            name: "probe-intercept:example.com/api".to_string(),
+            priority: 100,
+            termination: relay_core_lib::rule::RuleTermination::Stop,
+        };
+
+        for _ in 0..3 {
+            state
+                .create_intercept_rule_from(
+                    AuditActor::Probe,
+                    "probe-intercept-abc".to_string(),
+                    json!({ "tool": "set_intercept" }),
+                    config(),
+                )
+                .await
+                .expect("rule creation should succeed");
+        }
+
+        let rules = state.get_rules().await;
+        let matching: Vec<&relay_core_lib::rule::Rule> = rules
+            .iter()
+            .filter(|r| r.id.starts_with("probe-intercept-abc"))
+            .collect();
+
+        assert_eq!(
+            matching.len(),
+            1,
+            "three identical calls must leave one rule, got {:?}",
+            matching.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
     }
 
     /// Persisting flows with a bound set must actually evict old rows through the runtime, not just

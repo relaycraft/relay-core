@@ -8,7 +8,6 @@ use relay_core_runtime::rule::MockResponseRuleConfig;
 use rmcp::model::{Content, Tool};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub fn set_rule_schema() -> Tool {
     make_tool(
@@ -161,7 +160,9 @@ pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
         .unwrap_or("application/json")
         .to_string();
 
-    let rule_id = format!("probe-mock-{}", Uuid::new_v4());
+    // Derived from the call: `mock_url` upserts by id, so a stable id is what makes a retry an
+    // update rather than a duplicate.
+    let rule_id = super::stable_rule_id("probe-mock", &[&url_pattern, &status.to_string()]);
     ctx.rules
         .create_mock_response_rule_from(
             AuditActor::Probe,

@@ -129,3 +129,63 @@ pub(crate) fn ok_json(value: &impl serde::Serialize) -> Result<Vec<Content>, Too
 pub(crate) fn ok_text(text: impl Into<String>) -> Result<Vec<Content>, ToolError> {
     Ok(vec![Content::text(text.into())])
 }
+
+/// A rule id derived from the call that asked for the rule.
+///
+/// Idempotency needs identity: an agent that retries `set_intercept` or `mock_url` with the same
+/// arguments is asking for the same rule, and a fresh UUID per call turned every retry into an extra
+/// rule. The hash is FNV-1a rather than a cryptographic digest because this is identity, not
+/// security, and unlike `DefaultHasher` it is reproducible across builds and Rust versions — a rule
+/// id that changed when the toolchain did would silently stop matching the rule it was stored under.
+pub(crate) fn stable_rule_id(prefix: &str, parts: &[&str]) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        // A separator so ["ab", "c"] and ["a", "bc"] cannot collide.
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    format!("{prefix}-{hash:016x}")
+}
+
+#[cfg(test)]
+mod stable_rule_id_tests {
+    use super::stable_rule_id;
+
+    /// The same call must produce the same id, or a retried tool call accumulates duplicates.
+    #[test]
+    fn the_same_call_produces_the_same_id() {
+        let first = stable_rule_id("probe-intercept", &["example.com/api", "request"]);
+        let second = stable_rule_id("probe-intercept", &["example.com/api", "request"]);
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("probe-intercept-"));
+    }
+
+    /// Different calls must not collide, including when the boundary between parts moves.
+    #[test]
+    fn different_calls_produce_different_ids() {
+        let ids = [
+            stable_rule_id("probe-intercept", &["example.com/api", "request"]),
+            stable_rule_id("probe-intercept", &["example.com/api", "response"]),
+            stable_rule_id("probe-intercept", &["example.com/other", "request"]),
+            stable_rule_id("probe-mock", &["example.com/api", "request"]),
+            stable_rule_id("probe-intercept", &["ab", "c"]),
+            stable_rule_id("probe-intercept", &["a", "bc"]),
+        ];
+
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "ids must distinguish these calls: {ids:?}"
+        );
+    }
+}

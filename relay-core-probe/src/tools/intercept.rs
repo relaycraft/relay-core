@@ -8,7 +8,6 @@ use relay_core_runtime::rule::InterceptRuleConfig;
 use rmcp::model::{Content, Tool};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub fn set_intercept_schema() -> Tool {
     make_tool(
@@ -81,7 +80,9 @@ pub async fn set_intercept(
         .and_then(Value::as_str)
         .unwrap_or("request");
 
-    let rule_id = Uuid::new_v4().to_string();
+    // Derived from the call, so retrying the same request targets the same rule instead of adding
+    // another one.
+    let rule_id = super::stable_rule_id("probe-intercept", &[&url_pattern, phase]);
     ctx.rules
         .create_intercept_rule_from(
             AuditActor::Probe,
