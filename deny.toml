@@ -17,11 +17,11 @@ version = 2
 # severity thresholds rather than on/off switches.
 unmaintained = "workspace"
 yanked = "deny"
-# Deliberately empty. The tree currently has a backlog of advisories (see
-# docs/engine-capability-status.md §2.5), and they are listed rather than ignored: an ignore entry
-# here would record a security decision nobody has taken yet. Until that triage happens the CI audit
-# job is a tracker, not a gate — switching it to blocking requires either the upgrades or an explicit
-# decision to accept each advisory.
+# Deliberately empty, and it must stay that way until someone assesses reachability: the tree has a
+# backlog of advisories (see docs/engine-capability-status.md §2.5) and an ignore entry would record
+# a security decision nobody has taken. Converging that backlog is owned by Dependabot, not by
+# hand-triaging here — see docs/decisions/0004. The CI audit job therefore reports advisories
+# without blocking; licences and bans do block.
 ignore = []
 
 [licenses]

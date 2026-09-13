@@ -1180,7 +1180,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ **依赖审计已接入 CI**（2026-09-13）：新增 `deny.toml` 与 `audit` job，licences/bans 为**阻塞门禁**
   （实测通过），advisories 先作为追踪项。首次运行即暴露存量漏洞，其中最严重的是
   **`rustls-webpki 0.101.7` 的 3 条证书校验漏洞**与 **`h2 0.4.15` 的 DoS**——两者都在本引擎的
-  威胁模型内。清单与处置建议见 [`engine-capability-status.md`](./engine-capability-status.md) §2.5。
+  威胁模型内。清单见 [`engine-capability-status.md`](./engine-capability-status.md) §2.5；
+  收敛方式由 [`decisions/0004`](./decisions/0004-dependency-advisories-owned-by-dependabot.md) 裁定：
+  **交 Dependabot 自动管理**，不人工逐条 `ignore`。因此在接入 Dependabot 前，
+  **advisories 不阻塞发布**，且「CI 绿」不代表无已知漏洞。
 - ✅ **差分套件现在会真的失败**：新增 `differential` job（安装 mitmproxy + `REQUIRE_MITMPROXY=1`）。
   在此之前没有任何 workflow 设置该变量，3 个 fixture 在 CI 上恒为 `ok` 且什么都没比较。
 - ⬜ CI 仍无 soak、无 fuzz、coverage 无阈值、macOS/Windows 仅构建不测试。

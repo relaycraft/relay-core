@@ -100,7 +100,9 @@
    | `spin 0.9.8` | 版本被 yank | 经 `sqlx-sqlite` → `flume` |
 
    **未做任何 ignore**：把其中任何一条写进 `ignore` 等于替团队做了一次安全决策，因此这些条目只报告、不被接受。
-   多数属补丁级升级（`cargo update -p <crate>`）可解，但需要独立提交与验证，属待办。
+   收敛方式已决策：**由 Dependabot 接管**（[`decisions/0004`](./decisions/0004-dependency-advisories-owned-by-dependabot.md)），
+   不逐条人工分类。因此 **CI 全绿不等于没有已知漏洞**——在 Dependabot 接入前，
+   本表是唯一权威清单，且这些漏洞**不会阻塞发布**（有意接受）。
 
 另有一处能力缺口值得单列：**没有「按 host 决定 MITM / passthrough / drop」的策略**。每个 CONNECT 都无条件 MITM（`proxy/http.rs:46-96` → `tunnel.rs:41`），因此使用证书 pinning 的客户端只能失败——而 §8 的验收标准正是「可按策略 passthrough 而非只能失败」。
 

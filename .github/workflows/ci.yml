@@ -89,12 +89,13 @@ jobs:
       - name: Check licences and dependency policy
         run: cargo deny check licenses bans
 
-      # Tracking, not yet gating. The tree has a backlog of real advisories (three certificate
+      # Tracking, not gating: the tree has a backlog of real advisories (three certificate
       # validation bugs in rustls-webpki, an h2 DoS, an unmaintained rustls-pemfile, an unsound lru,
-      # a yanked spin), and deciding to accept any of them is a security decision nobody has taken —
-      # so they are reported on every run instead of being written into an ignore list. Make this
-      # blocking once the backlog is triaged or upgraded; see docs/engine-capability-status.md §2.5.
-      - name: Report dependency advisories (non-blocking until triaged)
+      # a yanked spin) that nobody has assessed for reachability, and writing them into an ignore
+      # list would record a security decision nobody has taken. Converging them is owned by
+      # Dependabot (docs/decisions/0004), so they are reported on every run instead.
+      # Consequence to keep in mind: a green CI does not mean there are no known advisories.
+      - name: Report dependency advisories (non-blocking; owned by Dependabot)
         continue-on-error: true
         run: cargo deny check advisories
 
