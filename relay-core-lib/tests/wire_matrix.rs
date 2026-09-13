@@ -2837,3 +2837,137 @@ async fn wire_matrix_client_connection_is_reused_for_a_second_request() {
 
     conn_task.abort();
 }
+
+/// A plaintext HTTP/2 (h2c) request must be captured and forwarded.
+///
+/// The plaintext listener served HTTP/1.1 only, so h2c — how gRPC is used on networks that do not
+/// terminate TLS, and something mitmproxy does not support either — was parsed as HTTP/1.1 or
+/// rejected. Capture was therefore impossible for it. The listener now detects the protocol from the
+/// connection preface, so H1 clients are unaffected and h2c is a first-class ingress.
+///
+/// The client here speaks prior-knowledge H2 to the proxy while naming the upstream in `:authority`,
+/// which is how an h2c forward-proxy request is expressed (HTTP/2 has no absolute-form request
+/// line). Independently confirmed with `curl --http2-prior-knowledge` over nghttp2, which returns
+/// `HTTP/2 200` through this same path.
+#[tokio::test]
+async fn wire_matrix_h2c_ingress_is_captured_and_forwarded() {
+    init_crypto();
+
+    let (upstream_addr, upstream_served, _upstream_connections) = spawn_keepalive_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    // Mutate a response header so the assertion covers "the rule reached the wire", not just
+    // "something answered".
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor {
+        phase: Phase::ResponseHeaders,
+    });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // Connect to the proxy, but address the upstream in the request URI — the h2c equivalent of
+    // curl's `--connect-to`.
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let (mut sender, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .timer(hyper_util::rt::TokioTimer::new())
+            .handshake(TokioIo::new(stream))
+            .await
+            .expect("h2c handshake to the proxy must succeed");
+    let conn_task = tokio::spawn(conn);
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sender.send_request(
+            hyper::Request::builder()
+                .method("GET")
+                .uri(format!("http://{upstream_addr}/h2c-probe"))
+                .body(String::new())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("an h2c request must not hang")
+    .expect("an h2c request must be forwarded, not refused");
+
+    assert_eq!(
+        response.version(),
+        hyper::Version::HTTP_2,
+        "the proxy must answer in the protocol the client spoke"
+    );
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-wire-probe")
+            .map(|v| v.to_str().unwrap_or("")),
+        Some("from-interceptor"),
+        "a rule must reach an h2c client the same way it reaches an H1 one"
+    );
+
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(
+        &body[..],
+        b"kept-alive",
+        "the upstream body must be relayed"
+    );
+
+    assert_eq!(
+        upstream_served.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the h2c request must actually reach the upstream"
+    );
+
+    // The Flow must record the protocol the client spoke, which is what makes an h2c exchange
+    // distinguishable from an H1 one in the UI and to an agent reading the traffic.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut version = None;
+    while tokio::time::Instant::now() < deadline && version.is_none() {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) => {
+                if let Layer::Http(http) = &flow.layer
+                    && http.request.url.as_str().contains("/h2c-probe")
+                {
+                    version = Some(http.request.version.clone());
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+    assert_eq!(
+        version.as_deref(),
+        Some("HTTP/2.0"),
+        "the captured Flow must say the request arrived over HTTP/2"
+    );
+
+    conn_task.abort();
+}

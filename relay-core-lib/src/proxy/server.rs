@@ -1,4 +1,3 @@
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
@@ -279,12 +278,22 @@ where
         let conn_meter = crate::metrics::ConnectionMeter::new();
         tokio::task::spawn(ENGINE_INDEX.scope(engine_index, async move {
             let conn_start = Instant::now();
-            let result = http1::Builder::new()
+            // Both protocols on the plaintext listener, detected from the connection preface. An
+            // H2 client that speaks plaintext (h2c, "prior knowledge") is how gRPC is used inside a
+            // network that does not terminate TLS; serving only HTTP/1.1 meant those requests were
+            // parsed as HTTP/1.1 or rejected outright, so they could not be captured at all.
+            // H1 clients are unaffected: `auto` only chooses H2 when it sees the H2 preface.
+            let mut builder =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .http1_only();
+            builder
+                .http1()
                 .timer(hyper_util::rt::TokioTimer::new())
                 .header_read_timeout(Duration::from_secs(10))
                 .preserve_header_case(true)
-                .title_case_headers(true)
-                .serve_connection(
+                .title_case_headers(true);
+            let result = builder
+                .serve_connection_with_upgrades(
                     io,
                     service_fn(move |req| {
                         handle_request(
@@ -301,7 +310,6 @@ where
                         )
                     }),
                 )
-                .with_upgrades()
                 .await;
 
             let stats = crate::interceptor::ConnectionStats {

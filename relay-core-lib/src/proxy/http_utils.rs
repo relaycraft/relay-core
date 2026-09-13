@@ -459,11 +459,20 @@ pub fn build_forward_request(
     };
 
     // Carry the version the client actually spoke, so the forwarded request describes the real
-    // ingress protocol rather than the builder's HTTP/1.1 default. (Over TLS the wire protocol still
-    // follows ALPN; this keeps the request's own metadata truthful.)
-    let mut forward_req_builder = Request::builder()
-        .method(current_req.method.as_str())
-        .version(parse_http_version(&current_req.version));
+    // ingress protocol rather than the builder's HTTP/1.1 default — an HTTP/1.0 client must not have
+    // its request line rewritten to HTTP/1.1 upstream.
+    //
+    // Only for HTTP/1.x, though. An HTTP/2 ingress (h2c on the plaintext listener, or H2 behind a
+    // TLS tunnel) says nothing about what the *upstream* connection will speak: that is decided by
+    // the URL and ALPN, not by the client. Setting HTTP/2 unconditionally here made hyper refuse the
+    // send outright — "Connection is HTTP/1, but request requires HTTP/2" → 502 — so every h2c
+    // request failed to forward. The connection is the only thing that knows its own protocol, so
+    // for HTTP/2 ingress the version is left to it.
+    let ingress_version = parse_http_version(&current_req.version);
+    let mut forward_req_builder = Request::builder().method(current_req.method.as_str());
+    if ingress_version == hyper::Version::HTTP_10 || ingress_version == hyper::Version::HTTP_11 {
+        forward_req_builder = forward_req_builder.version(ingress_version);
+    }
 
     // Determine upstream URI
     let mut target_url = current_req.url.clone();

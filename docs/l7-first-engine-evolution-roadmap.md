@@ -1130,8 +1130,18 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.9 协议与压缩
 
-- HTTP/2 仅存在于 CONNECT-MITM 的 TLS 之后（`proxy/tunnel.rs:66`、`tls/ca.rs:311`）；
-  明文首跳为 H1-only（`proxy/server.rs:271`）
+- ✅ **明文 h2c 已支持**（2026-09-13）：明文监听改为**按连接前言自动识别 H1/H2**
+  （`server.rs`，`auto::Builder` + `serve_connection_with_upgrades`），因此
+  **h2c（prior-knowledge）现在可被抓取并转发**。H1 客户端行为不变（自动识别只在前言匹配时选 H2）。
+  这是**差异化的能力**：mitmproxy 不支持 h2c。契约由 `wire_matrix_h2c_ingress_is_captured_and_forwarded`
+  锁定（h2c 客户端 + 真实上游 + 规则改写 + Flow 记录 `HTTP/2.0`），已双向验证：
+  退回 H1-only 监听 → `broken pipe`；退回「无条件传播入站版本」→ `502`。
+  独立客户端复核：`curl --http2-prior-knowledge`（nghttp2 1.68.1）经此路径返回 `HTTP/2 200`。
+- ✅ **顺带修掉一个由此暴露的真实缺陷**：转发请求此前**无条件**带上入站版本，于是 h2c 入站会让
+  hyper 拒绝发送（`Connection is HTTP/1, but request requires HTTP/2` → 502）。现在
+  **只传播 HTTP/1.x**；H2 入站的协议由上游连接（URL/ALPN）决定，不由客户端决定。
+- ⬜ HTTP/2 仍未覆盖的部分：CONNECT 隧道内的 h2c、RST_STREAM/GOAWAY/取消、`:authority` 与
+  CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
   （此前恒为 builder 默认的 HTTP/1.1）。新增 `parse_http_version` 解析 `Flow` 中
