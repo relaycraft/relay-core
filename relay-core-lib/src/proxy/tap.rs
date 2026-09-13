@@ -66,6 +66,31 @@ impl Body for TapBody {
                         Direction::ServerToClient => crate::metrics::add_bytes_recv(len),
                     }
                 }
+
+                // Trailers arrive after the body, so they cannot be part of the original snapshot and
+                // are reported as an incremental update. Only the response direction is recorded:
+                // gRPC puts the outcome of a call there, and `HttpRequest` has no trailers field yet.
+                if self.direction == Direction::ServerToClient
+                    && let Some(trailers) = frame.trailers_ref()
+                {
+                    let trailers: Vec<(String, String)> = trailers
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.as_str().to_string(),
+                                String::from_utf8_lossy(v.as_bytes()).to_string(),
+                            )
+                        })
+                        .collect();
+                    if !trailers.is_empty() {
+                        // Non-blocking on purpose: a slow consumer must not stall the body stream.
+                        let _ = self.on_flow.try_send(FlowUpdate::ResponseTrailers {
+                            flow_id: self.flow_id.clone(),
+                            trailers,
+                        });
+                    }
+                }
+
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
@@ -199,13 +224,29 @@ mod tests {
             "trailer x-trailer should be preserved"
         );
 
-        // Verify TapBody still sent HttpBody event
-        let event = rx.try_recv().expect("should emit HttpBody event");
-        match event {
-            FlowUpdate::HttpBody { body, .. } => {
-                assert_eq!(body.size, 5, "body size should match data");
+        // TapBody must report both what it observed: the body, and — separately, because they arrive
+        // after it — the trailers. gRPC puts the outcome of a call in the trailers, so a capture that
+        // forwards them to the client but never records them cannot say whether the call succeeded.
+        let mut saw_body = false;
+        let mut recorded_trailers: Option<Vec<(String, String)>> = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                FlowUpdate::HttpBody { body, .. } => {
+                    assert_eq!(body.size, 5, "body size should match data");
+                    saw_body = true;
+                }
+                FlowUpdate::ResponseTrailers { trailers, .. } => {
+                    recorded_trailers = Some(trailers);
+                }
+                other => panic!("unexpected update: {other:?}"),
             }
-            other => panic!("expected HttpBody, got {:?}", other),
         }
+
+        assert!(saw_body, "TapBody must still report the body it observed");
+        assert_eq!(
+            recorded_trailers,
+            Some(vec![("x-trailer".to_string(), "value".to_string())]),
+            "trailers must be reported as an incremental update, not only forwarded"
+        );
     }
 }

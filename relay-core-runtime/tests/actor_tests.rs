@@ -97,6 +97,7 @@ fn create_test_ws_flow(url: &str) -> Flow {
                 headers: vec![],
                 cookies: vec![],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -323,6 +324,7 @@ async fn test_core_state_update_http_body_request_and_response() {
             headers: vec![],
             cookies: vec![],
             body: None,
+            trailers: vec![],
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,
@@ -662,6 +664,7 @@ async fn test_rule_interceptor_mock_websocket_message_replaces_frame() {
             headers: vec![],
             cookies: vec![],
             body: None,
+            trailers: vec![],
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,

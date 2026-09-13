@@ -164,6 +164,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                                 size: response["content"]["size"].as_u64().unwrap_or(0),
                             }
                         }),
+                        trailers: vec![],
                         timing: relay_core_api::flow::ResponseTiming {
                             time_to_first_byte: timing["wait"].as_u64(),
                             time_to_last_byte: timing["time"].as_u64(),

@@ -53,6 +53,7 @@ pub fn apply_flow_modification(
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -160,6 +161,7 @@ mod tests {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -204,6 +206,7 @@ mod tests {
                     version: "HTTP/1.1".to_string(),
                     headers: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

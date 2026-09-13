@@ -56,6 +56,7 @@ fn test_flow_to_flow_index_conversion() {
                     content: "{\"status\":\"ok\"}".to_string(),
                     size: 15,
                 }),
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: Some(50),
                     time_to_last_byte: Some(100),
@@ -206,6 +207,7 @@ fn test_websocket_flow_to_detail_conversion() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -386,6 +388,7 @@ fn test_flow_detail_http_har_compat_fields() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![("Location".to_string(), "http://example.com/r".to_string())],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: Some(5),
                     time_to_last_byte: Some(10),
@@ -459,6 +462,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                     content: "BAUG".to_string(),
                     size: 3,
                 }),
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -565,6 +569,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
@@ -619,6 +624,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![("Content-Type".to_string(), "application/json".to_string())],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,

@@ -840,6 +840,7 @@ mod tests {
                 version: "HTTP/1.1".to_string(),
                 headers: vec![],
                 body: None,
+                trailers: vec![],
                 timing: relay_core_api::flow::ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,

@@ -85,6 +85,18 @@ impl<R: Runtime> TauriFlowSink<R> {
                         eprintln!("Failed to emit flow-body-update event: {}", e);
                     }
                 }
+                FlowUpdate::ResponseTrailers { flow_id, trailers } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct ResponseTrailersEvent {
+                        flow_id: String,
+                        trailers: Vec<(String, String)>,
+                    }
+                    let event = ResponseTrailersEvent { flow_id, trailers };
+                    if let Err(e) = self.app_handle.emit("flow-response-trailers", event) {
+                        eprintln!("Failed to emit flow-response-trailers event: {}", e);
+                    }
+                }
                 FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]

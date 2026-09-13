@@ -29,6 +29,8 @@ pub mod event_name {
     pub const BODY_BUDGET_EXCEEDED: &str = "body-budget-exceeded";
     /// A typed flow lifecycle transition (roadmap §4-4).
     pub const FLOW_EVENT: &str = "flow-event";
+    /// Trailers that arrived after a response body.
+    pub const RESPONSE_TRAILERS: &str = "response-trailers";
 }
 
 /// One SSE frame: the `event:` name plus its `data:` payload, already serialised.
@@ -82,6 +84,15 @@ pub struct HttpBodyFrame {
     pub body: BodyData,
 }
 
+/// Payload of `event: response-trailers`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResponseTrailersFrame {
+    /// Flow the trailers belong to.
+    pub flow_id: String,
+    /// The trailers, in the order they arrived.
+    pub trailers: Vec<(String, String)>,
+}
+
 /// Payload of `event: body-budget-exceeded`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BodyBudgetExceededFrame {
@@ -127,6 +138,13 @@ impl FlowUpdate {
                     body: body.clone(),
                 },
             ),
+            FlowUpdate::ResponseTrailers { flow_id, trailers } => encode(
+                event_name::RESPONSE_TRAILERS,
+                &ResponseTrailersFrame {
+                    flow_id: flow_id.clone(),
+                    trailers: trailers.clone(),
+                },
+            ),
             FlowUpdate::BodyBudgetExceeded { flow_id, direction } => encode(
                 event_name::BODY_BUDGET_EXCEEDED,
                 &BodyBudgetExceededFrame {
@@ -167,6 +185,13 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
                 flow_id: frame.flow_id,
                 direction: frame.direction,
                 body: frame.body,
+            })
+        }
+        event_name::RESPONSE_TRAILERS => {
+            let frame: ResponseTrailersFrame = serde_json::from_str(data).ok()?;
+            Some(FlowUpdate::ResponseTrailers {
+                flow_id: frame.flow_id,
+                trailers: frame.trailers,
             })
         }
         event_name::BODY_BUDGET_EXCEEDED => {
@@ -258,6 +283,13 @@ mod tests {
             FlowUpdate::BodyBudgetExceeded {
                 flow_id: "flow-budget".to_string(),
                 direction: Direction::ClientToServer,
+            },
+            FlowUpdate::ResponseTrailers {
+                flow_id: "flow-grpc".to_string(),
+                trailers: vec![
+                    ("grpc-status".to_string(), "0".to_string()),
+                    ("grpc-message".to_string(), "OK".to_string()),
+                ],
             },
         ]
     }

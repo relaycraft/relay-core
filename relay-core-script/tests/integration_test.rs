@@ -197,6 +197,7 @@ async fn test_deno_script_on_response() {
             version: "HTTP/1.1".to_string(),
             headers: vec![("Content-Type".to_string(), "text/plain".to_string())],
             body: None,
+            trailers: vec![],
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,

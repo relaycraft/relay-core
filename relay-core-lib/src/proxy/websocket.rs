@@ -427,6 +427,7 @@ where
                         content: String::from_utf8_lossy(&body_bytes).to_string(),
                         size: body_bytes.len() as u64,
                     }),
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

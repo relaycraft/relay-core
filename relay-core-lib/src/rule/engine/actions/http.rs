@@ -126,6 +126,7 @@ pub async fn execute(
                 headers,
                 cookies: vec![],
                 body: None,
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: Some(0),
                     time_to_last_byte: Some(0),
@@ -276,6 +277,7 @@ pub async fn execute(
                     headers: res_headers,
                     cookies,
                     body: body_data,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
@@ -297,6 +299,7 @@ pub async fn execute(
                     headers: res_headers,
                     cookies,
                     body: body_data,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: Some(0),
                         time_to_last_byte: Some(0),
@@ -325,6 +328,7 @@ pub async fn execute(
                         headers,
                         cookies: vec![],
                         body: Some(body),
+                        trailers: vec![],
                         timing: ResponseTiming {
                             time_to_first_byte: Some(0),
                             time_to_last_byte: Some(0),

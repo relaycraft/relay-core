@@ -151,6 +151,7 @@ pub fn create_initial_flow(
                     headers: vec![],
                     cookies: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: relay_core_api::flow::ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
@@ -586,6 +587,7 @@ pub fn update_flow_with_response_headers(
         headers: resp_headers_vec,
         cookies: response_cookies,
         body: None,
+        trailers: vec![],
         timing: relay_core_api::flow::ResponseTiming {
             time_to_first_byte: None,
             time_to_last_byte: None,
@@ -740,6 +742,7 @@ mod tests {
             headers,
             cookies: vec![],
             body,
+            trailers: vec![],
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,
@@ -862,6 +865,7 @@ mod tests {
                     ],
                     cookies: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

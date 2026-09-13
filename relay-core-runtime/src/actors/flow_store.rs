@@ -19,6 +19,11 @@ pub enum FlowStoreMessage {
         body: BodyData,
         direction: Direction,
     },
+    /// Trailers observed after the response body.
+    SetResponseTrailers {
+        flow_id: String,
+        trailers: Vec<(String, String)>,
+    },
     /// Tag flow as budget-exceeded (body too large for full rule inspection)
     TagBudgetExceeded {
         flow_id: String,
@@ -105,6 +110,21 @@ impl FlowStoreActor {
                                 ws.messages.remove(0);
                             }
                             ws.messages.push(message);
+                        }
+                        Some(flow.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(flow) = updated {
+                        self.persist_flow(&flow).await;
+                    }
+                }
+                FlowStoreMessage::SetResponseTrailers { flow_id, trailers } => {
+                    let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
+                        if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer
+                            && let Some(res) = &mut http.response
+                        {
+                            res.trailers = trailers;
                         }
                         Some(flow.clone())
                     } else {

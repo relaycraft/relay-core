@@ -3169,7 +3169,7 @@ async fn wire_matrix_h2c_upstream_is_reachable() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -3244,6 +3244,31 @@ async fn wire_matrix_h2c_upstream_is_reachable() {
         grpc_status.as_deref(),
         Some("0"),
         "the upstream's trailers must reach the client, or gRPC status is lost"
+    );
+
+    // Forwarding them is only half of it: the capture has to record them, or an agent reading the
+    // traffic sees that a call happened and cannot tell whether it succeeded.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut recorded: Option<Vec<(String, String)>> = None;
+    while tokio::time::Instant::now() < deadline && recorded.is_none() {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::ResponseTrailers { trailers, .. })) => {
+                if trailers.iter().any(|(k, _)| k == "grpc-status") {
+                    recorded = Some(trailers);
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+    assert_eq!(
+        recorded
+            .as_ref()
+            .and_then(|t| t.iter().find(|(k, _)| k == "grpc-status"))
+            .map(|(_, v)| v.as_str()),
+        Some("0"),
+        "grpc-status must be recorded on the flow, not only forwarded to the client"
     );
 
     conn_task.abort();

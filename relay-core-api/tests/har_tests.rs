@@ -52,6 +52,7 @@ fn flow_with_timing(timing: ResponseTiming) -> Flow {
                     content: "hello".to_string(),
                     size: 5,
                 }),
+                trailers: vec![],
                 timing,
             }),
             error: None,

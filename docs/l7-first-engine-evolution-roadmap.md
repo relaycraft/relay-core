@@ -1160,7 +1160,15 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   即判定上游不讲 h2c，改用 H1 重试（此时请求仍完好）。代价是**每个新连接一次**，不是每请求。
   契约：`wire_matrix_h2c_upstream_is_reachable`（h2c-only 上游 + trailer 端到端）与
   `wire_matrix_grpc_shaped_request_falls_back_to_http1`，均已双向验证（关闭选择器 → 502）。
-- ⬜ HTTP/2 仍未覆盖的部分：RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断。
+- ✅ **HTTP trailers 已记录**（2026-09-13）：`HttpResponse.trailers` + `FlowUpdate::ResponseTrailers`
+  （SSE 帧 `response-trailers`，含 round-trip 测试）。此前 trailers **能透传但从不记录**——
+  客户端能看到 `grpc-status`，而 API/MCP 的捕获**看不到**，即「知道发生过一次调用，不知道是否成功」。
+  实现要点：trailers 在 body 之后到达，因此不能进原始快照，走**增量更新**；`TapBody` 在
+  `ServerToClient` 方向上发出该更新（请求方向 trailers 暂未记录——`HttpRequest` 尚无该字段）。
+  脱敏同样覆盖（`grpc-message` 是服务端自由文本，可按敏感名屏蔽）。
+  契约：`wire_matrix_h2c_upstream_is_reachable` 现在同时断言**转发到客户端**与**记录进 Flow**，
+  以及 `tap.rs` 的单测（既报 body 也报 trailers）。已双向验证。
+- ⬜ 请求方向的 trailers 未记录；RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断未做。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
   （此前恒为 builder 默认的 HTTP/1.1）。新增 `parse_http_version` 解析 `Flow` 中

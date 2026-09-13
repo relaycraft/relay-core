@@ -457,6 +457,7 @@ mod tests {
                     headers: vec![],
                     cookies: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: Some(42),
                         time_to_last_byte: Some(150),

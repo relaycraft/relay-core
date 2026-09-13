@@ -273,6 +273,12 @@ async fn execute_stream(control_url: String, output: String) -> Result<()> {
                     info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
                 }
             }
+            relay_core_api::flow::FlowUpdate::ResponseTrailers { flow_id, trailers } => {
+                if output == "table" {
+                    // gRPC reports the outcome of a call here, so it is worth showing.
+                    info!("[Trailers] [{}] {} trailer(s)", flow_id, trailers.len());
+                }
+            }
         }
     }
 

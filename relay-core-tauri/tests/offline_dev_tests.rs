@@ -73,6 +73,7 @@ fn create_ws_flow(url: &str) -> Flow {
             version: "HTTP/1.1".to_string(),
             headers: vec![],
             body: None,
+            trailers: vec![],
             timing: ResponseTiming {
                 time_to_first_byte: None,
                 time_to_last_byte: None,

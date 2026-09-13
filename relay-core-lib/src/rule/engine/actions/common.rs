@@ -314,6 +314,7 @@ mod tests {
                     headers: vec![],
                     cookies: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

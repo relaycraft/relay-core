@@ -1256,6 +1256,20 @@ impl CoreState {
         }
     }
 
+    /// Record trailers that arrived after the response body.
+    ///
+    /// They arrive last, so they cannot be part of the original snapshot: a capture without them
+    /// shows that a gRPC call happened but not whether it succeeded.
+    pub fn set_response_trailers(&self, flow_id: String, trailers: Vec<(String, String)>) {
+        if let Err(e) = self
+            .flow_store
+            .try_send(FlowStoreMessage::SetResponseTrailers { flow_id, trailers })
+        {
+            error!("FlowStore dropped response trailers: {}", e);
+            self.flows_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// P1: Tag a flow as budget-exceeded (body too large for full rule inspection)
     pub fn tag_flow_budget_exceeded(&self, flow_id: String, direction: Direction) {
         if let Err(e) = self
@@ -1674,6 +1688,9 @@ impl CoreState {
                         // P1: Tag the flow as budget-exceeded and update resilience trace
                         state.tag_flow_budget_exceeded(flow_id, direction);
                     }
+                    FlowUpdate::ResponseTrailers { flow_id, trailers } => {
+                        state.set_response_trailers(flow_id, trailers);
+                    }
                 }
 
                 let _ = state.flow_broadcast_tx.send(update.clone());
@@ -1836,6 +1853,27 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
         FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
             FlowUpdate::BodyBudgetExceeded { flow_id, direction }
         }
+        // `grpc-message` and friends are server-authored free text and can echo request content, so
+        // they go through the same name-based screening as headers.
+        FlowUpdate::ResponseTrailers { flow_id, trailers } => FlowUpdate::ResponseTrailers {
+            flow_id,
+            trailers: trailers
+                .into_iter()
+                .map(|(name, value)| {
+                    let redacted = if redaction.enabled
+                        && redaction
+                            .sensitive_header_names
+                            .iter()
+                            .any(|n| n.eq_ignore_ascii_case(&name))
+                    {
+                        "[REDACTED]".to_string()
+                    } else {
+                        value
+                    };
+                    (name, redacted)
+                })
+                .collect(),
+        },
     }
 }
 
@@ -2157,6 +2195,7 @@ mod tests {
                     headers: vec![],
                     cookies: vec![],
                     body: None,
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
@@ -2231,6 +2270,7 @@ mod tests {
                         content: "secret response body".to_string(),
                         size: 20,
                     }),
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

@@ -43,6 +43,7 @@ impl Interceptor for MetricsInterceptor {
                     ],
                     cookies: vec![],
                     body: Some(body_data),
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,
@@ -74,6 +75,7 @@ impl Interceptor for MetricsInterceptor {
                     ],
                     cookies: vec![],
                     body: Some(body_data),
+                    trailers: vec![],
                     timing: ResponseTiming {
                         time_to_first_byte: None,
                         time_to_last_byte: None,

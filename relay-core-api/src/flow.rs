@@ -218,6 +218,13 @@ pub struct HttpResponse {
     pub cookies: Vec<Cookie>,
     pub body: Option<BodyData>,
     pub timing: ResponseTiming,
+    /// HTTP trailers that arrived after the body.
+    ///
+    /// They are part of the response, not decoration: gRPC carries the outcome of a call in
+    /// `grpc-status` / `grpc-message` trailers, so a capture without them can say a call happened
+    /// but not whether it succeeded. Empty means the response had none, which is the common case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trailers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,5 +315,15 @@ pub enum FlowUpdate {
     BodyBudgetExceeded {
         flow_id: String,
         direction: Direction,
+    },
+    /// Trailers that arrived after the body.
+    ///
+    /// Trailers are part of the response, not an afterthought: gRPC reports the outcome of a call in
+    /// `grpc-status` / `grpc-message`, so without them a capture can show that a call happened but
+    /// not whether it succeeded. Carried separately from the body because they arrive last, after the
+    /// bytes have already streamed to the client.
+    ResponseTrailers {
+        flow_id: String,
+        trailers: Vec<(String, String)>,
     },
 }
