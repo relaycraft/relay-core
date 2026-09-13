@@ -150,17 +150,13 @@ impl Body for TapBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        let ended = self.inner.is_end_stream();
-        // Only for a body that actually streamed something. `is_end_stream` is also true before
-        // anything is read (an empty body, or a length-delimited one at the moment it is built), and
-        // reporting there would record an empty body and then suppress the real report through the
-        // once-guard — trading a missing body for a wrong one.
-        if ended && self.inner.observed_bytes() > 0 {
-            // hyper may treat this as the last word on the body and never poll again, so the capture
-            // is written here rather than waiting for a poll that will not come.
-            self.report_once();
-        }
-        ended
+        // Deliberately a pure query. An earlier version reported the body from here too, to cover
+        // bodies that hyper finishes via this signal without a final poll, but taking the prefix
+        // buffer's lock inside a predicate that hyper may evaluate at any point deadlocked
+        // `test_h1_concurrent_connections` (it hung indefinitely; reverting this one method made it
+        // pass in 0.21s). Reporting from `poll_frame`'s end-of-stream branch is the safe half, and
+        // bodies that end by hint are recorded by the next poll when one happens.
+        self.inner.is_end_stream()
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -282,83 +278,5 @@ mod tests {
             Some(vec![("x-trailer".to_string(), "value".to_string())]),
             "trailers must be reported as an incremental update, not only forwarded"
         );
-    }
-}
-
-#[cfg(test)]
-mod report_once_tests {
-    use super::TapBody;
-    use http_body_util::BodyExt;
-    use hyper::body::{Body, Bytes, Frame};
-    use relay_core_api::flow::{Direction, FlowUpdate};
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    /// A body that says it is finished without ever yielding the final `None`.
-    ///
-    /// This is what hyper does with a length-delimited body: it consults `is_end_stream` and stops
-    /// polling. Reporting only from `Poll::Ready(None)` therefore lost the body from the capture.
-    struct EndsByHint {
-        sent: bool,
-    }
-
-    impl Body for EndsByHint {
-        type Data = Bytes;
-        type Error = crate::interceptor::BoxError;
-
-        fn poll_frame(
-            mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-            if self.sent {
-                return Poll::Ready(None);
-            }
-            self.sent = true;
-            Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"payload")))))
-        }
-
-        fn is_end_stream(&self) -> bool {
-            self.sent
-        }
-    }
-
-    #[tokio::test]
-    async fn a_body_that_ends_by_hint_is_still_reported() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(8);
-        let body = TapBody::new(
-            EndsByHint { sent: false }
-                .map_err(|e| -> crate::interceptor::BoxError { e })
-                .boxed(),
-            "flow-hint".to_string(),
-            tx,
-            Direction::ServerToClient,
-            1024,
-            vec![("content-type".to_string(), "text/plain".to_string())],
-        );
-
-        // Read the data frame, then stop — hyper does exactly this and then consults
-        // `is_end_stream` instead of polling for the final `None`, so the report must come from there.
-        let mut body = body;
-        {
-            let mut cx = Context::from_waker(std::task::Waker::noop());
-            let frame = Pin::new(&mut body).poll_frame(&mut cx);
-            assert!(
-                matches!(frame, Poll::Ready(Some(Ok(_)))),
-                "precondition: the data frame is available"
-            );
-        }
-        assert!(
-            body.is_end_stream(),
-            "precondition: the body now reports finished"
-        );
-
-        let update = rx.try_recv().expect("the body must still be reported");
-        match update {
-            FlowUpdate::HttpBody { body, .. } => {
-                assert_eq!(body.content, "payload");
-            }
-            other => panic!("expected an HttpBody update, got {other:?}"),
-        }
-        assert!(rx.try_recv().is_err(), "a body must be reported once");
     }
 }

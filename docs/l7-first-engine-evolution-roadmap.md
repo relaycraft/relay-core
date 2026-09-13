@@ -1168,17 +1168,19 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   脱敏同样覆盖（`grpc-message` 是服务端自由文本，可按敏感名屏蔽）。
   契约：`wire_matrix_h2c_upstream_is_reachable` 现在同时断言**转发到客户端**与**记录进 Flow**，
   以及 `tap.rs` 的单测（既报 body 也报 trailers）。已双向验证。
-- ✅ **gRPC 消息级 framing 端到端可用**（2026-09-13）。
-  解析层：`relay-core-api/src/grpc.rs`（5 字节前缀 → `{index, length, compressed}` + `unparsed_bytes`；
-  单条/多条/空体/二进制/截断报错/尾部残字节，7 个单测；`application/grpc-web` **有意排除**——
-  它复用 framing 但状态在 body 内编码的 trailer 里）。表示层：`BodyData.grpc`，
-  `process_body_with_framing` 在两条物化路径接线。
-  端到端契约：`wire_matrix_grpc_body_is_captured_as_messages`（h2c gRPC 请求 + h2c-only 上游，
-  断言捕获里请求为 1 条 3 字节消息、响应为 1 条 5 字节消息）。
-- ✅ **修复途中发现的真实引擎缺陷（重要）**：`TapBody` 只在 `Poll::Ready(None)` 时上报 body，
-  但 **hyper 会在 `is_end_stream()` 为真时直接判定 body 结束、不再 poll**
-  ⇒ 这类 body **完全不会进入捕获**（不是 gRPC 专属问题，是「UI 里看不到某些 body」的根因）。
-  现在两个信号都会触发上报，并有一次性守卫与单测 `a_body_that_ends_by_hint_is_still_reported`。
+- 🟡 **gRPC 消息级 framing：解析层完成，端到端未落地**（2026-09-13，**已更正**：先前此处误标为「端到端可用」）。
+  已完成并有测试：`relay-core-api/src/grpc.rs`（5 字节前缀 → `{index, length, compressed}` +
+  `unparsed_bytes`；单条/多条/空体/二进制/截断报错/尾部残字节，7 个单测；`application/grpc-web`
+  **有意排除**——它复用 framing 但状态在 body 内编码的 trailer 里）；`BodyData.grpc` 可加字段；
+  `process_body_with_framing` 在两条物化路径接线（2 个单测）。
+  🔴 **端到端被一个真实缺陷挡住**：`TapBody` 只在 `Poll::Ready(None)` 上报 body，
+  而 hyper 会在 `is_end_stream()` 为真时**直接判定结束、不再 poll** ⇒ 这类 body
+  **完全不进捕获**（不是 gRPC 专属，是「某些 body 看不到」的根因）。
+  **尝试的修法有害且已回退**：在 `is_end_stream()` 里同时上报，会在其中取前缀缓冲的锁，
+  导致 `test_h1_concurrent_connections` **无限挂起**（bisect 证据：仅回退该方法，
+  该测试从「挂死」变为 0.21s 通过）。因此**该位置必须是纯查询**，正确修法需要
+  不取锁的上报路径（或用另一个完成信号），尚未设计。
+  结论：**在解决这一点之前，不得宣称「捕获里能看到 gRPC 消息」**。
 - ⬜ 请求方向的 trailers 未记录；RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断未做。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
