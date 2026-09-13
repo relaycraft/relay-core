@@ -1151,6 +1151,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   Flow 的 URL/版本/tls`），已双向验证（强制走 TLS 分支 → 测试失败）。
   独立客户端复核：`curl --proxytunnel --http2-prior-knowledge -x <proxy> http://<target>/` → `HTTP/2 200`；
   `--proxytunnel` 的 HTTP/1.1 对照 → 200/1.1；TLS 路径（`https://example.com`）→ 200，无回归。
+- 🔴 **实测发现：明文 h2c 尚不能代理到「只讲 h2c 的上游」**（2026-09-13）。捕获已可用，但**出站腿不行**：
+  `DirectConnector` 用 hyper 的 legacy client，它对 `http://` 目标只讲 **HTTP/1.1**（H2 只在 TLS/ALPN 后启用），
+  因此真正的明文 gRPC 服务（只讲 H2）**不可达**。实测：h2c 入站 + h2c-only 上游 → **502**。
+  这意味着对内部 h2c 项目而言，当前状态是「能抓但会打断真实调用」——**必须先修出站腿**，
+  trailers 与 gRPC 消息级解析才有意义。
+  需要的改动：为明文目标提供 **h2c 出站连接**（按 authority 缓存 `http2::SendRequest`，连接失败时丢弃重试），
+  并按请求特征选择（gRPC 请求必带 `te: trailers` / `content-type: application/grpc*`）。
 - ⬜ HTTP/2 仍未覆盖的部分：RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议

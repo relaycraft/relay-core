@@ -23,7 +23,7 @@
 | §3 数据面与 Mutation Pipeline | **Partial** | 头/状态/body/编码的改写都真的到线路了，且失败与超预算有结构化原因 | 没有「显式 Mutation 类型」；`BodyObservation` 策略不是真正决定保留的开关 |
 | §4 Connection/Stream/Message 模型 | **Skeleton** | `Layer` 枚举可扩展，但**关系字段全缺** | `connection_id`/`parent_flow_id`/`stream_id`/`protocol_stack` 仓库内 0 命中 ⇒ CONNECT 与外层、H2 stream 归组不可能 |
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
-| §6 HTTP/2 | **Partial** | 明文 h2c **与 CONNECT 隧道内的 h2c** 都可抓取（两种形态 mitmproxy 都不支持）；TLS 后的 H2 亦有线路断言 | 无 RST_STREAM/GOAWAY/取消；**trailers 未处理** ⇒ gRPC 的 `grpc-status` 看不到；无 gRPC 消息级解析 |
+| §6 HTTP/2 | **Partial** | 明文 h2c **与 CONNECT 隧道内的 h2c** 都可抓取（两种形态 mitmproxy 都不支持）；TLS 后的 H2 亦有线路断言 | 🔴 **出站腿只讲 H1**：h2c-only 上游实测 **502** ⇒ 明文 gRPC 能抓但会被打断；**trailers 未处理** ⇒ `grpc-status` 看不到；无 gRPC 消息级解析 |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手现在都可观测 | `permessage-deflate` **既不支持也不剥离也不降级**（静默破坏）；帧级修改无线路断言 |
 | §7.2 SSE（作为被代理流量） | **Absent** | 只把 SSE 当作**本引擎自己的 API 传输** | 引擎不识 `text/event-stream`，无解析/缓冲/事件级推送 |
 | §8 TLS / PKI | **Partial** | CA 生成/加载/按主机签发、MITM 端到端可用，CA 错误处理严格 | **无「按 host 决定 MITM/passthrough」策略** ⇒ 做 pinning 的客户端只能失败；SNI/ALPN 永不记录；叶证书对 IP 字面量发的是 DNS SAN |
