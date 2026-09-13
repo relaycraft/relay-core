@@ -235,6 +235,12 @@ pub struct ProxyPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<UpstreamProxyConfig>,
 
+    /// Upstream circuit breaker. It exists to stop hammering a genuinely dead upstream, but its
+    /// defaults decide how a *transient* upstream blip is amplified, so they are policy rather than
+    /// constants — see `docs/decisions/0005`.
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerPolicy,
+
     /// How much history the store may keep. Every field `None` means unbounded, which is the
     /// pre-existing behaviour: nothing pruned the database before this, so a long-running instance
     /// grew until the disk filled.
@@ -244,6 +250,40 @@ pub struct ProxyPolicy {
     /// implementation existed without any caller outside its own test.
     #[serde(default)]
     pub retention: RetentionPolicy,
+}
+
+/// When to stop sending requests to an upstream that keeps failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CircuitBreakerPolicy {
+    /// Consecutive failures that open the circuit. `0` disables the breaker entirely.
+    ///
+    /// "Consecutive" is literal: any success resets the count, so this is a burst threshold rather
+    /// than a failure *rate*. A host that fails intermittently between successes never opens.
+    #[serde(default = "default_circuit_failure_threshold")]
+    pub failure_threshold: u32,
+    /// How long to reject requests once the circuit opens, in milliseconds.
+    ///
+    /// This is the amplification factor: every rejection during the window is a request that was
+    /// never attempted, so a long backoff turns a brief upstream hiccup into a sustained outage.
+    #[serde(default = "default_circuit_backoff_ms")]
+    pub backoff_ms: u64,
+}
+
+impl Default for CircuitBreakerPolicy {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_circuit_failure_threshold(),
+            backoff_ms: default_circuit_backoff_ms(),
+        }
+    }
+}
+
+fn default_circuit_failure_threshold() -> u32 {
+    10
+}
+
+fn default_circuit_backoff_ms() -> u64 {
+    5_000
 }
 
 /// Storage bounds, mirroring the store's own policy so a host can set them without depending on the
@@ -319,6 +359,7 @@ impl Default for ProxyPolicy {
             redaction: RedactionPolicy::default(),
             upstream: None,
             retention: RetentionPolicy::default(),
+            circuit_breaker: CircuitBreakerPolicy::default(),
         }
     }
 }

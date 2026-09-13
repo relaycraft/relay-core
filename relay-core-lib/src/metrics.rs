@@ -21,6 +21,12 @@ pub static PROXY_SANDBOX_REJECT_TOTAL: AtomicUsize = AtomicUsize::new(0);
 /// O4: Total number of invalid status code rejections (strict_http_semantics)
 pub static PROXY_INVALID_STATUS_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
+/// Total requests refused because an upstream's circuit was open.
+///
+/// Distinct from any upstream error counter on purpose: these requests were never attempted. Without
+/// this, a circuit that opens on a transient blip is indistinguishable from an upstream outage.
+pub static PROXY_CIRCUIT_REJECTED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
 /// O4: Total number of bodies processed in tap (streaming) mode
 pub static PROXY_STREAM_MODE_TAP_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -160,6 +166,16 @@ impl Default for ConnectionMeter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Increment the circuit-rejection counter.
+pub fn inc_circuit_rejected() {
+    PROXY_CIRCUIT_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Get the current count of requests refused by an open circuit.
+pub fn get_circuit_rejected() -> usize {
+    PROXY_CIRCUIT_REJECTED_TOTAL.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

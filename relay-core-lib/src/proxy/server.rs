@@ -130,8 +130,9 @@ where
         });
     }
 
-    // Initialize Circuit Breaker (P3)
-    let circuit_breaker = Arc::new(CircuitBreaker::default());
+    // Initialize Circuit Breaker (P3) from policy: its threshold and backoff decide how a transient
+    // upstream blip is amplified, so they are configuration rather than constants.
+    let circuit_breaker = Arc::new(CircuitBreaker::from_policy(&startup_policy.circuit_breaker));
 
     let mut shutdown_rx = shutdown_rx;
 

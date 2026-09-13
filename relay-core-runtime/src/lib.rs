@@ -105,6 +105,9 @@ pub struct CoreMetrics {
     pub proxy_sandbox_reject_total: usize,
     /// O4: Total invalid status code rejections (strict_http_semantics)
     pub proxy_invalid_status_total: usize,
+    /// Requests refused because an upstream's circuit was open. Never attempted, so it must not be
+    /// read as an upstream failure count.
+    pub proxy_circuit_rejected_total: usize,
     /// Flows the proxy itself dropped, e.g. a WebSocket frame that could not be delivered.
     ///
     /// Distinct from `flows_dropped`, which counts updates lost on the runtime's internal channel:
@@ -142,6 +145,7 @@ relay_core_proxy_body_degraded_total {}\n\
 relay_core_proxy_http_request_total {}\n\
 relay_core_proxy_sandbox_reject_total {}\n\
 relay_core_proxy_invalid_status_total {}\n\
+relay_core_proxy_circuit_rejected_total {}\n\
 relay_core_proxy_flows_dropped_total {}\n\
 relay_core_proxy_stream_mode_tap_total {}\n\
 relay_core_proxy_stream_mode_degrade_total {}\n\
@@ -163,6 +167,7 @@ relay_core_proxy_bytes_recv_total {}\n",
             self.proxy_http_request_total,
             self.proxy_sandbox_reject_total,
             self.proxy_invalid_status_total,
+            self.proxy_circuit_rejected_total,
             self.proxy_flows_dropped_total,
             self.proxy_stream_mode_tap_total,
             self.proxy_stream_mode_degrade_total,
@@ -457,6 +462,7 @@ impl CoreState {
             proxy_http_request_total: relay_core_lib::metrics::get_proxy_http_request(),
             proxy_sandbox_reject_total: relay_core_lib::metrics::get_proxy_sandbox_reject(),
             proxy_invalid_status_total: relay_core_lib::metrics::get_proxy_invalid_status(),
+            proxy_circuit_rejected_total: relay_core_lib::metrics::get_circuit_rejected(),
             proxy_flows_dropped_total: relay_core_lib::metrics::get_flows_dropped(),
             proxy_stream_mode_tap_total: relay_core_lib::metrics::get_proxy_stream_mode_tap(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(

@@ -330,6 +330,10 @@ where
                 .unwrap_or_else(|| "unknown".to_string())
         });
     if !circuit_breaker.allow_request(&circuit_breaker_key).await {
+        // A request refused by an open circuit was never attempted, so it must not look like an
+        // upstream failure. Counting it separately is what makes a breaker that fires on a transient
+        // blip visible instead of leaving a healthy upstream looking broken.
+        crate::metrics::inc_circuit_rejected();
         tracing::warn!(
             "Circuit breaker open for upstream {}, returning 503",
             circuit_breaker_key

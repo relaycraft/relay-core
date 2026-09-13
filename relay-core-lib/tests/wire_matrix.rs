@@ -2674,7 +2674,11 @@ async fn wire_matrix_failed_ws_handshake_is_recorded() {
 /// The other recording upstreams answer once and then send `Connection: close`, which is enough to
 /// observe one exchange but cannot answer "does the proxy reuse a connection?" — a faithful proxy
 /// must relay that close, so the question is unanswerable with them.
-async fn spawn_keepalive_upstream() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+async fn spawn_keepalive_upstream() -> (
+    SocketAddr,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -2682,13 +2686,16 @@ async fn spawn_keepalive_upstream() -> (SocketAddr, Arc<std::sync::atomic::Atomi
         .expect("bind upstream");
     let addr = listener.local_addr().expect("upstream addr");
     let served = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
     let counter = served.clone();
+    let accept_counter = accepted.clone();
 
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
                 return;
             };
+            accept_counter.fetch_add(1, Ordering::Relaxed);
             let counter = counter.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
@@ -2725,7 +2732,7 @@ async fn spawn_keepalive_upstream() -> (SocketAddr, Arc<std::sync::atomic::Atomi
         }
     });
 
-    (addr, served)
+    (addr, served, accepted)
 }
 
 /// Can the proxy serve two requests on one client connection?
@@ -2739,7 +2746,7 @@ async fn spawn_keepalive_upstream() -> (SocketAddr, Arc<std::sync::atomic::Atomi
 async fn wire_matrix_client_connection_is_reused_for_a_second_request() {
     init_crypto();
 
-    let (upstream_addr, upstream_served) = spawn_keepalive_upstream().await;
+    let (upstream_addr, upstream_served, upstream_connections) = spawn_keepalive_upstream().await;
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -2816,6 +2823,16 @@ async fn wire_matrix_client_connection_is_reused_for_a_second_request() {
         upstream_served.load(std::sync::atomic::Ordering::Relaxed),
         2,
         "both requests must reach the upstream"
+    );
+
+    // And reached over one connection: the proxy pools upstream connections, so two sequential
+    // requests must not cost two connects. This is the half of reuse the client-side assertion
+    // cannot see, and without it a per-request connect would look like a working proxy that is
+    // merely slow.
+    assert_eq!(
+        upstream_connections.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the proxy must reuse its upstream connection for sequential requests"
     );
 
     conn_task.abort();

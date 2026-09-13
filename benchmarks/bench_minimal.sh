@@ -66,13 +66,17 @@ API_PORT="${API_PORT:-18882}"
 # symptom was produced by the then-default Python upstream (`echo_server.py`), which speaks HTTP/1.0
 # and closes after every response.
 #
-# Measured at CONNECTIONS=100 with the current Rust upstream (10s): 34,532 req/s, P99 21.7ms,
-# success 62.6%, with 439 upstream connect failures and 383 `Circuit breaker OPEN` events in the
-# proxy log. So a 0.08% transient upstream error rate becomes a 37% failure rate: 3 connect failures
-# open a 30s per-host circuit (`proxy/circuit_breaker.rs:90`), and everything to that host is then
-# rejected. That is neither a load-generator artifact nor a proxy regression, and `os error 49` does
-# NOT appear — so the INVALID detection below cannot classify it and it will be reported as FAIL.
-# See docs/engine-capability-status.md (benchmark root cause).
+# Measured at CONNECTIONS=100 (10s), twice, before and after the breaker defaults were made
+# policy-driven (docs/decisions/0005):
+#   before: 34,532 req/s, P99 21.7ms, success 62.6% — 439 connect failures, 383 circuit opens
+#   after:  36,386 req/s, P99 17.4ms, success 66.3% — 1,370 connect failures, 790 circuit opens
+# So the amplification is real (the circuit refused ~121k requests that were never attempted) but it
+# is NOT the whole story: the echo upstream serves 100 connections directly at 100% success and
+# 102k req/s, while through the proxy the same load reaches ~36k req/s. Part of the gap is the
+# proxy's own capacity at that concurrency, and part is connect failures arriving in bursts — which a
+# burst-threshold breaker still reacts to. Neither is a load-generator artifact, and `os error 49`
+# does NOT appear — so the INVALID detection below cannot classify it and it is reported as FAIL.
+# See docs/decisions/0005 and docs/engine-capability-status.md.
 #
 # 25 connections sustains >=45k req/s with ~1% variance and 100% success, so it measures the proxy
 # rather than the harness. Raise it deliberately (with a shorter --duration) if a run needs higher

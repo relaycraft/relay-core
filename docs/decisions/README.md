@@ -29,3 +29,4 @@
 | [0002](./0002-body-observation-policy.md) | HTTP body 观察策略 | Accepted |
 | [0003](./0003-typed-events-alongside-flow-snapshots.md) | 类型化事件与 Flow 快照并存 | Accepted |
 | [0004](./0004-dependency-advisories-owned-by-dependabot.md) | 依赖漏洞由 Dependabot 接管 | Accepted |
+| [0005](./0005-circuit-breaker-defaults.md) | 熔断器默认值与可配置化 | Accepted |
