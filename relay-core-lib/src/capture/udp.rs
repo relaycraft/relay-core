@@ -695,6 +695,10 @@ mod tests {
             last_activity: Arc::new(RwLock::new(std::time::Instant::now())),
             packet_count: Arc::new(AtomicUsize::new(1)),
             bytes_transferred: Arc::new(AtomicUsize::new(0)),
+            #[cfg(target_os = "linux")]
+            upstream_socket: None,
+            #[cfg(target_os = "linux")]
+            downstream_socket: None,
         };
 
         // The session's counters live on the session; the opening Flow snapshots them once.

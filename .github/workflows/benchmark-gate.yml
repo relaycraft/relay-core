@@ -29,6 +29,17 @@ jobs:
           sudo apt-get install -y python3
           curl -fsSL https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64 -o /usr/local/bin/oha
           chmod +x /usr/local/bin/oha
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # relay-core-http's build script requires the embedded Web UI assets, and they are gitignored:
+      # building the CLI without them panics in build.rs. The benchmark harness builds the CLI, so this
+      # has to run first — it was missing here while `ci.yml` has always done it.
+      - name: Build webui assets (embedded by relay-core-http)
+        shell: bash
+        run: ./scripts/webui-build.sh
+
 
       - name: Benchmark E2E smoke (report-only)
         run: |
