@@ -53,9 +53,15 @@
 | 事件 | `FlowEvent::Started` / `HeadersReceived` / `BodyChunk` / `MessageReceived`（9 个变体中 4 个） | 仅出现在 `#[cfg(test)]`（`relay-core-api/src/sse.rs` 测试模块） |
 | 关闭原因 | `CloseReason::TlsError` | 枚举有、映射有、`relay-core-lib` 内 0 个赋值点 |
 | Flow 字段 | `ResponseTiming.connect_time_ms` / `ssl_time_ms`、`NetworkInfo.sni`、`tls_version` | 生产代码只写 `None`（`proxy/server.rs:171-172` 为 TODO） |
-| 指标 | 15 个 `relay_core_script_hook_*` 序列、`proxy_invalid_method_total`、`proxy_retry_total` | 有导出、无调用点 ⇒ **永远显示健康** |
+| 指标 | `proxy_invalid_method_total`、`proxy_retry_total` | **已修**：两者都**无任何增量点** ⇒ **永远显示健康**。已从导出面移除（原因写在 `relay-core-lib/src/metrics.rs`），并计入「禁止宣传不存在的能力」类 |
 
-反向也有一例：**代理侧真实存在约 20 个丢弃计数点**（`websocket.rs` 等），但那个计数器**从未导出**——真实信号反而看不见。
+反向也有一例：**代理侧真实存在约 20 个丢弃计数点**（`websocket.rs` 等），但那个计数器**从未导出**
+——真实信号反而看不见。**已修**：新增 `relay_core_proxy_flows_dropped_total`。
+
+> **纠正审计结论（本文件第一版写错了）**：曾把 15 个 `relay_core_script_hook_*` 序列也列入「无生产者」。
+> 复核后**不成立**：15 个序列在 `relay-core-script/src/lib.rs` 各有 4–5 个增量点，
+> 导出在 `relay-core-runtime/src/lib.rs` 的 `get_metrics_prometheus_text`。这是本文件记录的第二处
+> **审计自身出错**（第一处是 §5 的 §24.3 与 `mutated_fields`）。教训一致：审计结论必须逐条复核。
 
 **同族的第二种形态：实现了，但没有任何宿主能调到。** 这比「没实现」更难发现，因为代码、测试、路线图 ✅ 全都齐全：
 
@@ -129,8 +135,8 @@
 | fuzz | 无 `fuzz/` 目录、无 `cargo-fuzz`/`arbitrary`；只有 6+5 个确定性对抗用例 | `content_encoding.rs`、`rule/engine/loader.rs` |
 | HTTP/2 | **零线路用例** | `wire_matrix.rs` 全为 H1 socket；唯一 H2 测试是单请求且断言与版本无关 |
 | 透明捕获 | **零平台级覆盖** | `linux_tproxy.rs` / `macos_pf.rs` / `windows.rs` 各 0 个测试；测试全用 mock |
-| UDP E2E | 唯一两个用例是 `#[cfg(not(target_os = "linux"))]` ⇒ **在唯一阻塞门禁平台上被跳过** | `udp_integration_test.rs:45,101` |
-| 覆盖率门禁 | 有 job、无阈值 | `ci.yml` 使用 `--summary-only` |
+| UDP E2E | 唯一两个用例是 `#[cfg(not(target_os = "linux"))]` ⇒ **在唯一阻塞门禁平台上被跳过**。**根因已查清**：`UdpProxy::run` 在 Linux 上**无条件**启用 TPROXY（`capture/udp.rs`），因此连「带显式 `remote_addr` 的普通 UDP 转发」也需要 `CAP_NET_ADMIN` + iptables 规则。把该调用限定到透明路径即可让两个用例在 Linux 跑起来 | `udp_integration_test.rs:45,101` |
+| 覆盖率门禁 | 仍**无阈值**，但数值已可见 | `ci.yml` 现在把 `cargo llvm-cov --summary-only` 的输出发到 job summary（此前数字既不可见也不阻断）。**未擅自填阈值**：阈值必须来自一次真实测量，而本机未装 `cargo-llvm-cov`；填一个猜的数字要么当场失败要么毫无意义。下一步明确：跑一次拿到基线 → 加 `--fail-under-lines` |
 | 依赖审计 | 无 `cargo-audit`/`cargo-deny` 步骤 | grep workflows 无命中 |
 | 性能门禁 | `benchmark-gate.yml` 只报告、不阻断 | 同文件 |
 | CLI / HTTP 断言密度 | 明显低于 lib/runtime | 测试属性数：`relay-core-http` 17、`relay-core-cli` 88（其中多数是参数解析） |

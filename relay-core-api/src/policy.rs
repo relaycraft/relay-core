@@ -137,7 +137,10 @@ pub struct ProxyPolicy {
     #[serde(default = "default_true")]
     pub strict_http_semantics: bool,
 
-    /// Allow fallback to GET for invalid methods (only if strict_http_semantics is false)
+    /// Allow fallback to GET for invalid methods (only if strict_http_semantics is false).
+    ///
+    /// **Reserved: no code path reads this yet.** Setting it has no effect today, and the matching
+    /// `relay_core_proxy_invalid_method_total` metric was removed rather than exported at zero.
     #[serde(default = "default_false")]
     pub allow_fallback_method: bool,
 
@@ -145,15 +148,19 @@ pub struct ProxyPolicy {
     #[serde(default = "default_false")]
     pub allow_fallback_status: bool,
 
-    /// Enable automatic retries for idempotent requests
+    /// Enable automatic retries for idempotent requests.
+    ///
+    /// **Reserved: no retry implementation exists.** No code path reads this, `max_retries` or
+    /// `retry_idempotent_only`, and the matching `relay_core_proxy_retry_total` metric was removed
+    /// rather than exported at zero.
     #[serde(default = "default_false")]
     pub enable_retry: bool,
 
-    /// Only retry idempotent methods (GET, HEAD, OPTIONS)
+    /// Only retry idempotent methods (GET, HEAD, OPTIONS). Reserved: see `enable_retry`.
     #[serde(default = "default_true")]
     pub retry_idempotent_only: bool,
 
-    /// Maximum number of retries
+    /// Maximum number of retries. Reserved: see `enable_retry`.
     #[serde(default = "default_max_retries")]
     pub max_retries: u8,
 

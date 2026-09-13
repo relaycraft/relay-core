@@ -932,3 +932,57 @@ async fn a_flow_that_recorded_its_ending_publishes_a_terminal_event() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The exported metric surface must not advertise capabilities that do not exist.
+///
+/// `relay_core_proxy_invalid_method_total` and `relay_core_proxy_retry_total` were exported while
+/// nothing could ever increment them: `ProxyPolicy::allow_fallback_method` and the retry fields are
+/// read by no code path. A Prometheus series that can never move reads as "healthy" rather than as
+/// "not implemented", so they are gone; `proxy_invalid_status_total` is kept because it does have a
+/// producer.
+#[tokio::test]
+async fn the_metric_surface_only_advertises_what_can_move() {
+    let state = Arc::new(CoreState::new(None).await);
+    let text = state.get_metrics_prometheus_text().await;
+
+    for absent in [
+        "relay_core_proxy_invalid_method_total",
+        "relay_core_proxy_retry_total",
+    ] {
+        assert!(
+            !text.contains(absent),
+            "{absent} counts an event no code path can produce and must not be exported"
+        );
+    }
+
+    assert!(
+        text.contains("relay_core_proxy_invalid_status_total"),
+        "a metric with a real producer must stay exported"
+    );
+}
+
+/// Dropped flows inside the proxy were counted at ~20 sites and readable by nobody.
+#[tokio::test]
+async fn proxy_side_dropped_flows_are_exported() {
+    let state = Arc::new(CoreState::new(None).await);
+
+    let before = state.get_metrics_prometheus_text().await;
+    let read = |text: &str| -> u64 {
+        text.lines()
+            .find_map(|line| {
+                line.strip_prefix("relay_core_proxy_flows_dropped_total ")
+                    .and_then(|v| v.trim().parse().ok())
+            })
+            .unwrap_or_else(|| panic!("counter must be exported, metrics were:\n{text}"))
+    };
+    let before_value = read(&before);
+
+    relay_core_lib::metrics::inc_flows_dropped();
+
+    let after = state.get_metrics_prometheus_text().await;
+    assert_eq!(
+        read(&after),
+        before_value + 1,
+        "the exported counter must reflect what the proxy actually dropped"
+    );
+}

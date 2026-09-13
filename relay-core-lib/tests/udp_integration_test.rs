@@ -42,6 +42,12 @@ impl Interceptor for DropAllInterceptor {
 }
 
 /// Verify that a UDP proxy with DropAll interceptor produces no flows.
+///
+/// Excluded on Linux for one specific reason: `UdpProxy::run` unconditionally calls
+/// `LinuxTproxy::enable_tproxy` there (`capture/udp.rs`), so even a plain `UdpProxy::new` with an
+/// explicit remote address needs CAP_NET_ADMIN and a TPROXY rule. Guarding that call to the
+/// transparent path would let both tests run on Linux — which is the only platform CI blocks on, so
+/// today plain UDP forwarding has no coverage where it counts.
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_drop_all_interceptor() {
@@ -96,8 +102,9 @@ async fn test_udp_proxy_drop_all_interceptor() {
 }
 
 /// Verify that a UDP proxy without interceptor forwards packets normally.
-/// Only works on non-Linux because Linux requires TPROXY (iptables) setup
-/// for the proxy socket; the explicit remote_addr path is macOS/Windows only.
+///
+/// Same Linux exclusion and same reason as above: this exercises the explicit-`remote_addr` path,
+/// which is not the transparent one, yet `run` still enables TPROXY on Linux.
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_allow_all() {

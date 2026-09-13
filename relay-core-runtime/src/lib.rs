@@ -103,12 +103,14 @@ pub struct CoreMetrics {
     pub proxy_http_request_total: usize,
     /// O4: Total sandbox rejections
     pub proxy_sandbox_reject_total: usize,
-    /// O4: Total invalid method rejections (strict_http_semantics)
-    pub proxy_invalid_method_total: usize,
     /// O4: Total invalid status code rejections (strict_http_semantics)
     pub proxy_invalid_status_total: usize,
-    /// O4: Total idempotent request retries
-    pub proxy_retry_total: usize,
+    /// Flows the proxy itself dropped, e.g. a WebSocket frame that could not be delivered.
+    ///
+    /// Distinct from `flows_dropped`, which counts updates lost on the runtime's internal channel:
+    /// this one is incremented at ~20 sites inside the proxy, and was previously unreadable — a real
+    /// signal with no exporter.
+    pub proxy_flows_dropped_total: usize,
     /// O4: Total bodies processed in tap (streaming) mode
     pub proxy_stream_mode_tap_total: usize,
     /// O4: Total bodies degraded from tap to pass-through
@@ -139,9 +141,8 @@ relay_core_audit_events_lagged_total {}\n\
 relay_core_proxy_body_degraded_total {}\n\
 relay_core_proxy_http_request_total {}\n\
 relay_core_proxy_sandbox_reject_total {}\n\
-relay_core_proxy_invalid_method_total {}\n\
 relay_core_proxy_invalid_status_total {}\n\
-relay_core_proxy_retry_total {}\n\
+relay_core_proxy_flows_dropped_total {}\n\
 relay_core_proxy_stream_mode_tap_total {}\n\
 relay_core_proxy_stream_mode_degrade_total {}\n\
 relay_core_proxy_bytes_sent_total {}\n\
@@ -161,9 +162,8 @@ relay_core_proxy_bytes_recv_total {}\n",
             self.proxy_body_degraded_total,
             self.proxy_http_request_total,
             self.proxy_sandbox_reject_total,
-            self.proxy_invalid_method_total,
             self.proxy_invalid_status_total,
-            self.proxy_retry_total,
+            self.proxy_flows_dropped_total,
             self.proxy_stream_mode_tap_total,
             self.proxy_stream_mode_degrade_total,
             self.proxy_bytes_sent_total,
@@ -456,9 +456,8 @@ impl CoreState {
             proxy_body_degraded_total: relay_core_lib::metrics::get_proxy_body_degraded(),
             proxy_http_request_total: relay_core_lib::metrics::get_proxy_http_request(),
             proxy_sandbox_reject_total: relay_core_lib::metrics::get_proxy_sandbox_reject(),
-            proxy_invalid_method_total: relay_core_lib::metrics::get_proxy_invalid_method(),
             proxy_invalid_status_total: relay_core_lib::metrics::get_proxy_invalid_status(),
-            proxy_retry_total: relay_core_lib::metrics::get_proxy_retry(),
+            proxy_flows_dropped_total: relay_core_lib::metrics::get_flows_dropped(),
             proxy_stream_mode_tap_total: relay_core_lib::metrics::get_proxy_stream_mode_tap(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(
             ),

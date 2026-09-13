@@ -118,5 +118,20 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      # No `--fail-under-lines` yet, on purpose: a threshold has to come from a real measurement and
+      # nobody has taken one (cargo-llvm-cov is not installed in the dev environment this was written
+      # in). Picking a number blind would either fail on arrival or be meaningless. The summary is
+      # published below so the next run yields a baseline; then add
+      # `--fail-under-lines <a few points below that baseline>` and this job becomes a gate.
       - name: Run coverage
-        run: cargo llvm-cov --workspace --summary-only
+        run: cargo llvm-cov --workspace --summary-only | tee coverage-summary.txt
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            cat coverage-summary.txt 2>/dev/null || echo 'no summary produced'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

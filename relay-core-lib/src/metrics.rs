@@ -18,14 +18,8 @@ pub static PROXY_HTTP_REQUEST_TOTAL: AtomicUsize = AtomicUsize::new(0);
 /// O4: Total number of sandbox rejections
 pub static PROXY_SANDBOX_REJECT_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
-/// O4: Total number of invalid method rejections (strict_http_semantics)
-pub static PROXY_INVALID_METHOD_TOTAL: AtomicUsize = AtomicUsize::new(0);
-
 /// O4: Total number of invalid status code rejections (strict_http_semantics)
 pub static PROXY_INVALID_STATUS_TOTAL: AtomicUsize = AtomicUsize::new(0);
-
-/// O4: Total number of idempotent request retries
-pub static PROXY_RETRY_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
 /// O4: Total number of bodies processed in tap (streaming) mode
 pub static PROXY_STREAM_MODE_TAP_TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -73,15 +67,9 @@ pub fn get_proxy_sandbox_reject() -> usize {
     PROXY_SANDBOX_REJECT_TOTAL.load(Ordering::Relaxed)
 }
 
-/// O4: Increment the invalid method counter
-pub fn inc_proxy_invalid_method() {
-    PROXY_INVALID_METHOD_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-/// O4: Get the current count of invalid method rejections
-pub fn get_proxy_invalid_method() -> usize {
-    PROXY_INVALID_METHOD_TOTAL.load(Ordering::Relaxed)
-}
+// There is deliberately no invalid-method counter: `PolicyPolicy::allow_fallback_method` is read by
+// no code path, so the event it would count cannot occur, and a Prometheus series that can never
+// move reads as "healthy" rather than as "not implemented".
 
 /// O4: Increment the invalid status counter
 pub fn inc_proxy_invalid_status() {
@@ -93,15 +81,9 @@ pub fn get_proxy_invalid_status() -> usize {
     PROXY_INVALID_STATUS_TOTAL.load(Ordering::Relaxed)
 }
 
-/// O4: Increment the retry counter
-pub fn inc_proxy_retry() {
-    PROXY_RETRY_TOTAL.fetch_add(1, Ordering::Relaxed);
-}
-
-/// O4: Get the current count of retries
-pub fn get_proxy_retry() -> usize {
-    PROXY_RETRY_TOTAL.load(Ordering::Relaxed)
-}
+// There is deliberately no retry counter: `ProxyPolicy::enable_retry` / `max_retries` /
+// `retry_idempotent_only` are read by no code path and no retry logic exists in the proxy, so a
+// `relay_core_proxy_retry_total` series would only advertise a capability that is absent.
 
 /// O4: Increment the stream mode tap counter
 pub fn inc_proxy_stream_mode_tap() {
