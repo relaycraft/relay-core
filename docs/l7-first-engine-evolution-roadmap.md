@@ -1151,13 +1151,15 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   Flow 的 URL/版本/tls`），已双向验证（强制走 TLS 分支 → 测试失败）。
   独立客户端复核：`curl --proxytunnel --http2-prior-knowledge -x <proxy> http://<target>/` → `HTTP/2 200`；
   `--proxytunnel` 的 HTTP/1.1 对照 → 200/1.1；TLS 路径（`https://example.com`）→ 200，无回归。
-- 🔴 **实测发现：明文 h2c 尚不能代理到「只讲 h2c 的上游」**（2026-09-13）。捕获已可用，但**出站腿不行**：
-  `DirectConnector` 用 hyper 的 legacy client，它对 `http://` 目标只讲 **HTTP/1.1**（H2 只在 TLS/ALPN 后启用），
-  因此真正的明文 gRPC 服务（只讲 H2）**不可达**。实测：h2c 入站 + h2c-only 上游 → **502**。
-  这意味着对内部 h2c 项目而言，当前状态是「能抓但会打断真实调用」——**必须先修出站腿**，
-  trailers 与 gRPC 消息级解析才有意义。
-  需要的改动：为明文目标提供 **h2c 出站连接**（按 authority 缓存 `http2::SendRequest`，连接失败时丢弃重试），
-  并按请求特征选择（gRPC 请求必带 `te: trailers` / `content-type: application/grpc*`）。
+- ✅ **明文 h2c 出站腿已补齐**（2026-09-13）：此前 `DirectConnector` 用 hyper 的 legacy client，
+  它对 `http://` 目标只讲 **HTTP/1.1**，因此真正的明文 gRPC 服务（只讲 H2）**不可达**（实测 502）。
+  现在按请求特征选择 h2c（`te: trailers` 或 `content-type: application/grpc*`，且目标是明文），
+  按 authority 缓存 `http2::SendRequest`（多路复用、连接关闭即丢弃）。
+  **回退**：h2c **没有协议协商**，乐观握手对 H1 服务器也会成功，失败只在 `send_request` 时暴露
+  ——那时 body 已发送、无法重放。因此在新建连接后给一个 **100ms 观察窗**：若连接在此期间失败
+  即判定上游不讲 h2c，改用 H1 重试（此时请求仍完好）。代价是**每个新连接一次**，不是每请求。
+  契约：`wire_matrix_h2c_upstream_is_reachable`（h2c-only 上游 + trailer 端到端）与
+  `wire_matrix_grpc_shaped_request_falls_back_to_http1`，均已双向验证（关闭选择器 → 502）。
 - ⬜ HTTP/2 仍未覆盖的部分：RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议

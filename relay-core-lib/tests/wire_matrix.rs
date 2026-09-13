@@ -3115,3 +3115,266 @@ async fn wire_matrix_h2c_inside_a_connect_tunnel_is_captured() {
 
     conn_task.abort();
 }
+
+/// A plaintext gRPC upstream speaks HTTP/2 and nothing else, and must be reachable.
+///
+/// The outbound leg used hyper's legacy client, which picks its protocol from the URL — HTTP/1.1 for
+/// `http://` — so an h2c-only upstream could not be reached at all: the request was captured and
+/// then failed with 502. Since gRPC on an internal network is exactly this shape, c2h support on the
+/// ingress side was not enough on its own.
+#[tokio::test]
+async fn wire_matrix_h2c_upstream_is_reachable() {
+    use bytes::Bytes;
+    use hyper::body::Frame;
+
+    /// A body with one data frame and then a trailers frame, like a gRPC response.
+    #[derive(Default)]
+    struct GrpcLikeBody {
+        step: u8,
+    }
+
+    impl hyper::body::Body for GrpcLikeBody {
+        type Data = Bytes;
+        type Error = BoxError;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            let step = self.step;
+            self.step += 1;
+            match step {
+                0 => std::task::Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(
+                    b"h2c-upstream",
+                ))))),
+                1 => {
+                    let mut trailers = hyper::HeaderMap::new();
+                    trailers.insert("grpc-status", "0".parse().expect("header"));
+                    std::task::Poll::Ready(Some(Ok(Frame::trailers(trailers))))
+                }
+                _ => std::task::Poll::Ready(None),
+            }
+        }
+    }
+
+    init_crypto();
+
+    let (upstream_addr, requests) = spawn_h2c_only_upstream(GrpcLikeBody::default).await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // A gRPC client: h2c to the proxy, `te: trailers` and a grpc content type.
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let (mut sender, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .handshake(TokioIo::new(stream))
+            .await
+            .expect("h2c handshake");
+    let conn_task = tokio::spawn(conn);
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sender.send_request(
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://{upstream_addr}/pkg.Service/Method"))
+                .header("content-type", "application/grpc")
+                .header("te", "trailers")
+                .body(String::new())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("must not hang")
+    .expect("must be answered");
+
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a plaintext gRPC upstream must be reachable over h2c"
+    );
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the upstream must actually receive the request"
+    );
+
+    let mut body = response.into_body();
+    let mut data = Vec::new();
+    let mut grpc_status: Option<String> = None;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.expect("body frame");
+        if let Some(chunk) = frame.data_ref() {
+            data.extend_from_slice(chunk);
+        }
+        if let Some(trailers) = frame.trailers_ref() {
+            grpc_status = trailers
+                .get("grpc-status")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+        }
+    }
+    assert_eq!(&data[..], b"h2c-upstream");
+    assert_eq!(
+        grpc_status.as_deref(),
+        Some("0"),
+        "the upstream's trailers must reach the client, or gRPC status is lost"
+    );
+
+    conn_task.abort();
+}
+
+/// Start an upstream that serves HTTP/2 only, on plaintext, and count the requests it serves.
+async fn spawn_h2c_only_upstream<B>(
+    make_body: fn() -> B,
+) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>)
+where
+    B: hyper::body::Body<Data = bytes::Bytes> + Send + 'static,
+    B::Error: Into<BoxError>,
+{
+    use hyper::service::service_fn;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind h2c upstream");
+    let addr = listener.local_addr().expect("upstream addr");
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(make_body()))
+                    }
+                });
+                let _ =
+                    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+            });
+        }
+    });
+
+    (addr, served)
+}
+
+/// gRPC-shaped requests to an upstream that only speaks HTTP/1.1 must still work.
+///
+/// The h2c selector is keyed on the request's own declarations, so a server that turns out not to
+/// speak HTTP/2 has to be reached anyway. Falling back is only safe because the decision is made
+/// before the body is sent — a streamed body cannot be replayed, so this covers connection failure
+/// and not a mid-request failure, which is why the sender is established first.
+#[tokio::test]
+async fn wire_matrix_grpc_shaped_request_falls_back_to_http1() {
+    init_crypto();
+
+    // A plain HTTP/1.1 upstream, which will not answer an HTTP/2 preamble.
+    let (upstream_addr, served, _connections) = spawn_keepalive_upstream().await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // Ordinary HTTP/1.1 client, but with gRPC's markers, so the h2c path is attempted first.
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .expect("proxy handshake");
+    let conn_task = tokio::spawn(conn);
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        sender.send_request(
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://{upstream_addr}/pkg.Service/Method"))
+                .header("content-type", "application/grpc")
+                .header("te", "trailers")
+                .body(String::new())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("the fallback must not hang")
+    .expect("the fallback must answer");
+
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "an upstream that is not h2c must still be reached over HTTP/1.1"
+    );
+    // The upstream echoes its own body, so seeing it proves the real request arrived over HTTP/1.1.
+    // A request count is not a usable signal here: the h2c attempt writes an HTTP/2 preface to the
+    // same upstream first, and a raw counting socket cannot tell that apart from a request.
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(
+        &body[..],
+        b"kept-alive",
+        "the HTTP/1.1 upstream must actually serve the request"
+    );
+    let _ = served;
+
+    conn_task.abort();
+}

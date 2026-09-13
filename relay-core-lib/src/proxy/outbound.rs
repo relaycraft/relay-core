@@ -1,6 +1,9 @@
 use async_trait::async_trait;
+use hyper::client::conn::http2::SendRequest;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::interceptor::HttpBody;
 use hyper::body::Incoming;
@@ -146,12 +149,116 @@ use hyper_rustls::ConfigBuilderExt;
 /// Direct outbound connector (no upstream proxy).
 pub struct DirectConnector {
     client: Arc<HttpsClient>,
+    /// Live plaintext HTTP/2 connections, keyed by authority.
+    ///
+    /// `SendRequest` multiplexes streams and is cheap to clone, so one connection per authority
+    /// serves every request to it. Entries are dropped when the connection closes.
+    h2c: Arc<RwLock<HashMap<String, SendRequest<HttpBody>>>>,
 }
 
 impl DirectConnector {
     pub fn new(client: Arc<HttpsClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            h2c: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
+
+    /// Get a usable h2c connection to `authority`, dialling one if necessary.
+    ///
+    /// Deliberately does **not** touch the request: connection failure is the case a caller can
+    /// recover from by falling back, and that is only possible while the body is still unsent.
+    async fn h2c_sender(
+        &self,
+        authority: &str,
+        host: &str,
+        port: u16,
+    ) -> Result<SendRequest<HttpBody>, String> {
+        if let Some(sender) = self.h2c.read().await.get(authority).cloned()
+            && !sender.is_closed()
+        {
+            return Ok(sender);
+        }
+
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::net::TcpStream::connect((host, port)),
+        )
+        .await
+        .map_err(|_| format!("h2c connect to {authority} timed out"))?
+        .map_err(|e| format!("h2c connect to {authority} failed: {e}"))?;
+
+        let (sender, connection) =
+            hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .timer(hyper_util::rt::TokioTimer::new())
+                .handshake(TokioIo::new(stream))
+                .await
+                .map_err(|e| format!("h2c handshake with {authority} failed: {e}"))?;
+
+        // h2c has no negotiation: the client sends a preface and only the server's *reaction* reveals
+        // whether it speaks HTTP/2 at all. The handshake above therefore succeeds even against an
+        // HTTP/1.1 server, and the rejection would otherwise surface on `send_request` — by which
+        // point the request body is gone and a fallback is impossible. Give the connection a short
+        // window to fail here, while the caller's request is still intact.
+        //
+        // The cost is one grace period per new connection, not per request: entries live until the
+        // connection closes.
+        let mut connection = Box::pin(connection);
+        tokio::select! {
+            outcome = &mut connection => {
+                return Err(format!(
+                    "upstream {authority} rejected the HTTP/2 preface: {outcome:?}"
+                ));
+            }
+            _ = tokio::time::sleep(H2C_REJECTION_GRACE) => {}
+        }
+
+        // The connection future drives the socket; it must be polled for requests to make progress.
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::debug!("h2c connection to a plaintext upstream ended: {}", e);
+            }
+        });
+
+        self.h2c
+            .write()
+            .await
+            .insert(authority.to_string(), sender.clone());
+        Ok(sender)
+    }
+}
+
+/// How long a fresh h2c connection is given to reveal that the upstream cannot speak HTTP/2.
+///
+/// Short by design: a server that does not understand the preface rejects it after reading a handful
+/// of bytes, so this is a local reaction rather than a round trip the proxy is waiting on. If the
+/// window is ever too short the result is a clear error, never a silent downgrade.
+const H2C_REJECTION_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Does this request need plaintext HTTP/2 to the upstream?
+///
+/// A gRPC request is required to carry `te: trailers`, and its content type is `application/grpc*`;
+/// a plaintext gRPC server speaks HTTP/2 and nothing else, so HTTP/1.1 cannot reach it. The check is
+/// deliberately narrow: it selects h2c only for requests that declare the protocol they need, so no
+/// other plaintext traffic changes behaviour.
+fn wants_plaintext_h2(req: &Request<HttpBody>) -> bool {
+    let is_plaintext = matches!(req.uri().scheme_str(), Some("http") | None);
+    if !is_plaintext {
+        return false;
+    }
+
+    let te_says_trailers = req
+        .headers()
+        .get(hyper::header::TE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("trailers"));
+    let grpc_content_type = req
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().starts_with("application/grpc"));
+
+    te_says_trailers || grpc_content_type
 }
 
 #[async_trait]
@@ -159,10 +266,28 @@ impl OutboundConnector for DirectConnector {
     async fn send_request(
         &self,
         req: Request<HttpBody>,
-        _target_host: &str,
-        _target_port: u16,
+        target_host: &str,
+        target_port: u16,
         _flow: &mut Flow,
     ) -> Result<Response<Incoming>, UpstreamError> {
+        if wants_plaintext_h2(&req) {
+            let authority = format!("{target_host}:{target_port}");
+            match self.h2c_sender(&authority, target_host, target_port).await {
+                Ok(mut sender) => {
+                    return sender
+                        .send_request(req)
+                        .await
+                        .map_err(|e| UpstreamError::Io(std::io::Error::other(e)));
+                }
+                Err(reason) => {
+                    // The upstream is not speaking h2c. Fall back rather than fail: the request is
+                    // still intact because nothing has been sent yet.
+                    tracing::warn!("{}; retrying {} over HTTP/1.1", reason, authority);
+                    self.h2c.write().await.remove(&authority);
+                }
+            }
+        }
+
         self.client
             .request(req)
             .await
