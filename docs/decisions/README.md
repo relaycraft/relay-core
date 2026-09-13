@@ -30,3 +30,4 @@
 | [0003](./0003-typed-events-alongside-flow-snapshots.md) | 类型化事件与 Flow 快照并存 | Accepted |
 | [0004](./0004-dependency-advisories-owned-by-dependabot.md) | 依赖漏洞由 Dependabot 接管 | Accepted |
 | [0005](./0005-circuit-breaker-defaults.md) | 熔断器默认值与可配置化 | Accepted |
+| [0006](./0006-redaction-on-by-default.md) | 敏感信息默认脱敏 | Accepted |
