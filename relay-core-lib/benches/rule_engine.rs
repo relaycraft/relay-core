@@ -64,8 +64,10 @@ fn make_flow(url: &str) -> Flow {
                 body: Some(BodyData {
                     encoding: "utf-8".to_string(),
                     size: 1024,
+                    grpc: None,
                     content: "x".repeat(1024),
                 }),
+                trailers: vec![],
                 timing: ResponseTiming {
                     time_to_first_byte: None,
                     time_to_last_byte: None,
