@@ -1,3 +1,9 @@
+// Every test here drives the UDP proxy, and on Linux that path requires `CAP_NET_ADMIN`
+// (`LinuxTproxy::create_transparent_udp_socket` needs `IP_TRANSPARENT`), which a CI runner does not
+// have. Gating at the file level rather than per test keeps the whole file from compiling on Linux —
+// per-test gates left its imports and helpers as dead code there, and `-D warnings` failed the build.
+#![cfg(not(target_os = "linux"))]
+
 use relay_core_api::flow::{Flow, FlowUpdate};
 use relay_core_lib::capture::udp::UdpProxy;
 use relay_core_lib::interceptor::{InterceptionResult, Interceptor};
@@ -48,7 +54,6 @@ impl Interceptor for DropAllInterceptor {
 /// explicit remote address needs CAP_NET_ADMIN and a TPROXY rule. Guarding that call to the
 /// transparent path would let both tests run on Linux — which is the only platform CI blocks on, so
 /// today plain UDP forwarding has no coverage where it counts.
-#[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_drop_all_interceptor() {
     // Bind echo server
@@ -105,7 +110,6 @@ async fn test_udp_proxy_drop_all_interceptor() {
 ///
 /// Same Linux exclusion and same reason as above: this exercises the explicit-`remote_addr` path,
 /// which is not the transparent one, yet `run` still enables TPROXY on Linux.
-#[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn test_udp_proxy_allow_all() {
     let echo = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
