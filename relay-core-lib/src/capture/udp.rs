@@ -599,6 +599,12 @@ pub const SESSION_FLOW_IS_EMIT_TWICE: () = ();
 mod tests {
     /// Closing a session must report the exchange's real totals and an `end_time`, which is what makes
     /// `duration_ms` computable for UDP flows at all.
+    // Not runnable on Linux without privileges: `get_or_create_session` builds its sockets through
+    // `LinuxTproxy::create_transparent_udp_socket`, which needs CAP_NET_ADMIN (`IP_TRANSPARENT`), and
+    // a CI runner has none — so the call fails with EPERM rather than exercising anything. The
+    // integration tests in `tests/udp_integration_test.rs` carry the same gate for the same reason.
+    // Covering this contract on Linux needs a privileged runner or a mocked socket layer.
+    #[cfg(not(target_os = "linux"))]
     #[tokio::test]
     async fn a_closed_session_reports_totals_and_an_end_time() {
         let manager = UdpSessionManager::new(Duration::from_millis(1));
@@ -657,6 +663,12 @@ mod tests {
     }
 
     /// A session that is still active must not be closed.
+    // Not runnable on Linux without privileges: `get_or_create_session` builds its sockets through
+    // `LinuxTproxy::create_transparent_udp_socket`, which needs CAP_NET_ADMIN (`IP_TRANSPARENT`), and
+    // a CI runner has none — so the call fails with EPERM rather than exercising anything. The
+    // integration tests in `tests/udp_integration_test.rs` carry the same gate for the same reason.
+    // Covering this contract on Linux needs a privileged runner or a mocked socket layer.
+    #[cfg(not(target_os = "linux"))]
     #[tokio::test]
     async fn an_active_session_is_not_closed() {
         let manager = UdpSessionManager::new(Duration::from_secs(60));
