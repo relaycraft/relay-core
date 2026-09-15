@@ -221,6 +221,14 @@ pub async fn start_core_proxy<R: Runtime>(
     {
         let mut policy = state.ctx.policy.policy_snapshot();
         policy.body_observation = relay_core_api::body_plan::BodyObservation::Full;
+        // The desktop UI talks to this process's own HTTP API; with the system proxy on, that
+        // traffic is proxied too, and recording it fills the flow list with the app's own
+        // requests instead of the traffic the list exists to show.
+        policy.capture_exclude = vec![
+            format!("127.0.0.1:{}", relay_core_runtime::DEFAULT_HTTP_API_PORT),
+            format!("localhost:{}", relay_core_runtime::DEFAULT_HTTP_API_PORT),
+            format!("127.0.0.1:{port}"),
+        ];
         state.core.update_policy_from(
             relay_core_runtime::audit::AuditActor::Tauri,
             "startup.policy".to_string(),

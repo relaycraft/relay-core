@@ -248,6 +248,15 @@ pub struct ProxyPolicy {
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerPolicy,
 
+    /// Requests to these endpoints are **forwarded but not captured**.
+    ///
+    /// An engine that is proxied by its own host — a desktop app whose UI calls its own API through
+    /// the system proxy, for instance — otherwise fills the flow list with its own internal traffic,
+    /// which is noise for the person reading it. Entries are `host:port` (or `host`, meaning any
+    /// port); empty by default so no existing deployment changes behaviour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_exclude: Vec<String>,
+
     /// How much history the store may keep. Every field `None` means unbounded, which is the
     /// pre-existing behaviour: nothing pruned the database before this, so a long-running instance
     /// grew until the disk filled.
@@ -366,6 +375,7 @@ impl Default for ProxyPolicy {
             redaction: RedactionPolicy::default(),
             upstream: None,
             retention: RetentionPolicy::default(),
+            capture_exclude: Vec::new(),
             circuit_breaker: CircuitBreakerPolicy::default(),
         }
     }
@@ -613,5 +623,103 @@ mod tests {
             fail_open: false,
         };
         assert_ne!(a, b);
+    }
+}
+
+/// Should a request to `url` be left out of the capture?
+///
+/// A pure function so the rule is testable without standing up a proxy, and so the hosts that set the
+/// list and the pump that applies it cannot disagree about what an entry means.
+///
+/// An entry is `host:port` for one endpoint, or a bare `host` for any port on it. Matching is on the
+/// host as written — `127.0.0.1` and `localhost` are different endpoints, and aliasing them would
+/// hide traffic the operator did not ask to hide. A URL that cannot be parsed is not excluded: the
+/// safe failure for a capture filter is to keep capturing.
+pub fn is_capture_excluded(url: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let port = parsed.port_or_known_default();
+
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return false;
+        }
+        match pattern.rsplit_once(':') {
+            // `host:port` — the port must match too, so excluding a UI on :8082 cannot silence an
+            // unrelated service on :8083 of the same host.
+            Some((pattern_host, pattern_port)) => {
+                pattern_host.eq_ignore_ascii_case(host) && pattern_port.parse::<u16>().ok() == port
+            }
+            None => pattern.eq_ignore_ascii_case(host),
+        }
+    })
+}
+
+#[cfg(test)]
+mod capture_exclude_tests {
+    use super::is_capture_excluded;
+
+    fn patterns(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|e| e.to_string()).collect()
+    }
+
+    #[test]
+    fn an_exact_endpoint_is_excluded() {
+        let list = patterns(&["127.0.0.1:8082"]);
+        assert!(is_capture_excluded(
+            "http://127.0.0.1:8082/api/v1/flows",
+            &list
+        ));
+        assert!(
+            !is_capture_excluded("http://127.0.0.1:8083/api/v1/flows", &list),
+            "only the named port is excluded"
+        );
+        assert!(
+            !is_capture_excluded("http://127.0.0.1/api/v1/flows", &list),
+            "a different port on the same host is not the named endpoint"
+        );
+    }
+
+    #[test]
+    fn a_bare_host_excludes_every_port_on_it() {
+        let list = patterns(&["localhost"]);
+        assert!(is_capture_excluded("http://localhost:8082/x", &list));
+        assert!(is_capture_excluded("https://localhost/x", &list));
+        assert!(!is_capture_excluded(
+            "http://localhost.example.com:8082/x",
+            &list
+        ));
+    }
+
+    /// Hosts are not aliased: excluding the loopback address must not silently exclude `localhost`
+    /// traffic, or a filter would hide more than it says.
+    #[test]
+    fn hosts_are_matched_as_written() {
+        let list = patterns(&["127.0.0.1:8082"]);
+        assert!(!is_capture_excluded("http://localhost:8082/x", &list));
+    }
+
+    #[test]
+    fn an_empty_list_excludes_nothing() {
+        assert!(!is_capture_excluded("http://127.0.0.1:8082/x", &[]));
+        assert!(!is_capture_excluded(
+            "http://127.0.0.1:8082/x",
+            &patterns(&["", "  "])
+        ),);
+    }
+
+    /// A filter must not swallow traffic just because it cannot be understood.
+    #[test]
+    fn an_unparsable_url_is_not_excluded() {
+        let list = patterns(&["127.0.0.1:8082"]);
+        assert!(!is_capture_excluded("not a url", &list));
     }
 }

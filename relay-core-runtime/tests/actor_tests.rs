@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use relay_core_api::flow::{
-    BodyData, Direction, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
-    ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
+    BodyData, Direction, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse, Layer,
+    NetworkInfo, ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
 };
+use relay_core_api::policy::ProxyPolicy;
 use relay_core_api::rule::WebSocketDirection;
 use relay_core_lib::InterceptionResult;
 use relay_core_lib::intercept::Interceptor;
@@ -12,6 +13,7 @@ use relay_core_lib::rule::{Action, Filter, Rule, RuleStage, RuleTermination, Rul
 use relay_core_runtime::CoreState;
 use relay_core_runtime::interceptors::rule::RuleInterceptor;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
 use url::Url;
 use uuid::Uuid;
@@ -995,4 +997,95 @@ async fn proxy_side_dropped_flows_are_exported() {
         before_value + 1,
         "the exported counter must reflect what the proxy actually dropped"
     );
+}
+
+/// A request to an endpoint the host excluded must be forwarded but not recorded.
+///
+/// A desktop host whose UI talks to its own API through the proxy otherwise fills the flow list
+/// with its own traffic — noise for the person reading it, and it buries the traffic they care
+/// about. This drives a real proxy so the whole path is exercised, not a copy of the filter.
+#[tokio::test]
+async fn an_excluded_endpoint_is_forwarded_but_not_recorded() {
+    init_crypto();
+
+    // An upstream to send the excluded request to.
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = upstream.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                if stream.read(&mut buf).await.is_ok() {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                }
+            });
+        }
+    });
+
+    let state = Arc::new(CoreState::new(None).await);
+    // The upstream itself is the excluded endpoint, which is the shape of the real problem: the
+    // host's own API port is just another local endpoint to the proxy.
+    state.update_policy(ProxyPolicy {
+        capture_exclude: vec![upstream_addr.to_string()],
+        ..Default::default()
+    });
+
+    let dir = std::env::temp_dir().join(format!("relay-core-exclude-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve port");
+    let port = reserved.local_addr().expect("port").port();
+    drop(reserved);
+
+    let config = relay_core_runtime::ProxyConfig::new(port, dir.join("ca.pem"), dir.join("ca.key"));
+    let (sink, mut sink_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    state
+        .spawn_proxy(config, sink, None)
+        .expect("the proxy should start");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut client = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .expect("connect proxy");
+    client
+        .write_all(
+            format!(
+                "GET http://{upstream_addr}/internal HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write request");
+    let mut response = vec![0u8; 4096];
+    let read = tokio::time::timeout(Duration::from_secs(5), client.read(&mut response))
+        .await
+        .expect("the request must be answered")
+        .expect("read");
+    let response = String::from_utf8_lossy(&response[..read]).to_string();
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "an excluded endpoint must still be proxied, got {response:?}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let recorded: Vec<String> = std::iter::from_fn(|| sink_rx.try_recv().ok())
+        .filter_map(|u| match u {
+            FlowUpdate::Full(flow) => Some(flow.id.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        recorded.is_empty(),
+        "an excluded endpoint must not be recorded, but these flows arrived: {recorded:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

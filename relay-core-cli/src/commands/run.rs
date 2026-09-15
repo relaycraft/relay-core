@@ -363,6 +363,26 @@ pub async fn execute(
     } else {
         api_port
     };
+    // Keep the engine's own endpoints out of the flow list: with a system proxy in place, an
+    // app's own API calls are otherwise captured as if they were user traffic.
+    {
+        let mut policy = state.policy_snapshot();
+        let mut exclude = vec![
+            format!("127.0.0.1:{control_port}"),
+            format!("localhost:{control_port}"),
+        ];
+        if let Some(port) = effective_api_port {
+            exclude.push(format!("127.0.0.1:{port}"));
+            exclude.push(format!("localhost:{port}"));
+        }
+        policy.capture_exclude = exclude;
+        state.update_policy_from(
+            relay_core_runtime::audit::AuditActor::Cli,
+            "startup.capture_exclude".to_string(),
+            policy,
+        );
+    }
+
     if let Some(port) = effective_api_port {
         let bind_addr = std::net::SocketAddr::new(
             api_bind

@@ -1665,8 +1665,60 @@ impl CoreState {
         let interceptor = Arc::new(CompositeInterceptor::new(interceptors));
         let (proxy_tx, mut proxy_rx) = mpsc::channel::<FlowUpdate>(1000);
 
+        // Endpoints the host asked not to see in its own flow list. Applied here rather than at the
+        // proxy's emit sites because this is the single point every update passes through: one check
+        // covers all of them, including the incremental updates that carry only a flow id.
+        let capture_exclude = self.policy_tx.borrow().capture_exclude.clone();
+
         tokio::spawn(async move {
+            // Flow ids that matched an exclusion, so their body/trailer/message updates are skipped
+            // too. Bounded: a long run must not accumulate ids forever, and the incremental updates
+            // arrive while the id is still recent.
+            let mut excluded_ids: std::collections::HashSet<uuid::Uuid> =
+                std::collections::HashSet::new();
+            let mut excluded_order: std::collections::VecDeque<uuid::Uuid> =
+                std::collections::VecDeque::new();
+            const EXCLUDED_ID_MEMORY: usize = 4096;
+
             while let Some(update) = proxy_rx.recv().await {
+                // A request to an excluded endpoint is still forwarded — only the record of it is
+                // dropped, because "do not show me my own UI's traffic" is a display concern, not a
+                // reason to break the traffic.
+                if let FlowUpdate::Full(flow) = &update {
+                    let url = match &flow.layer {
+                        relay_core_api::flow::Layer::Http(http) => http.request.url.to_string(),
+                        relay_core_api::flow::Layer::WebSocket(ws) => {
+                            ws.handshake_request.url.to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    if !url.is_empty()
+                        && relay_core_api::policy::is_capture_excluded(&url, &capture_exclude)
+                    {
+                        excluded_ids.insert(flow.id);
+                        excluded_order.push_back(flow.id);
+                        if excluded_order.len() > EXCLUDED_ID_MEMORY
+                            && let Some(oldest) = excluded_order.pop_front()
+                        {
+                            excluded_ids.remove(&oldest);
+                        }
+                        continue;
+                    }
+                }
+
+                let flow_id = match &update {
+                    FlowUpdate::Full(flow) => Some(flow.id),
+                    FlowUpdate::WebSocketMessage { flow_id, .. }
+                    | FlowUpdate::HttpBody { flow_id, .. }
+                    | FlowUpdate::BodyBudgetExceeded { flow_id, .. }
+                    | FlowUpdate::ResponseTrailers { flow_id, .. } => {
+                        uuid::Uuid::parse_str(flow_id).ok()
+                    }
+                };
+                if flow_id.is_some_and(|id| excluded_ids.contains(&id)) {
+                    continue;
+                }
+
                 match update.clone() {
                     FlowUpdate::Full(flow) => {
                         // A flow that recorded how it ended is finished, and the reason it gives is
@@ -2035,6 +2087,14 @@ fn redaction_set(values: &[String]) -> HashSet<String> {
 fn should_redact_history(was_enabled: bool, now_enabled: bool) -> bool {
     !was_enabled && now_enabled
 }
+
+/// Default port for the REST/SSE HTTP API.
+///
+/// Shared so a host can exclude its own API from the capture without hard-coding the number.
+pub const DEFAULT_HTTP_API_PORT: u16 = 8082;
+
+/// Default port for the CLI control API.
+pub const DEFAULT_CONTROL_PORT: u16 = 8081;
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
