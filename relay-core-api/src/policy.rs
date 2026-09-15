@@ -645,7 +645,17 @@ pub fn is_capture_excluded(url: &str, patterns: &[String]) -> bool {
     let Some(host) = parsed.host_str() else {
         return false;
     };
-    let port = parsed.port_or_known_default();
+    is_capture_excluded_parts(host, parsed.port_or_known_default(), patterns)
+}
+
+/// The same rule, for a caller that already holds a parsed URL.
+///
+/// The pump runs this for every flow update, and turning the URL back into a string so that it can be
+/// parsed again was pure overhead on the hot path.
+pub fn is_capture_excluded_parts(host: &str, port: Option<u16>, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
 
     patterns.iter().any(|pattern| {
         let pattern = pattern.trim();

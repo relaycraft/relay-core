@@ -1685,16 +1685,25 @@ impl CoreState {
                 // dropped, because "do not show me my own UI's traffic" is a display concern, not a
                 // reason to break the traffic.
                 if let FlowUpdate::Full(flow) = &update {
-                    let url = match &flow.layer {
-                        relay_core_api::flow::Layer::Http(http) => http.request.url.to_string(),
+                    let target = match &flow.layer {
+                        relay_core_api::flow::Layer::Http(http) => Some(&http.request.url),
                         relay_core_api::flow::Layer::WebSocket(ws) => {
-                            ws.handshake_request.url.to_string()
+                            Some(&ws.handshake_request.url)
                         }
-                        _ => String::new(),
+                        _ => None,
                     };
-                    if !url.is_empty()
-                        && relay_core_api::policy::is_capture_excluded(&url, &capture_exclude)
-                    {
+                    // Matched on the parsed URL the flow already carries, rather than stringifying it
+                    // so the matcher can parse it again — this runs for every update.
+                    let excluded = target.is_some_and(|url| {
+                        url.host_str().is_some_and(|host| {
+                            relay_core_api::policy::is_capture_excluded_parts(
+                                host,
+                                url.port_or_known_default(),
+                                &capture_exclude,
+                            )
+                        })
+                    });
+                    if excluded {
                         excluded_ids.insert(flow.id);
                         excluded_order.push_back(flow.id);
                         if excluded_order.len() > EXCLUDED_ID_MEMORY
