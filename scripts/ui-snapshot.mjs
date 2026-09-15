@@ -209,15 +209,14 @@ await clickByTitle('Switch to');
 await clickByTitle('Help');
 await shot('09-help-dark');
 
-// Measure the same elements in both themes: a picture shows that something is off, these numbers say
-// which element and which declared colour is responsible.
-await clickByTitle('Switch to');
-await clickByTitle('Flows');
-await sleep(400);
-await probe('dark', PROBE_TARGETS);
-await clickByTitle('Switch to');
-await sleep(600);
-await probe('light', PROBE_TARGETS);
+// Measure both themes deterministically: set the stored choice and reload, rather than toggling and
+// trusting that the label matches what the last click left behind (it did not, first time round).
+for (const theme of ['dark', 'light']) {
+  await evaluate(`localStorage.setItem('relay-core.theme', ${JSON.stringify(theme)})`);
+  await send('Page.reload');
+  await sleep(settle);
+  await probe(theme, PROBE_TARGETS);
+}
 
 await browser.send('Target.closeTarget', { targetId });
 console.log('done');

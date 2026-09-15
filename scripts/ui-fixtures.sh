@@ -28,7 +28,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> building the CLI (the Web UI is embedded at build time)"
+echo "==> building the Web UI, then the CLI that embeds it"
+# Order matters and skipping this is how the harness lies: the CLI serves assets copied from the
+# build, so without this step it screenshots the previous UI and reports findings about code that is
+# not running.
+"$ROOT/scripts/webui-build.sh" >/dev/null
 cargo build -p relay-core-cli --manifest-path "$ROOT/Cargo.toml" >/dev/null
 
 BIN="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --format-version 1 --no-deps \
