@@ -3,6 +3,28 @@ import { store } from '@/lib/store';
 import { getPolicy, patchPolicy } from '@/lib/api';
 import type { ProxyPolicy } from '@/types/api';
 
+/** Bytes the way a person reads them: `10485760 bytes` is `10 MiB`. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return String(bytes);
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const shown = value >= 10 || Number.isInteger(value) ? Math.round(value) : Number(value.toFixed(1));
+  return `${shown} ${units[unit]}`;
+}
+
+/** Milliseconds the way a person reads them: `30000 ms` is `30 s`. */
+function formatMillis(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return String(ms);
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = ms / 1000;
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`;
+}
+
 export default function SettingsView() {
   const [policy, setPolicy] = createSignal<ProxyPolicy | null>(null);
   const [error, setError] = createSignal('');
@@ -65,18 +87,22 @@ export default function SettingsView() {
   }
 
   return (
-    <div class="h-full overflow-y-auto p-4 text-sm max-w-2xl">
+    <div class="h-full overflow-y-auto p-4 text-[13px] max-w-2xl mx-auto">
       <h2 class="text-accent font-bold mb-3">Proxy Policy</h2>
 
       <Show when={loading()} fallback={
         <Show when={policy()} fallback={<div class="text-text-dim">Failed to load policy.</div>}>
           {(p) => (
             <div class="space-y-4">
-              <section class="border border-border rounded p-3 space-y-2">
-                <h3 class="text-xs font-bold text-text-dim uppercase tracking-wide">Redaction</h3>
+              <section class="border border-border/60 rounded-md overflow-hidden">
+                <h3 class="px-2 py-1 text-[12px] font-bold text-text-dim uppercase tracking-wide bg-surface-alt border-b border-border/60">
+                  Redaction
+                </h3>
+                <div class="p-3 space-y-2">
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
+                    class="accent-accent w-3.5 h-3.5"
                     checked={p().redaction.enabled}
                     onChange={toggleRedaction}
                   />
@@ -85,22 +111,26 @@ export default function SettingsView() {
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
+                    class="accent-accent w-3.5 h-3.5"
                     checked={p().redaction.redact_bodies}
                     onChange={toggleRedactBodies}
                   />
                   <span>Redact request/response bodies</span>
                 </label>
+                </div>
               </section>
 
-              <section class="border border-border rounded p-3 space-y-1 text-xs">
-                <h3 class="text-xs font-bold text-text-dim uppercase tracking-wide mb-2">Runtime</h3>
-                <div class="grid grid-cols-2 gap-1">
+              <section class="border border-border/60 rounded-md overflow-hidden">
+                <h3 class="px-2 py-1 text-[12px] font-bold text-text-dim uppercase tracking-wide bg-surface-alt border-b border-border/60">
+                  Runtime
+                </h3>
+                <div class="grid grid-cols-[minmax(0,12rem)_1fr] gap-x-3 gap-y-1 p-3">
                   <span class="text-text-dim">Max body size</span>
-                  <span>{p().max_body_size} bytes</span>
+                  <span class="tabular-nums">{formatBytes(p().max_body_size)}</span>
                   <span class="text-text-dim">Body inspect budget</span>
-                  <span>{p().rule_body_inspect_budget} bytes</span>
+                  <span class="tabular-nums">{formatBytes(p().rule_body_inspect_budget)}</span>
                   <span class="text-text-dim">Request timeout</span>
-                  <span>{p().request_timeout_ms} ms</span>
+                  <span class="tabular-nums">{formatMillis(p().request_timeout_ms)}</span>
                   <span class="text-text-dim">Transparent proxy</span>
                   <span>{p().transparent_enabled ? 'enabled' : 'disabled'}</span>
                   <span class="text-text-dim">Upstream</span>

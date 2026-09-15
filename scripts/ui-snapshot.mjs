@@ -215,6 +215,12 @@ async function scanDarkElements(label) {
       }
       return out;
     })()`);
+  // Only the light theme is judged: a dark theme is expected to contain dark elements, and printing a
+  // count for it invites the number to be read as a defect.
+  if (label !== 'light') {
+    console.log(`\n[dark scan] ${label}: skipped (a dark theme is supposed to be dark)`);
+    return found;
+  }
   console.log(`\n[dark scan] ${label}: ${found.length} dark element(s) that should not be dark`);
   for (const el of found) console.log(`  ${el.size}  lum=${el.lum}  ${el.bg}  <${el.tag} class="${el.cls}">`);
   return found;
@@ -251,10 +257,17 @@ await shot('07-flows-light');
 await clickFirstFlow();
 await shot('08-flow-detail-light');
 
+// The command palette is reachable from anywhere and is easy to forget when reviewing by eye.
+await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`);
+await sleep(500);
+await shot('09-command-palette');
+await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+await sleep(400);
+
 // Back to the dark theme and the help overlay, so a run leaves the two ends of the UI captured.
 await clickByTitle('Switch to');
 await clickByTitle('Help');
-await shot('09-help-dark');
+await shot('10-help-dark');
 
 // Measure both themes deterministically: set the stored choice and reload, rather than toggling and
 // trusting that the label matches what the last click left behind (it did not, first time round).
