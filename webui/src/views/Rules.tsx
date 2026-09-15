@@ -153,7 +153,9 @@ export default function RulesView() {
             />
           </div>
           <button
-            class="w-full px-2 py-1 bg-warn/20 text-warn text-xs rounded hover:bg-warn/30 transition-colors"
+            class="w-full px-2 py-1 rounded bg-accent/20 text-accent text-[13px] font-semibold hover:bg-accent/30 transition-colors disabled:opacity-50"
+            disabled={mockUrl().trim() === ''}
+            title="Create a rule that answers matching requests with this response"
             onClick={handleQuickMock}
           >
             Mock
@@ -162,6 +164,14 @@ export default function RulesView() {
 
         {/* Rule list */}
         <div class="flex-1 overflow-y-auto">
+          <Show when={rules().length === 0}>
+            <div class="p-3 text-[13px] text-text-dim leading-relaxed">
+              No rules yet.
+              <br />
+              Use <span class="text-accent">+ New Rule</span> for a full rule, or Quick Mock above to
+              answer a pattern with a fixed response.
+            </div>
+          </Show>
           <For each={rules()}>
             {(rule) => (
               <button
@@ -171,17 +181,18 @@ export default function RulesView() {
                 onClick={() => selectRule(rule)}
               >
                 <div class="flex items-center gap-2">
-                  <span
-                    class={`w-2 h-2 rounded-full ${rule.active ? 'bg-success' : 'bg-text-dim'}`}
+                  <button
+                    class={`w-2.5 h-2.5 rounded-full shrink-0 ${rule.active ? 'bg-success' : 'bg-text-faint'}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleActive(rule);
                     }}
-                    title="Toggle active"
+                    title={rule.active ? 'Active — click to disable' : 'Disabled — click to enable'}
+                    aria-label={rule.active ? 'Disable rule' : 'Enable rule'}
                   />
                   <span class="font-bold">{rule.name}</span>
                 </div>
-                <div class="flex gap-1 mt-0.5 text-[12px] text-text-dim/60">
+                <div class="flex gap-2 mt-0.5 text-[12px] text-text-dim">
                   <span>{rule.stage}</span>
                   <span>P:{rule.priority}</span>
                   <span>{rule.termination}</span>
