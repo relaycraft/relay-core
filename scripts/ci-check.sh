@@ -24,6 +24,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 echo "==> cargo check --all-targets"
 cargo check --workspace --all-targets
 
+# Adding a field to a widely-constructed struct breaks call sites that the host platform never
+# compiles — a Linux-only literal in udp.rs passed locally and failed in CI — so check by reading the
+# source rather than by asking one platform's compiler.
+echo "==> struct literal completeness"
+python3 scripts/check-struct-literals.py --all
+
 echo "==> cargo test"
 cargo test --workspace
 

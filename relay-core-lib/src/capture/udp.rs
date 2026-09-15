@@ -369,6 +369,9 @@ impl UdpProxy {
                                         client_port: src_addr.port(),
                                         server_ip: dst_addr.ip().to_string(),
                                         server_port: dst_addr.port(),
+                                        // Capture knows the destination outright (this layer is the
+                                        // one that picked it), so the target is the address itself.
+                                        server_host: Some(dst_addr.to_string()),
                                         protocol: TransportProtocol::UDP,
                                         tls: false,
                                         tls_version: None,
