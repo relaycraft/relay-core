@@ -131,7 +131,7 @@ export default function RulesView() {
 
         {/* Quick Mock */}
         <div class="p-2 border-b border-border space-y-1">
-          <span class="text-[10px] text-text-dim font-bold">Quick Mock</span>
+          <span class="text-[12px] text-text-dim font-bold">Quick Mock</span>
           <input
             class="w-full bg-surface border border-border rounded px-2 py-1 text-xs text-text placeholder-text-dim"
             placeholder="URL pattern"
@@ -181,7 +181,7 @@ export default function RulesView() {
                   />
                   <span class="font-bold">{rule.name}</span>
                 </div>
-                <div class="flex gap-1 mt-0.5 text-[10px] text-text-dim/60">
+                <div class="flex gap-1 mt-0.5 text-[12px] text-text-dim/60">
                   <span>{rule.stage}</span>
                   <span>P:{rule.priority}</span>
                   <span>{rule.termination}</span>
@@ -199,14 +199,14 @@ export default function RulesView() {
           <div class="flex-1" />
           <Show when={selectedId() && !editingNew()}>
             <button
-              class="px-2 py-0.5 text-error/70 hover:text-error text-[10px] transition-colors"
+              class="px-2 py-0.5 text-error/70 hover:text-error text-[12px] transition-colors"
               onClick={handleDelete}
             >
               Delete
             </button>
           </Show>
           <button
-            class="px-3 py-0.5 bg-accent/20 text-accent text-[10px] rounded hover:bg-accent/30 transition-colors"
+            class="px-3 py-0.5 bg-accent/20 text-accent text-[12px] rounded hover:bg-accent/30 transition-colors"
             onClick={handleSave}
           >
             Save (Cmd+S)

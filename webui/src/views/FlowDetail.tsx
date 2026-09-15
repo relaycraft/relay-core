@@ -63,21 +63,21 @@ export default function FlowDetail(props: { flowId: string }) {
         </For>
         <div class="flex-1" />
         <button
-          class="px-2 h-6 text-[10px] text-text-dim hover:text-text transition-colors"
+          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
           onClick={copyCurl}
           title="Copy as cURL"
         >
           cURL
         </button>
         <button
-          class="px-2 h-6 text-[10px] text-text-dim hover:text-text transition-colors"
+          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
           onClick={handleReplay}
           title="Replay"
         >
           Replay
         </button>
         <button
-          class="px-2 h-6 text-[10px] text-text-dim hover:text-text transition-colors"
+          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
           onClick={handleExportHar}
           title="Export HAR"
         >
@@ -112,7 +112,7 @@ export default function FlowDetail(props: { flowId: string }) {
 
       {/* Payload view switcher (only visible on payload tab) */}
       <Show when={activeTab() === 'payload'}>
-        <div class="h-6 flex items-center px-2 bg-surface border-t border-border text-[10px] shrink-0 gap-2">
+        <div class="h-6 flex items-center px-2 bg-surface border-t border-border text-[12px] shrink-0 gap-2">
           <span class="text-text-dim">View:</span>
           {(['json', 'hex', 'text'] as const).map((v) => (
             <button
@@ -140,7 +140,7 @@ function HeadersView(props: { flow: Flow }) {
       </Show>
 
       <section>
-        <h3 class="text-accent text-[11px] font-bold mb-1">Request</h3>
+        <h3 class="text-accent text-[13px] font-bold mb-1">Request</h3>
         <div class="text-text">
           <span class="font-bold">{req?.method}</span>{' '}
           <span class="text-text-dim">{req?.url}</span>{' '}
@@ -151,7 +151,7 @@ function HeadersView(props: { flow: Flow }) {
 
       <Show when={res}>
         <section>
-          <h3 class="text-accent text-[11px] font-bold mb-1">Response</h3>
+          <h3 class="text-accent text-[13px] font-bold mb-1">Response</h3>
           <div class="text-text">
             <span class="font-bold">{res?.status}</span>{' '}
             <span class="text-text-dim">{res?.status_text}</span>{' '}
@@ -162,8 +162,8 @@ function HeadersView(props: { flow: Flow }) {
       </Show>
 
       <section>
-        <h3 class="text-text-dim text-[11px] font-bold mb-1">Connection</h3>
-        <div class="grid grid-cols-4 gap-1 text-[11px]">
+        <h3 class="text-text-dim text-[13px] font-bold mb-1">Connection</h3>
+        <div class="grid grid-cols-4 gap-1 text-[13px]">
           <span class="text-text-dim">Client:</span>
           <span class="text-text">{props.flow.network.client_ip}:{props.flow.network.client_port}</span>
           <span class="text-text-dim">Server:</span>
@@ -183,7 +183,7 @@ function HeaderTable(props: { headers: [string, string][] }) {
     <div class="mt-1">
       <For each={props.headers}>
         {([name, value]) => (
-          <div class="flex hover:bg-hover px-1 rounded text-[11px]">
+          <div class="flex hover:bg-hover px-1 rounded text-[13px]">
             <span class="w-48 shrink-0 text-accent/70 truncate">{name}</span>
             <span class="text-text-dim truncate">{value}</span>
           </div>
@@ -206,14 +206,14 @@ function PayloadView(props: { flow: Flow; view: 'json' | 'hex' | 'text' }) {
       </Show>
       <Show when={http?.request?.body} fallback={<div class="text-text-dim text-xs">No request body</div>}>
         <section>
-          <h3 class="text-accent text-[11px] font-bold mb-1">Request Body</h3>
+          <h3 class="text-accent text-[13px] font-bold mb-1">Request Body</h3>
           <BodyDisplay body={http!.request!.body!} view={props.view} />
         </section>
       </Show>
 
       <Show when={http?.response?.body}>
         <section>
-          <h3 class="text-accent text-[11px] font-bold mb-1">Response Body</h3>
+          <h3 class="text-accent text-[13px] font-bold mb-1">Response Body</h3>
           <BodyDisplay body={http!.response!.body!} view={props.view} />
         </section>
       </Show>
@@ -244,7 +244,7 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text' }) {
     try {
       formatted = JSON.stringify(JSON.parse(formatted), null, 2);
     } catch {}
-    return <pre class="whitespace-pre-wrap break-all text-[11px] text-text font-mono">{formatted}</pre>;
+    return <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{formatted}</pre>;
   }
 
   if (props.view === 'hex') {
@@ -252,10 +252,10 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text' }) {
     const hex = Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join(' ');
-    return <pre class="whitespace-pre-wrap break-all text-[11px] text-text-dim font-mono">{hex}</pre>;
+    return <pre class="whitespace-pre-wrap break-all text-[13px] text-text-dim font-mono">{hex}</pre>;
   }
 
-  return <pre class="whitespace-pre-wrap break-all text-[11px] text-text font-mono">{textContent()}</pre>;
+  return <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{textContent()}</pre>;
 }
 
 function TimingView(props: { flow: Flow }) {
@@ -278,7 +278,7 @@ function TimingView(props: { flow: Flow }) {
       </Show>
 
       <Show when={props.flow.resilience_trace}>
-        <h3 class="text-accent text-[11px] font-bold mt-4 mb-1">Resilience</h3>
+        <h3 class="text-accent text-[13px] font-bold mt-4 mb-1">Resilience</h3>
         <div class="grid grid-cols-2 gap-2">
           <div class="text-text-dim">Budget Exceeded:</div>
           <div class="text-text">{props.flow.resilience_trace?.budget_exceeded ? 'Yes' : 'No'}</div>
@@ -305,7 +305,7 @@ function MessagesView(props: { flow: Flow }) {
     <div class="text-xs">
       <For each={messages}>
         {(msg) => (
-          <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[11px]">
+          <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
             <span class={`w-12 shrink-0 ${msg.direction === 'ClientToServer' ? 'text-accent' : 'text-warn'}`}>
               {msg.direction === 'ClientToServer' ? '→' : '←'}
             </span>
@@ -322,7 +322,7 @@ function TraceView(props: { flow: Flow }) {
   return (
     <div class="text-xs">
       <Show when={props.flow.matched_rules.length > 0} fallback={<div class="text-text-dim">No rules matched</div>}>
-        <h3 class="text-accent text-[11px] font-bold mb-1">Matched Rules</h3>
+        <h3 class="text-accent text-[13px] font-bold mb-1">Matched Rules</h3>
         <For each={props.flow.matched_rules}>
           {(ruleId) => (
             <div class="text-text px-1 py-0.5">{ruleId}</div>
@@ -331,10 +331,10 @@ function TraceView(props: { flow: Flow }) {
       </Show>
 
       <Show when={props.flow.rule_variables && Object.keys(props.flow.rule_variables).length > 0}>
-        <h3 class="text-accent text-[11px] font-bold mt-3 mb-1">Rule Variables</h3>
+        <h3 class="text-accent text-[13px] font-bold mt-3 mb-1">Rule Variables</h3>
         <For each={Object.entries(props.flow.rule_variables)}>
           {([key, value]) => (
-            <div class="flex text-[11px]">
+            <div class="flex text-[13px]">
               <span class="w-40 text-text-dim">{key}</span>
               <span class="text-text">{value}</span>
             </div>

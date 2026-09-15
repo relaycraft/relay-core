@@ -186,7 +186,7 @@ export default function WorkshopView() {
                   onClick={() => selectIntercept(item)}
                 >
                   <div class="flex items-center gap-2">
-                    <span class={`px-1 py-0.5 rounded text-[10px] ${
+                    <span class={`px-1 py-0.5 rounded text-[12px] ${
                       item.phase === 'request' ? 'bg-accent/20 text-accent' : 'bg-warn/20 text-warn'
                     }`}>
                       {item.phase}
@@ -217,33 +217,33 @@ export default function WorkshopView() {
               <div class="space-y-2 text-xs">
                 <div class="grid grid-cols-2 gap-2">
                   <div>
-                    <label class="text-text-dim text-[10px] block">Method</label>
+                    <label class="text-text-dim text-[12px] block">Method</label>
                     <input class="w-full bg-surface border border-border rounded px-2 py-1 text-text" value={modMethod()} onInput={(e) => setModMethod(e.currentTarget.value)} />
                   </div>
                   <div>
-                    <label class="text-text-dim text-[10px] block">Status Code</label>
+                    <label class="text-text-dim text-[12px] block">Status Code</label>
                     <input class="w-full bg-surface border border-border rounded px-2 py-1 text-text" value={modStatusCode()} onInput={(e) => setModStatusCode(e.currentTarget.value)} placeholder="e.g. 200" />
                   </div>
                 </div>
                 <div>
-                  <label class="text-text-dim text-[10px] block">URL</label>
+                  <label class="text-text-dim text-[12px] block">URL</label>
                   <input class="w-full bg-surface border border-border rounded px-2 py-1 text-text" value={modUrl()} onInput={(e) => setModUrl(e.currentTarget.value)} />
                 </div>
                 <div>
-                  <label class="text-text-dim text-[10px] block">Request Headers (JSON)</label>
-                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[11px]" value={modReqHeaders()} onInput={(e) => setModReqHeaders(e.currentTarget.value)} placeholder='{"X-Custom": "value"}' />
+                  <label class="text-text-dim text-[12px] block">Request Headers (JSON)</label>
+                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[13px]" value={modReqHeaders()} onInput={(e) => setModReqHeaders(e.currentTarget.value)} placeholder='{"X-Custom": "value"}' />
                 </div>
                 <div>
-                  <label class="text-text-dim text-[10px] block">Request Body</label>
-                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[11px]" value={modReqBody()} onInput={(e) => setModReqBody(e.currentTarget.value)} />
+                  <label class="text-text-dim text-[12px] block">Request Body</label>
+                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[13px]" value={modReqBody()} onInput={(e) => setModReqBody(e.currentTarget.value)} />
                 </div>
                 <div>
-                  <label class="text-text-dim text-[10px] block">Response Headers (JSON)</label>
-                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[11px]" value={modResHeaders()} onInput={(e) => setModResHeaders(e.currentTarget.value)} placeholder='{"Content-Type": "application/json"}' />
+                  <label class="text-text-dim text-[12px] block">Response Headers (JSON)</label>
+                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[13px]" value={modResHeaders()} onInput={(e) => setModResHeaders(e.currentTarget.value)} placeholder='{"Content-Type": "application/json"}' />
                 </div>
                 <div>
-                  <label class="text-text-dim text-[10px] block">Response Body</label>
-                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[11px]" value={modResBody()} onInput={(e) => setModResBody(e.currentTarget.value)} />
+                  <label class="text-text-dim text-[12px] block">Response Body</label>
+                  <textarea class="w-full h-16 bg-surface border border-border rounded px-2 py-1 text-text font-mono text-[13px]" value={modResBody()} onInput={(e) => setModResBody(e.currentTarget.value)} />
                 </div>
               </div>
             </Show>

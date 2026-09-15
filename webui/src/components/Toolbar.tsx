@@ -27,8 +27,8 @@ export default function Toolbar() {
 
       <div class="flex-1" />
 
-      <span class="text-[10px] text-text-dim/50">
-        <kbd class="px-1 py-0.5 rounded bg-subtle border border-border text-[10px]">Cmd+K</kbd> Commands
+      <span class="text-[12px] text-text-dim/50">
+        <kbd class="px-1 py-0.5 rounded bg-subtle border border-border text-[12px]">Cmd+K</kbd> Commands
       </span>
     </div>
   );

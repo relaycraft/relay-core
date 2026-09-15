@@ -184,7 +184,7 @@ export default function FlowsView() {
                     style={{ top: `${i() * ROW_HEIGHT}px` }}
                     onClick={() => store.selectFlow(flow.id)}
                   >
-                    <span class="w-14 shrink-0 text-[10px] text-text-dim/50">
+                    <span class="w-14 shrink-0 text-[12px] text-text-dim/50">
                       {formatFlowTime(flow.start_time_ms)}
                     </span>
                     <span class={`w-14 shrink-0 font-bold ${methodClass(flow.method)}`}>
@@ -197,11 +197,11 @@ export default function FlowsView() {
                       {flow.host}
                       <span class="text-text-dim/50">{flow.path}</span>
                     </span>
-                    <span class="w-14 shrink-0 text-right text-[10px] text-text-dim/40">
+                    <span class="w-14 shrink-0 text-right text-[12px] text-text-dim/40">
                       {flow.duration_ms != null ? formatDurationMs(flow.duration_ms) : ''}
                     </span>
-                    {flow.has_error && <span class="ml-1 text-error text-[10px]">ERR</span>}
-                    {flow.is_websocket && <span class="ml-1 text-info text-[10px]">WS</span>}
+                    {flow.has_error && <span class="ml-1 text-error text-[12px]">ERR</span>}
+                    {flow.is_websocket && <span class="ml-1 text-info text-[12px]">WS</span>}
                   </div>
                 );
               }}
@@ -215,7 +215,7 @@ export default function FlowsView() {
             </div>
           </Show>
         </div>
-        <div class="h-5 flex items-center px-2 bg-surface border-t border-border text-[10px] text-text-dim/50">
+        <div class="h-5 flex items-center px-2 bg-surface border-t border-border text-[12px] text-text-dim/50">
           {filteredFlows().length} flows · <span class="ml-1 opacity-60">j/k navigate · / filter · r replay · c cURL</span>
         </div>
       </div>

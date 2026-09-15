@@ -60,7 +60,7 @@ export default function ScriptsView() {
       <div class="flex-1 flex flex-col min-h-0">
         <div class="h-7 flex items-center px-2 bg-surface border-b border-border text-xs shrink-0 gap-2">
           <span class="text-accent font-bold">Script Editor</span>
-          <span class="text-text-dim/50 text-[10px]">Deno-compatible TypeScript</span>
+          <span class="text-text-dim/50 text-[12px]">Deno-compatible TypeScript</span>
           <div class="flex-1" />
           <button
             class={`px-3 py-0.5 text-xs rounded transition-colors ${
@@ -90,7 +90,7 @@ export default function ScriptsView() {
 
       {/* Bottom: Console log */}
       <div class="h-[30%] min-h-[100px] flex flex-col border-t border-border">
-        <div class="h-6 flex items-center px-2 bg-surface border-b border-border text-[10px] text-text-dim shrink-0">
+        <div class="h-6 flex items-center px-2 bg-surface border-b border-border text-[12px] text-text-dim shrink-0">
           Console
           <button
             class="ml-2 text-text-dim/50 hover:text-text transition-colors"
@@ -99,7 +99,7 @@ export default function ScriptsView() {
             Clear
           </button>
         </div>
-        <div class="flex-1 overflow-y-auto p-2 font-mono text-[11px]">
+        <div class="flex-1 overflow-y-auto p-2 font-mono text-[13px]">
           {logs().length === 0 && (
             <div class="text-text-dim/40">Script console output will appear here...</div>
           )}

@@ -1,19 +1,106 @@
 @import 'tailwindcss';
 
-@theme {
-  --color-accent: #22d3ee;
-  --color-accent-amber: #f59e0b;
-  --color-success: #22c55e;
-  --color-info: #3b82f6;
-  --color-warn: #f59e0b;
-  --color-error: #ef4444;
-  --color-subtle: #1e293b;
-  --color-border: #334155;
-  --color-hover: #1e293b;
-  --color-surface: #0f172a;
-  --color-surface-alt: #1e293b;
-  --color-text: #e2e8f0;
-  --color-text-dim: #64748b;
+/*
+ * Theme tokens.
+ *
+ * The palette used to be dark-only values written straight into `@theme`, which made a light theme
+ * impossible without touching every component. Colours are now named by role in plain CSS variables
+ * and the Tailwind tokens reference them, so a theme is one block of overrides rather than a rewrite.
+ *
+ * `@theme inline` matters here: without `inline`, Tailwind resolves these at build time and the light
+ * overrides below would have no effect.
+ */
+:root {
+  color-scheme: dark;
+
+  --accent: #22d3ee;
+  --accent-amber: #f59e0b;
+  --success: #22c55e;
+  --info: #3b82f6;
+  --warn: #f59e0b;
+  --error: #ef4444;
+
+  --surface: #0f172a;
+  --surface-alt: #1e293b;
+  --border: #334155;
+  --border-strong: #475569;
+  --hover: #1e293b;
+
+  --text: #e2e8f0;
+  /* Was #64748b: about 4.0:1 on `--surface`, under the 4.5:1 that small text needs — and this UI is
+     mostly small text, which is why dim labels were hard to read. */
+  --text-dim: #94a3b8;
+  --text-faint: #64748b;
+}
+
+/*
+ * Light theme. Chosen for contrast rather than as a mirror of the dark palette: the dim label colour
+ * is deliberately darker than a naive inversion, because those labels are small.
+ */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --accent: #0e7490;
+  --accent-amber: #b45309;
+  --success: #15803d;
+  --info: #1d4ed8;
+  --warn: #b45309;
+  --error: #b91c1c;
+
+  --surface: #ffffff;
+  --surface-alt: #f1f5f9;
+  --border: #cbd5e1;
+  --border-strong: #94a3b8;
+  --hover: #e2e8f0;
+
+  --text: #0f172a;
+  --text-dim: #475569;
+  --text-faint: #64748b;
+}
+
+/* Follow the system when the user has not chosen a theme explicitly. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --accent: #0e7490;
+    --accent-amber: #b45309;
+    --success: #15803d;
+    --info: #1d4ed8;
+    --warn: #b45309;
+    --error: #b91c1c;
+
+    --surface: #ffffff;
+    --surface-alt: #f1f5f9;
+    --border: #cbd5e1;
+    --border-strong: #94a3b8;
+    --hover: #e2e8f0;
+
+    --text: #0f172a;
+    --text-dim: #475569;
+    --text-faint: #64748b;
+  }
+}
+
+@theme inline {
+  --color-accent: var(--accent);
+  --color-accent-amber: var(--accent-amber);
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --color-warn: var(--warn);
+  --color-error: var(--error);
+
+  --color-surface: var(--surface);
+  --color-surface-alt: var(--surface-alt);
+  /* Kept: components already use `bg-subtle`. */
+  --color-subtle: var(--surface-alt);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-hover: var(--hover);
+
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-text-faint: var(--text-faint);
 }
 
 * {
@@ -27,23 +114,50 @@ html, body, #app {
   overflow: hidden;
 }
 
+html {
+  font-size: 16px;
+}
+
+/*
+ * Base colours live here so an unstyled element still follows the theme, and `line-height` is slightly
+ * looser than the browser default: the UI is dense, and tight leading is part of why small text read
+ * poorly.
+ */
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 3px;
+  background: var(--border);
+  border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: var(--border-strong);
 }
 
 /* Monospace font for code/data areas */
 .font-mono {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+}
+
+/* Respect a user who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,5 +1,6 @@
 import { createSignal, createEffect, onCleanup } from 'solid-js';
 import { store } from '@/lib/store';
+import { IconWarning } from '@/components/Icons';
 
 export default function StatusBar() {
   const status = () => store.state.status;
@@ -52,7 +53,9 @@ export default function StatusBar() {
         />
         SSE
         {sseLagged() > 0 && (
-          <span class="text-warn">⚠ {sseLagged()} dropped</span>
+          <span class="text-warn inline-flex items-center gap-1">
+            <IconWarning size={13} /> {sseLagged()} dropped
+          </span>
         )}
       </div>
 

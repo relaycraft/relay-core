@@ -53,7 +53,7 @@ export default function HelpOverlay() {
         <For each={shortcuts}>
           {(section) => (
             <section class="mb-4">
-              <h3 class="text-[10px] uppercase tracking-wide text-text-dim mb-2">{section.group}</h3>
+              <h3 class="text-[12px] uppercase tracking-wide text-text-dim mb-2">{section.group}</h3>
               <div class="space-y-1">
                 <For each={section.keys}>
                   {([key, desc]) => (

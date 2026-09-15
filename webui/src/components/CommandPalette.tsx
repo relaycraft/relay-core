@@ -69,7 +69,7 @@ export default function CommandPalette() {
                 class="w-full px-3 py-2 text-left text-sm hover:bg-hover flex items-center gap-3 transition-colors"
                 onClick={() => execute(cmd)}
               >
-                <span class="text-[10px] text-text-dim/60 w-16">{cmd.group}</span>
+                <span class="text-[12px] text-text-dim/60 w-16">{cmd.group}</span>
                 <span class="text-text">{cmd.label}</span>
               </button>
             )}
