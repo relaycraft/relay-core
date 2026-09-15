@@ -15,7 +15,7 @@
  *        node npm/scripts/verify-platform-packages.js v0.3.9
  *        VERIFY_TIMEOUT_MS=30000 node npm/scripts/verify-platform-packages.js 0.3.9
  */
-const { execSync } = require("child_process");
+
 
 const PLATFORMS = [
   "darwin-arm64",
@@ -38,15 +38,28 @@ if (!raw) {
 
 const version = raw.replace(/^v/, "");
 
-/** Is this exact version published? Any failure to read counts as "not yet". */
-function isPublished(platform) {
-  const spec = `@relay-core/binaries-${platform}@${version}`;
+/**
+ * Is this exact version published?
+ *
+ * Asked of the registry directly, with the *abbreviated* packument. `npm view` fetches the full
+ * document, and on the v0.12.0 release that one lagged: the wrapper check polled for three minutes
+ * and never saw `binaries-linux-arm64@0.12.0`, while the abbreviated document already listed it. The
+ * publish job had succeeded; only the reader was behind. Fetching the smaller document is both
+ * fresher and far cheaper than shelling out to npm for each attempt.
+ */
+async function isPublished(platform) {
+  const name = `@relay-core/binaries-${platform}`;
   try {
-    const published = execSync(`npm view "${spec}" version`, {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    return { ok: published === version, published };
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
+      headers: { Accept: "application/vnd.npm.install-v1+json" },
+    });
+    if (!response.ok) return { ok: false, published: null };
+    const doc = await response.json();
+    const versions = Object.keys(doc.versions || {});
+    // Sorted by version, not by string: `0.12.0` sorts before `0.9.5`, which is how an earlier check
+    // of this release was misread by hand.
+    const has = versions.includes(version);
+    return { ok: has, published: has ? version : versions.slice(-1)[0] ?? null };
   } catch {
     return { ok: false, published: null };
   }
@@ -56,10 +69,10 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function allPublished() {
+async function allPublished() {
   const missing = [];
   for (const platform of PLATFORMS) {
-    const { ok, published } = isPublished(platform);
+    const { ok, published } = await isPublished(platform);
     if (ok) {
       console.log(`  ok @relay-core/binaries-${platform}@${version}`);
     } else {
@@ -76,7 +89,7 @@ function allPublished() {
 console.log(`Verifying ${PLATFORMS.length} platform packages @ ${version} on npm registry...`);
 
 const deadline = Date.now() + TIMEOUT_MS;
-let missing = allPublished();
+let missing = await allPublished();
 let attempt = 1;
 
 while (missing.length > 0 && Date.now() < deadline) {
@@ -87,7 +100,7 @@ while (missing.length > 0 && Date.now() < deadline) {
   );
   sleep(INTERVAL_MS);
   attempt += 1;
-  missing = allPublished();
+  missing = await allPublished();
 }
 
 if (missing.length > 0) {
