@@ -388,6 +388,25 @@ for (const theme of ['dark', 'light']) {
   await focusSweep(`${theme}/detail`, 14);
 }
 
+// A narrow window: every other shot is 1600x1000, so nothing has ever checked that the layout holds
+// when it cannot. Fixed widths in the list, the palette and the toolbar all assume room.
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 1024,
+  height: 700,
+  deviceScaleFactor: dpr,
+  mobile: false,
+});
+await clickByTitle('Flows');
+await sleep(500);
+await shot('11-narrow-flows-dark');
+await clickFirstFlow();
+await shot('12-narrow-detail-dark');
+await evaluate(
+  `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`
+);
+await sleep(400);
+await shot('13-narrow-palette-dark');
+
 await browser.send('Target.closeTarget', { targetId });
 console.log('done');
 process.exit(0);
