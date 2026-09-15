@@ -50,11 +50,15 @@ export default function FlowDetail(props: { flowId: string }) {
         <For each={tabs}>
           {(tab) => (
             <button
-              class={`px-3 h-full text-xs transition-colors ${
+              // The underline is unconditional and only changes colour, so the row does not shift as
+              // the active tab moves; and it is 2px because a 1px accent line on a dark strip was
+              // almost invisible, which made it unclear which tab was open.
+              class={`px-3 h-full text-[13px] border-b-2 transition-colors ${
                 activeTab() === tab
-                  ? 'text-accent border-b border-accent'
-                  : 'text-text-dim hover:text-text'
+                  ? 'text-accent border-accent font-semibold'
+                  : 'text-text-dim border-transparent hover:text-text'
               }`}
+              aria-current={activeTab() === tab ? 'page' : undefined}
               onClick={() => setActiveTab(tab)}
             >
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -62,27 +66,29 @@ export default function FlowDetail(props: { flowId: string }) {
           )}
         </For>
         <div class="flex-1" />
-        <button
-          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
-          onClick={copyCurl}
-          title="Copy as cURL"
-        >
-          cURL
-        </button>
-        <button
-          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
-          onClick={handleReplay}
-          title="Replay"
-        >
-          Replay
-        </button>
-        <button
-          class="px-2 h-6 text-[12px] text-text-dim hover:text-text transition-colors"
-          onClick={handleExportHar}
-          title="Export HAR"
-        >
-          HAR
-        </button>
+        <div class="flex items-center gap-0.5 pr-0.5">
+          <button
+            class="px-2 h-6 text-[12px] text-text-dim hover:text-text hover:bg-hover rounded transition-colors"
+            onClick={copyCurl}
+            title="Copy as cURL"
+          >
+            cURL
+          </button>
+          <button
+            class="px-2 h-6 text-[12px] text-text-dim hover:text-text hover:bg-hover rounded transition-colors"
+            onClick={handleReplay}
+            title="Replay"
+          >
+            Replay
+          </button>
+          <button
+            class="px-2 h-6 text-[12px] text-text-dim hover:text-text hover:bg-hover rounded transition-colors"
+            onClick={handleExportHar}
+            title="Export HAR"
+          >
+            HAR
+          </button>
+        </div>
       </div>
 
       {/* Tab content */}
@@ -148,36 +154,42 @@ function HeadersView(props: { flow: Flow }) {
   };
 
   return (
-    <div class="text-xs space-y-3">
+    <div class="space-y-3 text-[13px]">
       <Show when={http?.error}>
         <div class="bg-error/10 border border-error/30 rounded p-2 text-error text-xs">{http?.error}</div>
       </Show>
 
-      <section>
-        <h3 class="text-accent text-[13px] font-bold mb-1">Request</h3>
-        <div class="text-text">
+      <section class="rounded-md border border-border/60 overflow-hidden">
+        <h3 class="px-2 py-1 text-[12px] font-bold uppercase tracking-wide text-accent bg-accent/10 border-b border-border/60">
+          Request
+        </h3>
+        <div class="px-2 py-1.5">
           <span class="font-bold">{req?.method}</span>{' '}
-          <span class="text-text-dim">{req?.url}</span>{' '}
-          <span class="text-text-dim/50">{req?.version}</span>
+          <span class="text-text-dim break-all">{req?.url}</span>{' '}
+          <span class="text-text-dim/60">{req?.version}</span>
         </div>
         <HeaderTable headers={req?.headers ?? []} />
       </section>
 
       <Show when={res}>
-        <section>
-          <h3 class="text-accent text-[13px] font-bold mb-1">Response</h3>
-          <div class="text-text">
+        <section class="rounded-md border border-border/60 overflow-hidden">
+          <h3 class="px-2 py-1 text-[12px] font-bold uppercase tracking-wide text-accent bg-accent/10 border-b border-border/60">
+            Response
+          </h3>
+          <div class="px-2 py-1.5">
             <span class="font-bold">{res?.status}</span>{' '}
             <span class="text-text-dim">{reasonPhrase()}</span>{' '}
-            <span class="text-text-dim/50">{res?.version}</span>
+            <span class="text-text-dim/60">{res?.version}</span>
           </div>
           <HeaderTable headers={res?.headers ?? []} />
         </section>
       </Show>
 
-      <section>
-        <h3 class="text-text-dim text-[13px] font-bold mb-1">Connection</h3>
-        <div class="grid grid-cols-4 gap-1 text-[13px]">
+      <section class="rounded-md border border-border/60 overflow-hidden">
+        <h3 class="px-2 py-1 text-[12px] font-bold uppercase tracking-wide text-text-dim bg-surface-alt border-b border-border/60">
+          Connection
+        </h3>
+        <div class="grid grid-cols-4 gap-x-2 gap-y-1 p-2 text-[13px]">
           <span class="text-text-dim">Client:</span>
           <span class="text-text"
             >{endpoint(props.flow.network.client_ip, props.flow.network.client_port)}</span
@@ -198,16 +210,21 @@ function HeadersView(props: { flow: Flow }) {
 
 function HeaderTable(props: { headers: [string, string][] }) {
   return (
-    <div class="mt-1">
-      <For each={props.headers}>
-        {([name, value]) => (
-          <div class="flex hover:bg-hover px-1 rounded text-[13px]">
-            <span class="w-48 shrink-0 text-accent/70 truncate">{name}</span>
-            <span class="text-text-dim truncate">{value}</span>
-          </div>
-        )}
-      </For>
-    </div>
+    <Show
+      when={props.headers.length > 0}
+      fallback={<div class="px-2 py-1.5 text-[13px] text-text-dim/70">No headers recorded.</div>}
+    >
+      <div class="py-1">
+        <For each={props.headers}>
+          {([name, value]) => (
+            <div class="flex gap-2 hover:bg-hover px-2 py-0.5 text-[13px]">
+              <span class="w-56 shrink-0 text-text-dim">{name}</span>
+              <span class="min-w-0 flex-1 text-text break-all">{value}</span>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
   );
 }
 
