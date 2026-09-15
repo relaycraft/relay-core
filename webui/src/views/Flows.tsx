@@ -7,7 +7,7 @@ import { isEditingTarget } from '@/lib/editing';
 import type { FlowSummary } from '@/types/api';
 import FlowDetail from './FlowDetail';
 
-const ROW_HEIGHT = 28;
+const ROW_HEIGHT = 32;
 const VISIBLE_BUFFER = 10;
 
 export default function FlowsView() {
@@ -178,26 +178,33 @@ export default function FlowsView() {
                 const isSelected = () => store.state.selectedFlowId === flow.id;
                 return (
                   <div
-                    class={`absolute left-0 right-0 flex items-center h-[28px] px-2 cursor-pointer text-xs border-b border-border/30 transition-colors ${
+                    class={`absolute left-0 right-0 flex items-center h-[32px] px-2 gap-3 cursor-pointer text-[13px] border-b border-border/30 transition-colors ${
                       isSelected() ? 'bg-accent/15 text-text' : 'hover:bg-hover text-text-dim'
                     } ${i() % 2 === 0 ? '' : 'bg-surface/50'}`}
                     style={{ top: `${i() * ROW_HEIGHT}px` }}
                     onClick={() => store.selectFlow(flow.id)}
                   >
-                    <span class="w-14 shrink-0 text-[12px] text-text-dim/50">
+                    {/* Fixed widths sized for the current type scale, with `tabular-nums` so the
+                        digits line up and the column cannot reflow as the time changes. Without a
+                        width that fits the timestamp the column overflows into the method, which is
+                        how `01:27:30GET` happened. */}
+                    <span class="w-[72px] shrink-0 tabular-nums text-text-dim/70">
                       {formatFlowTime(flow.start_time_ms)}
                     </span>
-                    <span class={`w-14 shrink-0 font-bold ${methodClass(flow.method)}`}>
+                    <span class={`w-[52px] shrink-0 truncate font-bold ${methodClass(flow.method)}`}>
                       {flow.method}
                     </span>
-                    <span class={`w-10 shrink-0 font-bold ${statusClass(flow.status)}`}>
+                    <span
+                      class={`w-[38px] shrink-0 tabular-nums font-bold ${statusClass(flow.status)}`}
+                    >
                       {flow.status ?? '---'}
                     </span>
-                    <span class="flex-1 truncate">
+                    {/* `min-w-0` is what lets the truncation work inside a flex row. */}
+                    <span class="flex-1 min-w-0 truncate">
                       {flow.host}
                       <span class="text-text-dim/50">{flow.path}</span>
                     </span>
-                    <span class="w-14 shrink-0 text-right text-[12px] text-text-dim/40">
+                    <span class="w-[64px] shrink-0 whitespace-nowrap tabular-nums text-right text-text-dim/70">
                       {flow.duration_ms != null ? formatDurationMs(flow.duration_ms) : ''}
                     </span>
                     {flow.has_error && <span class="ml-1 text-error text-[12px]">ERR</span>}
