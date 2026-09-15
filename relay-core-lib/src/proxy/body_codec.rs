@@ -68,6 +68,14 @@ pub fn process_body_with_framing(
         None
     };
 
+    // A gRPC body is a binary framing (a five-byte prefix in front of each message), so it is never
+    // text even when its payloads are: `00 00 00 00 00` is an empty message *and* valid UTF-8, and a
+    // reader that decoded the body as text would render five control characters instead. The readable
+    // form is the per-message preview, so the raw bytes are reported as bytes.
+    if grpc.is_some() {
+        return ("base64".to_string(), BASE64.encode(bytes), grpc);
+    }
+
     (encoding, content, grpc)
 }
 
@@ -98,6 +106,36 @@ mod framing_tests {
 
         let (_, _, none) = process_body_with_framing(&body, &headers("application/octet-stream"));
         assert!(none.is_none(), "a non-grpc body has no framing to report");
+    }
+
+    /// A gRPC body must be reported as bytes, with its content readable through the message
+    /// previews. The framing prefix is binary, so decoding the whole body as text mangles it — and an
+    /// empty message is the clearest case, being five NUL bytes that happen to be valid UTF-8.
+    #[test]
+    fn a_grpc_body_is_bytes_even_when_its_payload_is_text() {
+        let body = frame(b"\x08\x01");
+
+        let (encoding, content, grpc) =
+            process_body_with_framing(&body, &headers("application/grpc+proto"));
+
+        assert_eq!(
+            encoding, "base64",
+            "the framing is binary and must not be decoded as text"
+        );
+        assert_eq!(content, data_encoding::BASE64.encode(&body));
+        assert!(grpc.is_some());
+    }
+
+    #[test]
+    fn an_empty_grpc_message_is_bytes_with_empty_text() {
+        let body = [0x00u8, 0x00, 0x00, 0x00, 0x00];
+
+        let (encoding, _, grpc) = process_body_with_framing(&body, &headers("application/grpc"));
+
+        assert_eq!(encoding, "base64");
+        let parsed = grpc.expect("an empty message is still a message");
+        assert!(parsed.is_unary());
+        assert_eq!(parsed.messages[0].text, Some(String::new()));
     }
 
     /// A truncated capture must not be presented as a smaller call.

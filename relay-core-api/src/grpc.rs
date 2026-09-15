@@ -21,7 +21,23 @@ pub struct GrpcMessage {
     pub length: u32,
     /// Whether the frame says the payload is compressed (the first byte, non-zero).
     pub compressed: bool,
+    /// The payload as text, when it is text.
+    ///
+    /// This is what makes a message readable rather than merely sized. It matters most for
+    /// `application/grpc+json`, where the payload *is* text, and for any payload carrying UTF-8 —
+    /// Chinese, for instance, is unreadable through a length and a base64 blob.
+    ///
+    /// `None` means the payload is binary, compressed, or larger than the preview budget: protobuf
+    /// is usually binary, and pretending otherwise would produce mojibake rather than information.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
+
+/// Largest payload rendered as text in a message preview.
+///
+/// Bounded because this is a capture aid, not a body store: the bytes are recorded separately, and an
+/// unbounded preview would duplicate a large payload into every serialised Flow.
+pub const MAX_MESSAGE_TEXT_BYTES: usize = 4096;
 
 /// What a body turned out to contain, structurally.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,10 +140,20 @@ pub fn parse_messages(body: &[u8]) -> Result<GrpcBody, GrpcParseError> {
             });
         }
 
+        let payload = &body[payload_start..payload_end];
+        // Only for uncompressed payloads that are text: a compressed payload is not text until it is
+        // inflated, and inflating it here would report content the frame did not contain.
+        let text = if compressed || payload.len() > MAX_MESSAGE_TEXT_BYTES {
+            None
+        } else {
+            std::str::from_utf8(payload).ok().map(str::to_string)
+        };
+
         messages.push(GrpcMessage {
             index,
             length,
             compressed,
+            text,
         });
         offset = payload_end;
         index += 1;
@@ -187,6 +213,7 @@ mod tests {
                 index: 0,
                 length: 14,
                 compressed: false,
+                text: Some("hello protobuf".to_string()),
             }]
         );
         assert_eq!(parsed.unparsed_bytes, 0);
@@ -212,6 +239,12 @@ mod tests {
         );
         assert!(!parsed.is_unary());
         assert_eq!(parsed.total_payload_bytes(), 6);
+        // The compressed payload is not text until it is inflated, and the empty one is empty text.
+        assert_eq!(
+            parsed.messages[1].text, None,
+            "a compressed payload is not text yet"
+        );
+        assert_eq!(parsed.messages[2].text, Some(String::new()));
     }
 
     /// An empty body is a valid gRPC body with no messages — not an error, and not a parse failure.
@@ -253,6 +286,43 @@ mod tests {
 
         assert_eq!(parsed.messages.len(), 1);
         assert_eq!(parsed.unparsed_bytes, 3);
+    }
+
+    /// An empty message is a real message, and its payload is empty text — not a run of NUL bytes.
+    ///
+    /// `00 00 00 00 00` is both a valid frame and valid UTF-8, so a reader that simply decoded the
+    /// body as text would show five control characters instead of "one empty message".
+    #[test]
+    fn an_empty_message_has_empty_text_not_control_characters() {
+        let parsed =
+            parse_messages(&[0x00, 0x00, 0x00, 0x00, 0x00]).expect("an empty message parses");
+
+        assert!(parsed.is_unary());
+        assert_eq!(parsed.messages[0].length, 0);
+        assert_eq!(parsed.messages[0].text, Some(String::new()));
+    }
+
+    /// Text-bearing payloads must survive as text, including non-ASCII.
+    #[test]
+    fn a_text_payload_is_previewed_including_non_ascii() {
+        let payload = r#"{"name":"继电器","ok":true}"#.as_bytes().to_vec();
+        let parsed = parse_messages(&frame(false, &payload)).expect("text payload parses");
+
+        assert_eq!(
+            parsed.messages[0].text.as_deref(),
+            Some(r#"{"name":"继电器","ok":true}"#),
+            "the preview must not mangle non-ASCII text"
+        );
+    }
+
+    /// Binary payloads must report no text rather than mojibake.
+    #[test]
+    fn a_binary_payload_has_no_text_preview() {
+        let payload = [0xff, 0xfe, 0x00, 0x9c];
+        let parsed = parse_messages(&frame(false, &payload)).expect("binary payload parses");
+
+        assert_eq!(parsed.messages[0].length, 4);
+        assert_eq!(parsed.messages[0].text, None);
     }
 
     /// The framing must not depend on the payload being text: protobuf is binary, and a parser that
