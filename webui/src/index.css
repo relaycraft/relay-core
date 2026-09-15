@@ -128,10 +128,19 @@ html {
  * looser than the browser default: the UI is dense, and tight leading is part of why small text read
  * poorly.
  */
+/*
+ * Proportional by default, monospace where it is declared.
+ *
+ * The shell used to carry `font-mono`, which made *everything* monospace — settings prose, button
+ * labels, empty states — and it also silently won over the `font-family` set here, because
+ * `.font-mono` is a class (0,1,0) and `body` is an element (0,0,1), so that declaration was dead code.
+ * Monospace is right for data — the flow list, editors, the status bar, key hints all ask for it
+ * explicitly — and wrong for reading sentences, especially at the sizes this UI uses.
+ */
 body {
   background: var(--surface);
   color: var(--text);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
