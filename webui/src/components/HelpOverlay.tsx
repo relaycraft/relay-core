@@ -3,8 +3,7 @@ import { store } from '@/lib/store';
 
 const shortcuts = [
   { group: 'Global', keys: [
-    ['Cmd/Ctrl+K', 'Command palette'],
-    ['Cmd/Ctrl+/', 'Command palette'],
+    ['Cmd/Ctrl+K or /', 'Command palette'],
     ['Cmd/Ctrl+1..5', 'Switch views'],
     ['Cmd/Ctrl+,', 'Settings'],
     ['?', 'This help'],

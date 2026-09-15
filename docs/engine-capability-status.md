@@ -1,5 +1,8 @@
 # RelayCore 能力现状盘点（Engine Capability Status）
 
+> **Web UI 验证**：见 [`webui-verification.md`](./webui-verification.md)。UI 此前验证很少，
+> 已建立可复现的截图靶场，并记录 13 项已修缺陷与**尚未验证**的部分（亮色遮罩、键盘可达性、窄窗口、长列表性能）。
+
 - **Status**: Snapshot / 一次性盘点，非路线图
 - **Date**: 2026-09-13
 - **Commit**: `bb10799` 起、`88581e7` 后（工作树含本次修正）
