@@ -26,6 +26,8 @@
   --border-strong: #475569;
   --hover: #1e293b;
 
+  --scrim: rgba(0, 0, 0, 0.7);
+
   --text: #e2e8f0;
   /* Was #64748b: about 4.0:1 on `--surface`, under the 4.5:1 that small text needs — and this UI is
      mostly small text, which is why dim labels were hard to read. */
@@ -56,6 +58,7 @@
   --text: #0f172a;
   --text-dim: #475569;
   --text-faint: #64748b;
+  --scrim: rgba(15, 23, 42, 0.45);
 }
 
 /* Follow the system when the user has not chosen a theme explicitly. */
@@ -79,6 +82,7 @@
     --text: #0f172a;
     --text-dim: #475569;
     --text-faint: #64748b;
+    --scrim: rgba(15, 23, 42, 0.45);
   }
 }
 
@@ -101,6 +105,7 @@
   --color-text: var(--text);
   --color-text-dim: var(--text-dim);
   --color-text-faint: var(--text-faint);
+  --color-scrim: var(--scrim);
 }
 
 * {

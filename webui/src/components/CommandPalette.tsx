@@ -45,7 +45,7 @@ export default function CommandPalette() {
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-black/60"
+      class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-scrim"
       onClick={() => store.setState('showCommandPalette', false)}
     >
       <div

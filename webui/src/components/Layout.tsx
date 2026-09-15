@@ -59,7 +59,7 @@ export default function Layout() {
   });
 
   return (
-    <div class="h-full flex flex-col bg-black text-text select-none">
+    <div class="h-full flex flex-col bg-surface text-text select-none">
       <div class="flex-1 flex overflow-hidden">
         <ActivityBar />
         <div class="flex-1 flex flex-col min-w-0">

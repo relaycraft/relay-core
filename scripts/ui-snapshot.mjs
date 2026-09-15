@@ -173,6 +173,46 @@ async function probe(label, selectors) {
   return report;
 }
 
+/**
+ * Find every element painting a dark background.
+ *
+ * Selector guessing failed once already — a "right pane" selector simply did not match, so that probe
+ * reported nothing and looked like a clean result. Scanning for the *property* instead of the
+ * *structure* finds the culprit whatever the markup happens to be, and names it by depth, tag and
+ * class so it can be located in source.
+ */
+async function scanDarkElements(label) {
+  const found = await evaluate(`
+    (() => {
+      const luminance = (rgb) => {
+        const m = rgb.match(/rgba?\(([^)]+)\)/);
+        if (!m) return null;
+        const [r, g, b, a = '1'] = m[1].split(',').map((v) => parseFloat(v));
+        if (parseFloat(a) < 0.5) return null;           // translucent: not what paints the dark area
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      };
+      const out = [];
+      for (const el of document.querySelectorAll('*')) {
+        const cs = getComputedStyle(el);
+        const lum = luminance(cs.backgroundColor);
+        if (lum === null || lum > 0.35) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue;     // ignore small chips and borders
+        out.push({
+          tag: el.tagName.toLowerCase(),
+          cls: (el.className.toString() || '').slice(0, 90),
+          bg: cs.backgroundColor,
+          size: Math.round(r.width) + 'x' + Math.round(r.height),
+          lum: Number(lum.toFixed(3)),
+        });
+      }
+      return out;
+    })()`);
+  console.log(`\n[dark scan] ${label}: ${found.length} dark element(s)`);
+  for (const el of found) console.log(`  ${el.size}  lum=${el.lum}  ${el.bg}  <${el.tag} class="${el.cls}">`);
+  return found;
+}
+
 /** Selectors worth measuring together: the list, an even row, an odd row, and the panels. */
 const PROBE_TARGETS = {
   body: 'body',
@@ -216,6 +256,7 @@ for (const theme of ['dark', 'light']) {
   await send('Page.reload');
   await sleep(settle);
   await probe(theme, PROBE_TARGETS);
+  await scanDarkElements(theme);
 }
 
 await browser.send('Target.closeTarget', { targetId });

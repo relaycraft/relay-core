@@ -34,7 +34,7 @@ const shortcuts = [
 export default function HelpOverlay() {
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-scrim"
       onClick={() => store.setState('showHelp', false)}
     >
       <div
