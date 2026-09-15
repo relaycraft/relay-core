@@ -27,6 +27,60 @@ pub struct CertificateAuthority {
     pub(crate) cache: Cache<String, Arc<ServerConfig>>,
 }
 
+/// Make an existing private key owner-only.
+///
+/// A CA key is worth as much as the certificates it can sign, and one created before this existed is
+/// still on disk at whatever mode the process umask gave it. Loading is when that gets noticed, so it
+/// is where it gets fixed.
+#[cfg(unix)]
+fn tighten_key_permissions(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut perms = std::fs::metadata(path)?.permissions();
+    if perms.mode() & 0o077 == 0 {
+        return Ok(()); // already owner-only
+    }
+    perms.set_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(not(unix))]
+fn tighten_key_permissions(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Write a private key so that only its owner can read it.
+///
+/// The CA key can mint a certificate for any host, so the process default (commonly `0644`, world
+/// readable) leaves it exposed to every other account on the machine. The file is *created* with the
+/// mode rather than written and then corrected, so there is no window in which it is readable by
+/// others; the explicit `set_permissions` afterwards covers a key file that already exists from an
+/// earlier version and would otherwise keep its old mode.
+#[cfg(unix)]
+fn write_private_key(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+
+#[cfg(not(unix))]
+fn write_private_key(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    // Windows has no equivalent mode bit here; access is governed by ACLs on the containing directory.
+    std::fs::write(path, contents)
+}
+
 impl CertificateAuthority {
     // Keep cache TTL strictly lower than leaf validity to avoid serving stale configs.
     const LEAF_CERT_VALIDITY_DAYS: i64 = 365;
@@ -226,6 +280,11 @@ impl CertificateAuthority {
                 return Err(err);
             }
 
+            // Tighten a key that an earlier version created with the process umask. Loading is the
+            // only moment this code sees such a file, and a key that stays world-readable is the
+            // whole problem this guards against.
+            tighten_key_permissions(ca_key_path)?;
+
             return Self::load_from_persistent_files(ca_key_path, &meta_path);
         }
 
@@ -247,7 +306,7 @@ impl CertificateAuthority {
         std::fs::write(ca_cert_path, cert.pem())?;
         let cer_path = ca_cert_path.with_extension("cer");
         std::fs::write(&cer_path, cert.der())?;
-        std::fs::write(ca_key_path, key_pair.serialize_pem())?;
+        write_private_key(ca_key_path, &key_pair.serialize_pem())?;
         std::fs::write(meta_path, serde_json::to_string_pretty(&meta)?)?;
 
         Ok(Self {
@@ -521,5 +580,37 @@ mod tests {
             "error should point to KeyUsage requirement, got: {}",
             err
         );
+    }
+
+    /// The CA private key must not be readable by anyone but its owner.
+    ///
+    /// It is the key that can impersonate any host, and it was created with the process umask, which
+    /// commonly means `0644` — readable by every other account on the machine.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_ca_private_key_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("relay-core-ca-perms-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("ca.key");
+        let cert_path = dir.join("ca.pem");
+
+        let _ca = CertificateAuthority::load_or_create(&cert_path, &key_path).unwrap();
+
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the CA key must be owner-only, found {mode:o}");
+
+        // And a key left behind by an older version is tightened rather than left as it was.
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ca = CertificateAuthority::load_or_create(&cert_path, &key_path).unwrap();
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "an existing key must not stay world-readable, found {mode:o}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
