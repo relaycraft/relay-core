@@ -393,6 +393,7 @@ mod tests {
                 client_port: 12345,
                 server_ip: "1.1.1.1".to_string(),
                 server_port: 443,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: true,
                 tls_version: Some("TLS1.3".to_string()),

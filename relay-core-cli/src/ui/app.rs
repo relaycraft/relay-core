@@ -780,6 +780,7 @@ mod tests {
                 client_port: 12345,
                 server_ip: "93.184.216.34".into(),
                 server_port: 443,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: true,
                 tls_version: None,

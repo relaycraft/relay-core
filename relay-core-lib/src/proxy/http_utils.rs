@@ -114,11 +114,26 @@ pub fn create_initial_flow(
     let flow_id = Uuid::new_v4();
     let start_time = Utc::now();
 
+    // Parsed once, because both the network info and the request need it.
+    let url = Url::parse(&meta.url_str).unwrap_or_else(|_| Url::parse("http://unknown").unwrap());
+
+    // What the request was aiming at. This is not the same thing as the peer address: a forward-proxy
+    // request hands the URL to the HTTP client, so this engine never learns the resolved address, and
+    // `server_ip`/`server_port` stay at their placeholder. Reporting the placeholder as a destination
+    // is worse than reporting nothing — it looks like a real address and gets read as one.
+    let server_host = url
+        .host_str()
+        .map(|host| match url.port_or_known_default() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        });
+
     let network_info = NetworkInfo {
         client_ip: client_addr.ip().to_string(),
         client_port: client_addr.port(),
-        server_ip: "0.0.0.0".to_string(), // Placeholder
-        server_port: 0,                   // Placeholder
+        server_ip: "0.0.0.0".to_string(), // unknown: see `server_host`
+        server_port: 0,                   // unknown: see `server_host`
+        server_host,
         protocol: TransportProtocol::TCP,
         tls: is_mitm,
         tls_version: None,
@@ -127,7 +142,7 @@ pub fn create_initial_flow(
 
     let http_request = HttpRequest {
         method: meta.method,
-        url: Url::parse(&meta.url_str).unwrap_or_else(|_| Url::parse("http://unknown").unwrap()),
+        url,
         version: meta.version,
         headers: meta.headers,
         cookies: meta.cookies,
@@ -841,6 +856,7 @@ mod tests {
                 client_port: 12345,
                 server_ip: "1.1.1.1".to_string(),
                 server_port: 80,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: false,
                 tls_version: None,
@@ -883,6 +899,58 @@ mod tests {
             rule_variables: HashMap::new(),
             matched_rules: vec![],
         }
+    }
+
+    /// A forward-proxy flow must record what it was aiming at.
+    ///
+    /// The peer address is not knowable here — the URL is handed to the HTTP client — so the target is
+    /// the only honest answer, and leaving `server_ip` at `0.0.0.0` with no target recorded is what
+    /// made the UI show a placeholder as if it were an address.
+    #[test]
+    fn a_proxied_request_records_its_target() {
+        let request = Request::builder()
+            .method("GET")
+            .uri("http://example.com/a/b")
+            .body(())
+            .expect("request");
+
+        let meta = parse_request_meta(&request, false);
+        let flow = super::create_initial_flow(
+            meta,
+            None,
+            "127.0.0.1:12345".parse().expect("addr"),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            flow.network.server_host.as_deref(),
+            Some("example.com:80"),
+            "the target must be recorded, with the scheme's default port filled in"
+        );
+        assert_eq!(
+            flow.network.server_ip, "0.0.0.0",
+            "the peer address stays unknown rather than being invented"
+        );
+
+        // An explicit port is kept as written, and https has its own default.
+        let request = Request::builder()
+            .method("GET")
+            .uri("https://example.com:8443/x")
+            .body(())
+            .expect("request");
+        let meta = parse_request_meta(&request, true);
+        let flow = super::create_initial_flow(
+            meta,
+            None,
+            "127.0.0.1:12345".parse().expect("addr"),
+            true,
+            false,
+        );
+        assert_eq!(
+            flow.network.server_host.as_deref(),
+            Some("example.com:8443")
+        );
     }
 
     #[test]

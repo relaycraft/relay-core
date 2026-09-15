@@ -144,6 +144,7 @@ fn dummy_flow() -> Flow {
             client_port: 0,
             server_ip: "".to_string(),
             server_port: 0,
+            server_host: None,
             protocol: TransportProtocol::TCP,
             tls: false,
             tls_version: None,

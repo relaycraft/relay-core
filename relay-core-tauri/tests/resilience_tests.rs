@@ -24,6 +24,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
             client_port: 12345,
             server_ip: "1.1.1.1".to_string(),
             server_port: 80,
+            server_host: None,
             protocol: TransportProtocol::TCP,
             tls: false,
             tls_version: None,

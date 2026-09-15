@@ -34,6 +34,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
             client_port: 12000,
             server_ip: host.to_string(),
             server_port: 8080,
+            server_host: None,
             protocol: TransportProtocol::TCP,
             tls: false,
             tls_version: None,

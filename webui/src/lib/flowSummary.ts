@@ -17,7 +17,15 @@ export function flowToSummary(flow: Flow): FlowSummary {
       host = parsed.host;
       path = parsed.pathname + parsed.search;
     } catch {
-      host = flow.network?.sni ?? flow.network?.server_ip ?? '';
+      // `server_ip` is a placeholder for a forward-proxy flow, so the recorded target is what ever
+      // has a value; falling back to it keeps summaries from showing `0.0.0.0`.
+      host =
+        flow.network?.sni ??
+        flow.network?.server_host ??
+        (flow.network?.server_ip && flow.network.server_ip !== '0.0.0.0'
+          ? flow.network.server_ip
+          : '') ??
+        '';
     }
     status = http.response?.status ?? null;
   } else if (flow.layer.type === 'WebSocket') {

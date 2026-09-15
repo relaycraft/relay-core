@@ -28,6 +28,7 @@ fn make_flow(url: &str) -> Flow {
             client_port: 12345,
             server_ip: "93.184.216.34".to_string(),
             server_port: 80,
+            server_host: None,
             protocol: TransportProtocol::TCP,
             tls: false,
             tls_version: None,

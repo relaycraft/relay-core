@@ -85,6 +85,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                         .unwrap_or("")
                         .to_string(),
                     server_port: 0,
+                    server_host: None,
                     protocol: relay_core_api::flow::TransportProtocol::TCP,
                     tls: url_str.starts_with("https://"),
                     tls_version: None,

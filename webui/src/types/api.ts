@@ -19,6 +19,9 @@ export interface NetworkInfo {
   client_port: number;
   server_ip: string;
   server_port: number;
+  /** Target of the request as `host:port`; absent when unknown. The peer address above is only set
+   *  when this engine made the connection, so this is what a forward-proxy flow can report. */
+  server_host?: string | null;
   protocol: string;
   tls: boolean;
   tls_version: string | null;

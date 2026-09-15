@@ -141,8 +141,21 @@ pub struct Flow {
 pub struct NetworkInfo {
     pub client_ip: String,
     pub client_port: u16,
+    /// The peer that was actually connected to, when this engine made the connection.
+    ///
+    /// A forward-proxy request never connects to anything itself: it hands the URL to the HTTP client,
+    /// so the resolved address is not knowable here and these stay at their placeholder. Reporting
+    /// the placeholder as an address would be read as a real destination — use [`Self::server_host`]
+    /// for what the request was aiming at.
     pub server_ip: String,
     pub server_port: u16,
+    /// The target as requested, `host:port`, with the port filled in from the scheme when the URL
+    /// omits it.
+    ///
+    /// This is what a person inspecting a forward-proxy flow wants to see, and unlike the resolved
+    /// address it is known without a DNS lookup and cannot be wrong because of a round-robin answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_host: Option<String>,
     pub protocol: TransportProtocol,
     pub tls: bool,
     pub tls_version: Option<String>,

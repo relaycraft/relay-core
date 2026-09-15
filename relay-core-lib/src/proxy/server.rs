@@ -197,6 +197,7 @@ where
                     client_port: client_addr.port(),
                     server_ip: target_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
                     server_port: target_addr.map(|a| a.port()).unwrap_or(0),
+                    server_host: None,
                     protocol: TransportProtocol::TCP,
                     tls: false,
                     tls_version: None,

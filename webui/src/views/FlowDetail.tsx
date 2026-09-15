@@ -195,8 +195,11 @@ function HeadersView(props: { flow: Flow }) {
             >{endpoint(props.flow.network.client_ip, props.flow.network.client_port)}</span
           >
           <span class="text-text-dim">Server:</span>
+          {/* The target the request aimed at, which is known; the resolved peer address is not, for a
+              forward-proxy flow, so it is only a fallback. */}
           <span class="text-text"
-            >{endpoint(props.flow.network.server_ip, props.flow.network.server_port)}</span
+            >{props.flow.network.server_host ??
+              endpoint(props.flow.network.server_ip, props.flow.network.server_port)}</span
           >
           <span class="text-text-dim">TLS:</span>
           <span class="text-text">{props.flow.network.tls ? props.flow.network.tls_version ?? 'yes' : 'no'}</span>

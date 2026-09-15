@@ -516,6 +516,7 @@ mod tests {
                 client_port: 12345,
                 server_ip: "1.1.1.1".to_string(),
                 server_port: 80,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: false,
                 tls_version: None,

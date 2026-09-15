@@ -423,6 +423,7 @@ mod tests {
                 client_port: 1,
                 server_ip: "1.1.1.1".into(),
                 server_port: 443,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: false,
                 tls_version: None,

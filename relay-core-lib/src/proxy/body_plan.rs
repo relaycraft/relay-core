@@ -317,6 +317,7 @@ mod tests {
                 client_port: 1,
                 server_ip: "127.0.0.1".to_string(),
                 server_port: 2,
+                server_host: None,
                 protocol: TransportProtocol::TCP,
                 tls: false,
                 tls_version: None,
