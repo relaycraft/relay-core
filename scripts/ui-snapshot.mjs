@@ -100,8 +100,8 @@ await send('Page.navigate', { url });
 await sleep(settle);
 
 /** Run a snippet in the page and report whether it found what it was looking for. */
-async function evaluate(expression) {
-  const result = await send('Runtime.evaluate', { expression, returnByValue: true });
+async function evaluate(expression, { awaitPromise = false } = {}) {
+  const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise });
   if (result.exceptionDetails) {
     throw new Error(`page error: ${result.exceptionDetails.text}`);
   }
@@ -226,6 +226,106 @@ async function scanDarkElements(label) {
   return found;
 }
 
+/**
+ * Walk the tab order and report, for each stop, whether focus is actually *visible*.
+ *
+ * "Is there a focus ring" cannot be read off the stylesheet: it depends on what the element computes
+ * to when focused versus not, and a `focus:outline-none` anywhere in the chain silently removes it.
+ * So this presses Tab for real, then measures the focused element twice — focused and blurred — and
+ * reports the difference. An element whose style does not change when it takes focus is a stop a
+ * keyboard user cannot see.
+ */
+async function focusSweep(label = '', limit = 25) {
+  const stops = [];
+  // Start from a known place.
+  await evaluate(`document.activeElement && document.activeElement.blur && document.activeElement.blur()`);
+
+  for (let i = 0; i < limit; i += 1) {
+    await send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'Tab',
+      code: 'Tab',
+      windowsVirtualKeyCode: 9,
+      nativeVirtualKeyCode: 9,
+    });
+    await send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Tab',
+      code: 'Tab',
+      windowsVirtualKeyCode: 9,
+      nativeVirtualKeyCode: 9,
+    });
+    await sleep(60);
+
+    const info = await evaluate(
+      `
+      (async () => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return null;
+        const snap = () => {
+          const cs = getComputedStyle(el);
+          return {
+            outline: cs.outlineStyle + ' ' + cs.outlineWidth + ' ' + cs.outlineColor,
+            shadow: cs.boxShadow,
+            border: cs.borderTopColor + '|' + cs.borderBottomColor,
+            background: cs.backgroundColor,
+          };
+        };
+        const focused = snap();
+        el.blur();
+        await new Promise((r) => requestAnimationFrame(r));
+        const blurred = snap();
+        el.focus();
+        await new Promise((r) => requestAnimationFrame(r));
+        return {
+          tag: el.tagName.toLowerCase(),
+          cls: (el.className.toString() || '').slice(0, 70),
+          label: (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '')
+            .trim()
+            .slice(0, 32),
+          focused,
+          blurred,
+          changed:
+            focused.outline !== blurred.outline ||
+            focused.shadow !== blurred.shadow ||
+            focused.border !== blurred.border ||
+            focused.background !== blurred.background,
+        };
+      })()`,
+      { awaitPromise: true }
+    );
+    if (!info) break;
+    // A sweep that cannot describe what it focused has measured nothing; say so instead of reporting
+    // every stop as unmarked, which reads exactly like a finding.
+    if (!info.tag) {
+      console.error('\n[focus sweep] FAILED: could not read the focused element (tool error, not a finding)');
+      return [];
+    }
+    stops.push(info);
+  }
+
+  const invisible = stops.filter((s) => !s.changed);
+  console.log(
+    `\n[focus sweep] ${label}: ${stops.length} tab stop(s), ${invisible.length} with no visible focus`
+  );
+  for (const stop of stops) {
+    const mark = stop.changed ? '  ok ' : '  -->';
+    const why = stop.changed
+      ? [
+          stop.focused.outline !== stop.blurred.outline ? `outline ${stop.focused.outline}` : null,
+          stop.focused.shadow !== stop.blurred.shadow ? 'box-shadow' : null,
+          stop.focused.border !== stop.blurred.border ? 'border' : null,
+          stop.focused.background !== stop.blurred.background ? 'background' : null,
+        ]
+          .filter(Boolean)
+          .join(', ')
+      : '(style identical when focused)';
+    console.log(`${mark} <${stop.tag}> "${stop.label}" — ${why}`);
+    if (!stop.changed) console.log(`        class="${stop.cls}"`);
+  }
+  return stops;
+}
+
 /** Selectors worth measuring together: the list, an even row, an odd row, and the panels. */
 const PROBE_TARGETS = {
   body: 'body',
@@ -277,6 +377,15 @@ for (const theme of ['dark', 'light']) {
   await sleep(settle);
   await probe(theme, PROBE_TARGETS);
   await scanDarkElements(theme);
+  await clickByTitle('Flows');
+  await focusSweep(`${theme}/flows`, 12);
+  await clickByTitle('Settings');
+  await focusSweep(`${theme}/settings`, 14);
+  await clickByTitle('Rules');
+  await focusSweep(`${theme}/rules`, 14);
+  await clickByTitle('Flows');
+  await clickFirstFlow();
+  await focusSweep(`${theme}/detail`, 14);
 }
 
 await browser.send('Target.closeTarget', { targetId });

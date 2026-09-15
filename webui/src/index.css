@@ -167,6 +167,32 @@ body {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
 }
 
+/*
+ * Focus.
+ *
+ * Every control was relying on the browser's default ring — a 1px light blue that matches neither
+ * theme — and the filter box and the rule editor additionally carried `focus:outline-none`, leaving
+ * them with nothing but a 1px border at 50% alpha to show where focus was. Measuring the tab order
+ * is what showed this: the sweep reports *what* marks each stop, and every one said "outline auto
+ * 1px", the default.
+ *
+ * `:focus-visible` rather than `:focus`, so a pointer click does not draw a ring. This is deliberately
+ * unlayered CSS: it has to beat a utility-layer `focus:outline-none`, and an unlayered rule wins over
+ * a layered one.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Tighter offset inside text fields, where 2px of offset reads as a gap around the caret area. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Respect a user who has asked for less motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
