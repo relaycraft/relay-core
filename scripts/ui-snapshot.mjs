@@ -182,22 +182,29 @@ async function probe(label, selectors) {
  * class so it can be located in source.
  */
 async function scanDarkElements(label) {
+  // Written as one in-page function with simple, explicit branches: an earlier version filtered with a
+  // null sentinel and ended up printing the elements it meant to skip, which is how a diagnostic
+  // becomes noise that hides the thing it was written to find.
   const found = await evaluate(`
     (() => {
-      const luminance = (rgb) => {
-        const m = rgb.match(/rgba?\(([^)]+)\)/);
+      function parseColor(value) {
+        const m = String(value).match(/rgba?\\(([^)]+)\\)/);
         if (!m) return null;
-        const [r, g, b, a = '1'] = m[1].split(',').map((v) => parseFloat(v));
-        if (parseFloat(a) < 0.5) return null;           // translucent: not what paints the dark area
-        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      };
+        const parts = m[1].split(',').map((v) => parseFloat(v.trim()));
+        if (parts.length < 3 || parts.some((v) => Number.isNaN(v))) return null;
+        const alpha = parts.length > 3 ? parts[3] : 1;
+        return { r: parts[0], g: parts[1], b: parts[2], alpha };
+      }
       const out = [];
       for (const el of document.querySelectorAll('*')) {
         const cs = getComputedStyle(el);
-        const lum = luminance(cs.backgroundColor);
-        if (lum === null || lum > 0.35) continue;
+        const c = parseColor(cs.backgroundColor);
+        if (c === null) continue;              // not a plain colour: nothing to judge
+        if (c.alpha < 0.5) continue;           // translucent: not what paints a solid dark area
+        const lum = (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+        if (lum >= 0.35) continue;             // light enough to be fine in a light theme
         const r = el.getBoundingClientRect();
-        if (r.width < 40 || r.height < 40) continue;     // ignore small chips and borders
+        if (r.width < 40 || r.height < 40) continue;
         out.push({
           tag: el.tagName.toLowerCase(),
           cls: (el.className.toString() || '').slice(0, 90),
@@ -208,7 +215,7 @@ async function scanDarkElements(label) {
       }
       return out;
     })()`);
-  console.log(`\n[dark scan] ${label}: ${found.length} dark element(s)`);
+  console.log(`\n[dark scan] ${label}: ${found.length} dark element(s) that should not be dark`);
   for (const el of found) console.log(`  ${el.size}  lum=${el.lum}  ${el.bg}  <${el.tag} class="${el.cls}">`);
   return found;
 }
