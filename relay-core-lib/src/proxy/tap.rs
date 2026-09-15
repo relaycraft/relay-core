@@ -139,6 +139,21 @@ impl Body for TapBody {
                     }
                 }
 
+                // A body that hyper finishes by `is_end_stream` — never yielding a final `None` — is
+                // still not recorded. Two attempts to fix that here both deadlocked
+                // `test_h1_concurrent_connections`, and both are worth recording so the third try does
+                // not repeat them:
+                //
+                //   * reporting from `is_end_stream` itself: the predicate can be evaluated at any
+                //     point, and reporting takes the prefix buffer's lock;
+                //   * reporting from this branch, once a frame has arrived: same lock, same hang — so
+                //     the problem is calling `snapshot()` while the body may still be in flight, not
+                //     which of the two places calls it. The `Ready(None)` path below is safe precisely
+                //     because by then nothing else is producing frames.
+                //
+                // A correct fix has to take the lock out of the reporting path — for instance by having
+                // the tap own its prefix buffer instead of asking the inner one for a snapshot — and
+                // that is a design change, not a relocation.
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
