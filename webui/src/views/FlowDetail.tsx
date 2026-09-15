@@ -133,6 +133,20 @@ function HeadersView(props: { flow: Flow }) {
   const req = http?.request;
   const res = http?.response;
 
+  /** The reason phrase, minus a status code it may already contain. */
+  const reasonPhrase = () => {
+    const text = res?.status_text ?? '';
+    const code = res?.status != null ? String(res.status) : '';
+    if (code && text.startsWith(code)) return text.slice(code.length).trim();
+    return text;
+  };
+
+  /** An endpoint, or `unknown` when the flow never learned one. */
+  const endpoint = (ip?: string, port?: number) => {
+    const isPlaceholder = !ip || ip === '0.0.0.0' || ip === '::' || port === 0 || port == null;
+    return isPlaceholder ? 'unknown' : `${ip}:${port}`;
+  };
+
   return (
     <div class="text-xs space-y-3">
       <Show when={http?.error}>
@@ -154,7 +168,7 @@ function HeadersView(props: { flow: Flow }) {
           <h3 class="text-accent text-[13px] font-bold mb-1">Response</h3>
           <div class="text-text">
             <span class="font-bold">{res?.status}</span>{' '}
-            <span class="text-text-dim">{res?.status_text}</span>{' '}
+            <span class="text-text-dim">{reasonPhrase()}</span>{' '}
             <span class="text-text-dim/50">{res?.version}</span>
           </div>
           <HeaderTable headers={res?.headers ?? []} />
@@ -165,9 +179,13 @@ function HeadersView(props: { flow: Flow }) {
         <h3 class="text-text-dim text-[13px] font-bold mb-1">Connection</h3>
         <div class="grid grid-cols-4 gap-1 text-[13px]">
           <span class="text-text-dim">Client:</span>
-          <span class="text-text">{props.flow.network.client_ip}:{props.flow.network.client_port}</span>
+          <span class="text-text"
+            >{endpoint(props.flow.network.client_ip, props.flow.network.client_port)}</span
+          >
           <span class="text-text-dim">Server:</span>
-          <span class="text-text">{props.flow.network.server_ip}:{props.flow.network.server_port}</span>
+          <span class="text-text"
+            >{endpoint(props.flow.network.server_ip, props.flow.network.server_port)}</span
+          >
           <span class="text-text-dim">TLS:</span>
           <span class="text-text">{props.flow.network.tls ? props.flow.network.tls_version ?? 'yes' : 'no'}</span>
           <span class="text-text-dim">SNI:</span>
