@@ -12,7 +12,7 @@ name = "relay-core-probe"
 path = "src/main.rs"
 
 [features]
-default = ["transport-stdio"]
+default = ["transport-stdio", "transport-sse"]
 transport-stdio = ["rmcp/transport-io"]
 transport-sse = ["rmcp/transport-streamable-http-server", "dep:axum"]
 

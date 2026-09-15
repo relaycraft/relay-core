@@ -103,10 +103,8 @@ impl ProbeServer {
                 };
 
                 let addr = SocketAddr::new(*bind, *port);
-                let config = StreamableHttpServerConfig {
-                    sse_keep_alive: Some(std::time::Duration::from_secs(15)),
-                    ..Default::default()
-                };
+                let mut config = StreamableHttpServerConfig::default();
+                config.sse_keep_alive = Some(std::time::Duration::from_secs(15));
 
                 let srv = self.clone();
 

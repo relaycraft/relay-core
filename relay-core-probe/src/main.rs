@@ -14,13 +14,19 @@ fn parse_arg_env(arg_prefix: &str, env_key: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Logs go to stderr: stdout is the MCP channel in stdio mode.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let state = Arc::new(CoreState::new(None).await);
+    // Without --db-url, flows/rules stay in memory and die with the process. A shared
+    // long-running probe should point at a SQLite url so history survives restarts.
+    let db_url = parse_arg_env("--db-url=", "RELAY_DB_URL");
+    let state = Arc::new(CoreState::new(db_url).await);
 
     let port = parse_arg_env("--port=", "RELAY_PORT")
         .and_then(|p| p.parse().ok())
@@ -85,7 +91,7 @@ fn parse_transport() -> ProbeTransport {
         Some("sse") => {
             let sse_port = parse_arg_env("--probe-port=", "RELAY_PROBE_PORT")
                 .and_then(|p| p.parse().ok())
-                .unwrap_or(3000);
+                .unwrap_or(18083);
             let sse_bind = parse_arg_env("--probe-bind=", "RELAY_PROBE_BIND")
                 .and_then(|b| b.parse::<IpAddr>().ok())
                 .unwrap_or(IpAddr::from([127, 0, 0, 1]));

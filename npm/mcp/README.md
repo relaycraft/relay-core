@@ -1,8 +1,44 @@
 # @relay-core/mcp
 
-[MCP](https://modelcontextprotocol.io) server for **[RelayCore](https://relaycore.dev)** — connect AI agents (Cursor, Claude Desktop, …) to live HTTP(S) traffic.
+[MCP](https://modelcontextprotocol.io) server for **[RelayCore](https://relaycore.dev)** — connect AI agents (OpenCode, Cursor, Claude Desktop, …) to live HTTP(S) traffic.
 
-## Configure
+## Two ways to run
+
+### A. Shared server (recommended)
+
+One long-running process owns the proxy port and all captured state; every MCP client connects to the same stream of flows. Your client proxy settings stay fixed, and multiple agent windows see the same data.
+
+```bash
+relay-core-probe --transport=sse
+# optional persistence so history survives restarts:
+relay-core-probe --transport=sse \
+  --db-url="sqlite:///$HOME/.local/share/relay-core/probe.db?mode=rwc"
+```
+
+Then point each MCP client at `http://127.0.0.1:18083/mcp`. OpenCode example (`~/.config/opencode/opencode.jsonc`):
+
+```jsonc
+"mcp": {
+  "relay-core": {
+    "type": "remote",
+    "url": "http://127.0.0.1:18083/mcp",
+    "enabled": true
+  }
+}
+```
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| `--transport=` | `RELAY_PROBE_TRANSPORT` | `stdio` | `stdio` or `sse` (streamable HTTP) |
+| `--probe-port=` | `RELAY_PROBE_PORT` | `18083` | MCP listen port (sse mode) |
+| `--probe-bind=` | `RELAY_PROBE_BIND` | `127.0.0.1` | MCP listen address |
+| `--port=` | `RELAY_PORT` | `8080` | Proxy listen port |
+| `--db-url=` | `RELAY_DB_URL` | in-memory | `sqlite:///path.db?mode=rwc` for persistence |
+| `--ca-cert=` / `--ca-key=` | `RELAY_CA_CERT` / `RELAY_CA_KEY` | data dir | CA paths |
+
+### B. Per-session stdio
+
+The client spawns one process per session. Simple, but each session is a separate proxy and a separate flow history — fine for a single window, confusing with several.
 
 ```json
 {
