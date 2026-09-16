@@ -109,36 +109,34 @@ textarea 更是 `outline: none`，只剩 **1px、50% 透明度**的边框变化�
 - 长列表性能（虚拟化已有，未在万级 flow 下验证）；
 - **屏幕阅读器语义**：`role` / `aria-*` 只做了零星补充，未系统检查。
 
-## 引擎侧：gRPC/h2 body 未进捕获（已部分修复，仍未闭环）
+## 引擎侧：gRPC/h2 body 捕获（已修复）
 
-`TapBody` 只在 `Poll::Ready(None)` 上报 body，而**hyper 对定长 body 会在 size hint 归零后停止 poll**，
-于是这些 body **完全不进捕获**。
+`TapBody` 原本只在 `Poll::Ready(None)` 上报，于是**两类 body 进不了捕获**：hyper 对定长 body 在
+size hint 归零后停止 poll；h2 流没有 content-length，hyper 经 END_STREAM 结束且不再 poll。
 
-### 两次失败 + 一次栈采样得到的精确结论
+现在两条路径都覆盖：定长走 `size_hint()`（纯查询），**其余（含 h2）走 `Drop`**——每个 body 都必然
+到达的时刻。回调只做 O(1) 的「移动缓冲 + 交接」，framing 与更新在另一个任务里完成。
 
-| 尝试 | 结果 |
-|---|---|
-| 在 `is_end_stream()` 谓词里上报 | 挂起 |
-| 在 `poll_frame` 内、拿到帧后用 `is_end_stream()` 判断 | 挂起 |
-| 在 `poll_frame` 内、用 `size_hint().exact() == Some(0)` 判断 | **通过**（协议测试 8/8、全量 704 通过） |
+### ⚠️ 更正：此前四次「失败」与"死锁"结论**全部作废**
 
-**关键更正**：这**不是死锁**。对挂起的测试做 `sample <pid>`，栈显示运行时**空闲在 `kevent`、
-没有可运行任务、也没有任何锁被持有**——是**唤醒丢失**。而 `PrefixBuffer` 里根本没有锁
-（只有 `retained: Vec<u8>`），所以早期"上报取锁"的推测是错的。
+我曾据此写下"在 poll 里调用 `is_end_stream()` 会丢唤醒"、"`Drop` 里做重活会挂"。**这些都是错的。**
 
-两次失败的**共同点**是调用了 `self.inner.is_end_stream()`：**hyper 的 `Incoming::is_end_stream()`
-不是纯查询**，在 poll 内部调用它会让状态机丢唤醒。`size_hint()` 是纯查询，所以安全。
+真实原因：`handle_http_request` 用 **`on_flow.send(..).await`（阻塞）**发送，而
+`protocol_tests` 的辅助函数给它一个**容量 10、且从不读取**的通道。基线刚好没填满，**任何多出一条
+更新的改动都会把它顶满**，代理于是永久阻塞在自己的 flow 通道上、响应发不出去。
 
-### 已修与未修
+**栈采样的误读**：我当时看到"运行时空闲在 `kevent`、无任务可运行"，读成了"唤醒丢失"——
+**而一个阻塞在满通道上的 `send().await` 看起来完全一样**。这是本轮最贵的一课：
+**症状相同，机制不同；栈只能告诉我它没在跑，不能告诉我它在等什么。**
 
-- ✅ 已修：**定长 body**（HTTP/1 常见情形）在最后一帧上报，不再漏记。
-- ❌ 未修：**未知长度的 body**（没有 content-length 的 h2 流就是这种）两个信号都不触发——
-  hint 永远不精确，而 hyper 经 END_STREAM 结束后不再 poll。**实测确认**：h2c 上的
-  gRPC 形态交换，用上述修复后**两个方向都没有 body**。
-- 因此那个端到端 gRPC 捕获测试**再次被移除**，没有留在套件里当失败用例。
+### 已一并拆除的隐患
 
-### 下一步方向
+同一类"通道没人读 + 阻塞发送"存在于另外 4 个测试文件（`integration_test`、
+`transparent_proxy_test` ×2、`https_integration_test`、`wire_matrix`）。全部改为后台排空，
+并注明原因，避免下一个人再花四轮。
 
-需要一个**既安全读取、又对未知长度有定义**的完成信号。设计见
-[`design-tap-body-completion.md`](./design-tap-body-completion.md)：回调只做 O(1) 的"移动 + 发送"，
-framing/base64 交给 runtime，完成信号同时挂在三处——**并附两个必须先跑通的实验**。
+### 验证
+
+- `wire_matrix_grpc_body_is_captured_as_messages`：h2c 上 gRPC 交换**双向 framing**；
+  关闭交接后该测试报 `the gRPC request body must be captured as messages`，开启则通过（双向验证）。
+- 哨兵 `test_h1_concurrent_connections`：**1.45s 通过**。

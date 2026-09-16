@@ -114,9 +114,11 @@ impl TapBody {
 impl Drop for TapBody {
     fn drop(&mut self) {
         // The signal that covers every body, including an h2 stream hyper ends without a final poll.
-        // It only moves the buffer and hands it off; the framing and the update happen in a task.
+        // It only moves the retained buffer and hands it to a task: framing and the update happen
+        // there, which keeps those bytes out of the connection task's critical path and keeps raw
+        // bytes out of `FlowUpdate`, which is a public wire contract.
         if self.reported.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
+            return; // already reported from a poll; handing over again would add an empty body
         }
         if let Some(tx) = &self.observed {
             let (bytes, total_bytes, truncated) = self.inner.take_retained();
@@ -194,33 +196,17 @@ impl Body for TapBody {
                 // failure than a proxy that stops answering.
                 // A body hyper finishes without a final poll — which is how it treats a
                 // length-delimited body — never reached the `Ready(None)` branch below, so those flows
-                // were captured with no body at all.
+                // were captured with no body at all. Completion is read from the size hint, a pure
+                // query, and `Ready(None)` still covers everything else.
                 //
-                // Completion is read from the size hint, and deliberately **not** from
-                // `is_end_stream()`. Two earlier attempts here hung `test_h1_concurrent_connections`:
-                // one reported from `is_end_stream` itself, one reported from this branch but asked
-                // `self.inner.is_end_stream()` to decide. A stack sample of the hung test showed the
-                // runtime idle in `kevent` with nothing runnable and no lock held, so nothing was
-                // deadlocked — a wakeup had been lost, and the common factor in both failures was
-                // calling `is_end_stream()` from inside the poll. Whatever hyper's `Incoming` does
-                // there, it is not a pure query. `size_hint()` is, and for a body whose length is known
-                // it reaches `Some(0)` exactly when the last frame has been handed over.
+                // The hint only works when a length is known; an h2 stream has none, and for that case
+                // the report comes from `Drop` (see the impl below), which every body reaches.
                 //
-                // This closes the case of a body whose length is known — the common HTTP/1 one — and
-                // only that case. A body of unknown length, which is every h2 stream without a
-                // content length, still reaches neither signal: the hint never becomes exact, and
-                // hyper ends the stream through END_STREAM and does not poll again. Measured, not
-                // assumed: a gRPC-shaped exchange over h2c is captured with no body in either
-                // direction with this code in place.
-                //
-                // Closing that needs a completion signal that is both safe to read and defined for a
-                // stream of unknown length, and it must not come from the body's own lifecycle: a third
-                // attempt reported from `Drop` — which covers every body, including an h2 stream, and
-                // runs outside any poll — and it hung the H1 suite exactly like the `is_end_stream()`
-                // versions did, while capturing the h2 exchange correctly. So the hazard is wider than
-                // one call: reporting from inside a callback hyper controls can lose a wakeup. The
-                // signal has to come from the task that owns the exchange, after the response is
-                // written, and that is a design change rather than a fourth relocation.
+                // Note on the history: three earlier attempts were written up here as proof that
+                // calling `is_end_stream()` inside a poll is unsafe. They were not. The test they hung
+                // on handed the proxy a ten-slot flow channel that nobody read, and `send(..).await`
+                // blocked once it filled; the baseline sat just under the limit, so any change that
+                // added one update appeared to deadlock the proxy.
                 if self.inner.size_hint().exact() == Some(0) {
                     self.report_once();
                 }

@@ -11,8 +11,10 @@
 > **§24.3 gRPC/h2 body 捕获（本次更新）**：`TapBody` 的完成判定已从"只在 `Ready(None)`"扩展为
 > "`size_hint()` 归零即上报"，**定长 body 已修复**；**未知长度的 h2 流仍不进捕获**（实测确认）。
 > 同时更正早期诊断：该挂起**不是死锁**（栈显示运行时空闲在 `kevent`、无锁），而是**唤醒丢失**，
-> 触发条件是**在 poll 内部调用 `is_end_stream()`**（hyper 的实现不是纯查询）。
-> 修复设计见 [`design-tap-body-completion.md`](./design-tap-body-completion.md)。
+> **已修复**：定长走 `size_hint()`、其余（含 h2 流）走 `Drop`，端到端双向验证通过。
+> 此前"`is_end_stream()` 不安全 / 丢唤醒"的结论**已作废**，真因是**测试夹具给出一个容量 10
+> 且从不读取的通道**，而请求处理用阻塞发送（详见
+> [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis）。
 
 - **Status**: Snapshot / 一次性盘点，非路线图
 - **Date**: 2026-09-13
