@@ -1,0 +1,150 @@
+# 设计：让未知长度的响应体也进入捕获
+
+- **Status**: Design / 待评审
+- **Date**: 2026-09-16
+- **Related**: [`../webui-verification.md`](../webui-verification.md)（三次失败尝试的实测记录）、
+  [`../engine-capability-status.md`](../engine-capability-status.md)（§24.3）
+
+## 1. 问题
+
+`TapBody` 负责把流经代理的 body 前缀记录下来并上报。它现在有三个触发点：
+
+| 触发点 | 覆盖 | 现状 |
+|---|---|---|
+| `Poll::Ready(None)` | 被 poll 到底的 body | ✅ 一直安全 |
+| `poll_frame` 内 `size_hint()` 归零 | **定长** body（HTTP/1 常见） | ✅ 2026-09-16 修复 |
+| —— | **未知长度** body（无 content-length 的 h2 流） | ❌ **完全没有捕获** |
+
+第三行是本文要解决的问题：**h2 上的 gRPC 交换，两个方向都没有 body 进捕获**（实测确认）。
+
+## 2. 已知的实测事实（设计必须建立在这些之上）
+
+三次尝试 + 一次栈采样得到的结论：
+
+| 尝试 | 结果 |
+|---|---|
+| 在 `is_end_stream()` 谓词内上报 | 挂起 |
+| 在 `poll_frame` 内用 `is_end_stream()` 判断后上报 | 挂起 |
+| 在 `poll_frame` 内用 `size_hint()`（**纯查询**）判断后上报 | ✅ 安全 |
+| 在 `Drop` 内上报 | 捕获**成功**，但**挂起** |
+
+栈采样（`sample <pid>`）显示挂起时运行时**空闲在 `kevent`、无任务可运行、无锁被持有**
+⇒ **不是死锁，是唤醒丢失**。`PrefixBuffer` 里没有任何锁（只有 `retained: Vec<u8>`），
+所以早期"上报取锁"的推测已被推翻。
+
+**由此得到的两条设计约束**：
+
+1. **不能在 hyper 掌控的生命周期回调里调用 hyper 自己的方法**（`is_end_stream()`）——那不是纯查询。
+2. **在回调里做「重活」本身是有风险的**（`Drop` 版做了 snapshot + base64 + send，挂起）。
+   而同样重的工作放在 `poll_frame` 里却是安全的。
+
+第 2 条的含义需要澄清——**"回调"不是同质的**：我们自己的 `poll_frame`（在内层 poll 返回之后）
+是安全位置；hyper 的销毁时机（`Drop`）不是。**这是本设计最需要先验证的假设**（见 §6）。
+
+## 3. 设计目标与非目标
+
+**目标**
+- 未知长度的 body（h2 流）也能被记录，含 gRPC framing。
+- 不引入挂起、死锁或丢唤醒。
+- 不违反 §22「不做无必要的缓冲」：内存上界与今天一致（`max_body_size` 前缀，不整份保留）。
+- 失败方向安全：拿不到 body 时**宁可少记**，绝不让代理挂住或丢响应。
+
+**非目标**
+- 不做完整 body 缓存（这是流式引擎，不是抓包存档）。
+- 不改变 `Flow`/`BodyData` 的对外契约（沿用现有 `FlowUpdate::HttpBody` 增量更新）。
+- 不试图覆盖"客户端中途断开"这类异常终止的完美语义（记录已观测到的前缀即可）。
+
+## 4. 方案比较
+
+### 方案 A（选定）：**回调只做"交付"，重活交给独立任务**
+
+`TapBody` 不再在上报点做工作，而是：
+
+1. 在自己的缓冲里**追加**（`poll_frame` 内，`&mut self`，无锁、本来就是这么做的）；
+2. 在完成信号处**只做两件 O(1) 的事**：把缓冲 `mem::take` 走（移动，不拷贝），
+   通过一条**内部通道**把**原始字节**交给 runtime；
+3. **runtime** 做 base64/`process_body_with_framing`，再按现有路径
+   `update_http_body` → flow store、并广播 `FlowUpdate::HttpBody`。
+
+第 3 步的归属很重要，有两个理由：
+
+- `FlowUpdate` 是**公开的 SSE/连线契约**（`relay-core-api/src/sse.rs` 有 round-trip 测试），
+  往里塞一个「原始字节」变体等于把兆字节级临时数据放进对外协议。**原始字节走内部通道，
+  公开契约不变**。
+- 顺带把 base64/framing 的工作**从连接任务挪到 runtime 任务**。今天这活是在 `poll_frame` 里做的，
+  也就是压在连接任务（每条连接的关键路径）上；挪走之后连接任务只搬运所有权。
+
+完成信号可以**同时**挂在三个位置（有一次性守卫）：`Ready(None)`、`size_hint()==0`、`Drop`。
+因为回调里只剩"移动 + 发送"，即使 `Drop` 时机由 hyper 决定，也不会碰到 hyper 的内部状态。
+
+**可行性前提**：`Drop` 版的挂起来自"在回调里做重活"，而不是"在 `Drop` 里做任何事"。
+**这一点未经验证**（§6 的第一个实验就是要证伪或证实它）。
+
+### 方案 B：让代理任务在响应写完后上报
+
+**不可行。** 代理任务在返回 `Response` 时就结束了（`handle_http_request` 发了最终
+`FlowUpdate::Full` 然后 return）；把响应写进 socket 的是 hyper 的连接任务，**我们并不拥有它**。
+所以"持有交换的任务"在 hyper 的模型里并不存在——除非我们替换 hyper 的服务层（代价过大）。
+
+### 方案 C：自建连接驱动（不用 hyper 的 server auto）
+
+用 `hyper::server::conn` 的低层 API 自己驱动连接，从而拥有"响应写完"的时刻。
+**收益明确、代价过大**：要重做 H1/H2 前导探测、升级（WebSocket）、超时与优雅关闭，
+即把已经稳定的东西再实现一遍。**仅当方案 A 的两个实验都失败时**才考虑。
+
+### 方案 D：让 hyper 一定 poll 到 `None`
+
+例如给响应体加一个"必须读完"的包装，或改用 `http_body_util::StreamBody` 强制逐块。
+**问题**：h2 的 END_STREAM 由 hyper 决定，我们无法要求它继续 poll；尝试这样做等于与
+hyper 的实现细节对赌。**放弃。**
+
+## 5. 选定方案的数据流
+
+```
+hyper 连接任务                    TapBody（在 poll 里追加，无锁）
+   │ poll_frame ────────────────▶  inner.poll_frame
+   │                                 └─ 追加到 retained（上界 max_body_size）
+   │ 完成信号（三选一，一次性守卫）
+   │    Ready(None) / size_hint==0 / Drop
+   │                                 └─ take() 缓冲 + send 原始字节（O(1)、移动）
+   │                                       │  内部通道 ObservedBody（不走公开契约）
+   │                                       ▼
+   │                            runtime pump（已有任务）
+   │                              ├─ process_body_with_framing（base64 / gRPC framing）
+   │                              ├─ update_http_body → flow store
+   │                              ├─ 广播 FlowUpdate::HttpBody（公开契约不变）
+   │                              └─ 若 truncated：BodyBudgetExceeded
+```
+
+**内存**：缓冲仍是前缀（上界 `max_body_size`），只在交付时移动所有权，不复制。
+**背压**：`unbounded` 只用于"交付已观测到的字节"这一件事，且每次交换最多一次；
+上报任务对 runtime 的写入仍是 `try_send`（有界、失败即丢弃并计指标），因此不会反压连接。
+
+## 6. 实施前必须做的两个实验（先证伪，再动手）
+
+> 设计不建立在猜测上。下面两个实验各约 10 分钟，任一个失败都要回到方案 C。
+
+**实验 1：`Drop` 里只做"移动 + 发送"，是否还会挂？**
+把 §5 的回调部分实现出来（上报任务可先只打印），跑 `test_h1_concurrent_connections`
+（已知死锁哨兵）+ 并发压测。通过 ⇒ 假设成立，方案 A 可行。
+
+**实验 2：未知长度流的 h2 端到端是否真的拿到 body？**
+重新启用被移除的 `wire_matrix_grpc_body_is_captured_as_messages`，断言两个方向都有
+gRPC framing。通过 ⇒ 目标达成。
+
+两个实验都通过后，才把它并入正式实现并补齐单测（含"只上报一次"的幂等断言）。
+
+## 7. 回归防线
+
+- **挂起哨兵**：`test_h1_concurrent_connections` 必须始终在秒级完成。它是这三次失败的
+  唯一共同症状，应当作为显式回归项（CI 已有；本地靶场也会跑到）。
+- **幂等**：三信号共用一次性守卫；单测断言只上报一次。
+- **不丢响应**：即使上报任务失败/通道满，代理的响应路径不受影响（`try_send`，无线程阻塞）。
+- **端到端**：h2c gRPC 双向 framing；HTTP/1 定长 body 仍走 size-hint 路径。
+
+## 8. 若实验失败（方案 A 不成立）
+
+退回方案 C 的**最小切口**：只对**响应方向**自建连接驱动（请求方向的 body 由我们发往上游，
+已有连接器可控），即用 `hyper::server::conn::http1::Builder::serve_connection` 自持连接任务，
+从而拥有"响应写完"的时刻并据此上报。代价局限在服务端驱动层，不影响上游连接器与规则引擎。
+**这是一个独立的设计，不在本文件范围内**。

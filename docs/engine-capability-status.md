@@ -12,6 +12,7 @@
 > "`size_hint()` 归零即上报"，**定长 body 已修复**；**未知长度的 h2 流仍不进捕获**（实测确认）。
 > 同时更正早期诊断：该挂起**不是死锁**（栈显示运行时空闲在 `kevent`、无锁），而是**唤醒丢失**，
 > 触发条件是**在 poll 内部调用 `is_end_stream()`**（hyper 的实现不是纯查询）。
+> 修复设计见 [`design-tap-body-completion.md`](./design-tap-body-completion.md)。
 
 - **Status**: Snapshot / 一次性盘点，非路线图
 - **Date**: 2026-09-13
