@@ -68,3 +68,11 @@ jobs:
               fi
             fi
           done
+
+          # `cargo publish` unpacks every crate into target/package/<crate>-<version>/, and each
+          # unpacked copy carries its own Cargo.toml. The caching action's post-job cleanup then reads
+          # each of them as a workspace root and tries to open <root>/tests/target and
+          # <root>/tests/trybuild, which do not exist in a freshly unpacked crate — printing a screen
+          # of ENOENT errors on every release. The copies are not needed once publishing is done, so
+          # they are removed rather than left for the cleanup to trip over.
+          rm -rf target/package
