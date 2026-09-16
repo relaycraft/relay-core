@@ -25,6 +25,12 @@ TARGET_PORT="${TARGET_PORT:-19000}"
 CONNECTIONS="${CONNECTIONS:-100}"
 DURATION="${DURATION:-30}"
 
+# The target directory is not necessarily <repo>/target — a global cargo config can put it anywhere,
+# and an external one is common when the internal disk is small. Ask cargo rather than assume, or the
+# benchmark silently measures a port with nothing behind it.
+RELAY_BIN="${RELAY_BIN:-$(cd "$REPO_ROOT" && cargo metadata --format-version 1 --no-deps 2>/dev/null \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null)/release/relay-core-cli}"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --duration) DURATION="${2:-30}"; shift 2 ;;
@@ -111,11 +117,17 @@ sleep 0.5
 
 # ── RelayCore baseline ──────────────────────────────────────────────
 
-info "Running relay-core (port $RELAY_PORT)..."
+if [[ ! -x "$RELAY_BIN" ]]; then
+  fail "relay-core binary not found at $RELAY_BIN"
+  echo "     build it first: cargo build --release -p relay-core-cli" >&2
+  exit 1
+fi
+
+info "Running relay-core on port $RELAY_PORT — binary $RELAY_BIN"
 CA_CERT="$SCRIPT_DIR/.bench_ca_cert.pem"
 CA_KEY="$SCRIPT_DIR/.bench_ca_key.pem"
 
-"$REPO_ROOT/target/release/relay-core-cli" run \
+"$RELAY_BIN" run \
   --listen "127.0.0.1:$RELAY_PORT" \
   --ca-cert "$CA_CERT" --ca-key "$CA_KEY" \
   >/tmp/vs_relay.log 2>&1 &

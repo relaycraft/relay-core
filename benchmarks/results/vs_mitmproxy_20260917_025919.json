@@ -1,0 +1,18 @@
+{
+  "timestamp": "20260917_025919",
+  "duration_s": 30,
+  "connections": 100,
+  "relay_core": {
+    "throughput_rps": 69218,
+    "latency_p99_ms": 3.08
+  },
+  "mitmproxy": {
+    "throughput_rps": 2380,
+    "latency_p99_ms": 131.9
+  },
+  "vs_mitmproxy": {
+    "throughput_ratio": "29.08",
+    "latency_p99_ratio": "0.02",
+    "note": "direct comparison"
+  }
+}
