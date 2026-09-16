@@ -6,14 +6,87 @@ import type { Flow, HttpLayer, BodyData } from '@/types/api';
 
 type DetailTab = 'headers' | 'payload' | 'timing' | 'messages' | 'trace';
 
+/** What a body is, from its content type. */
+type MediaKind = 'image' | 'pdf' | 'audio' | 'video' | 'json' | 'text' | 'binary';
+
+function mediaKind(contentType: string): MediaKind {
+  const type = contentType.toLowerCase();
+  if (type.startsWith('image/')) return 'image';
+  if (type.includes('application/pdf')) return 'pdf';
+  if (type.startsWith('audio/')) return 'audio';
+  if (type.startsWith('video/')) return 'video';
+  if (type.includes('json')) return 'json';
+  if (
+    type.startsWith('text/') ||
+    type.includes('xml') ||
+    type.includes('javascript') ||
+    type.includes('x-www-form-urlencoded')
+  ) {
+    return 'text';
+  }
+  return 'binary';
+}
+
+/** Kinds the browser can render directly, so a body is shown rather than described. */
+const RENDERABLE: ReadonlySet<MediaKind> = new Set<MediaKind>(['image', 'pdf', 'audio', 'video']);
+
+/**
+ * Which view to open on, when the reader has not chosen one.
+ *
+ * Text and JSON get their readable view; everything else gets hex. Opening a PNG on a "JSON" view only
+ * ever produced mojibake, which is what made binary responses look broken rather than binary.
+ */
+function defaultViewFor(contentType: string): 'json' | 'hex' | 'text' {
+  const kind = mediaKind(contentType);
+  if (kind === 'json') return 'json';
+  if (kind === 'text') return 'text';
+  return 'hex';
+}
+
+/** A header's value, matched case-insensitively as HTTP requires. */
+function headerValue(headers: [string, string][] | undefined, name: string): string {
+  return headers?.find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
+/** Bytes a person can read: 1536 -> "1.5 KiB". */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return String(bytes);
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || Number.isInteger(value) ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
 export default function FlowDetail(props: { flowId: string }) {
   const [activeTab, setActiveTab] = createSignal<DetailTab>('headers');
-  const [payloadView, setPayloadView] = createSignal<'json' | 'hex' | 'text'>('json');
+  // Null until the reader picks a view: the default follows the body's content type, so an image or a
+  // binary response does not open on a "JSON" view that can only show mojibake.
+  const [payloadView, setPayloadView] = createSignal<'json' | 'hex' | 'text' | null>(null);
 
   const [flow] = createResource(
     () => ({ id: props.flowId, gen: store.state.flowDetailGeneration }),
     ({ id }) => getFlow(id),
   );
+
+  // Which body this pane is about — the response when there is one, since that is what "Payload"
+  // usually means to someone inspecting traffic.
+  const payloadResponse = () => (flow()?.layer as HttpLayer)?.data?.response;
+
+  /** The view in effect: the reader's pick, or what the body's content type calls for. */
+  const effectiveView = (): 'json' | 'hex' | 'text' => {
+    const chosen = payloadView();
+    if (chosen) return chosen;
+    const http = (flow()?.layer as HttpLayer)?.data;
+    const contentType =
+      headerValue(http?.response?.headers, 'content-type') ||
+      headerValue(http?.request?.headers, 'content-type');
+    return defaultViewFor(contentType);
+  };
 
   function copyCurl() {
     const f = flow();
@@ -100,7 +173,7 @@ export default function FlowDetail(props: { flowId: string }) {
                 <HeadersView flow={flow()!} />
               </Match>
               <Match when={activeTab() === 'payload'}>
-                <PayloadView flow={flow()!} view={payloadView()} />
+                <PayloadView flow={flow()!} view={effectiveView()} />
               </Match>
               <Match when={activeTab() === 'timing'}>
                 <TimingView flow={flow()!} />
@@ -122,7 +195,7 @@ export default function FlowDetail(props: { flowId: string }) {
           <span class="text-text-dim">View:</span>
           {(['json', 'hex', 'text'] as const).map((v) => (
             <button
-              class={`px-2 py-0.5 rounded ${payloadView() === v ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}
+              class={`px-2 py-0.5 rounded ${effectiveView() === v ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}
               onClick={() => setPayloadView(v)}
             >
               {v.toUpperCase()}
@@ -245,14 +318,22 @@ function PayloadView(props: { flow: Flow; view: 'json' | 'hex' | 'text' }) {
       <Show when={http?.request?.body} fallback={<div class="text-text-dim text-xs">No request body</div>}>
         <section>
           <h3 class="text-accent text-[13px] font-bold mb-1">Request Body</h3>
-          <BodyDisplay body={http!.request!.body!} view={props.view} />
+          <BodyDisplay
+            body={http!.request!.body!}
+            view={props.view}
+            contentType={headerValue(http!.request!.headers, 'content-type')}
+          />
         </section>
       </Show>
 
       <Show when={http?.response?.body}>
         <section>
           <h3 class="text-accent text-[13px] font-bold mb-1">Response Body</h3>
-          <BodyDisplay body={http!.response!.body!} view={props.view} />
+          <BodyDisplay
+            body={http!.response!.body!}
+            view={props.view}
+            contentType={headerValue(http!.response!.headers, 'content-type')}
+          />
         </section>
       </Show>
     </div>
@@ -271,29 +352,118 @@ function bodyBytes(data: BodyData): Uint8Array {
   return new TextEncoder().encode(data.content);
 }
 
-function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text' }) {
-  const textContent = () => {
-    const bytes = bodyBytes(props.body);
-    return new TextDecoder().decode(bytes);
-  };
+/** Bytes the hex view will lay out; beyond this it is noise rather than information. */
+const HEX_PREVIEW_BYTES = 4096;
 
-  if (props.view === 'json') {
-    let formatted = textContent();
-    try {
-      formatted = JSON.stringify(JSON.parse(formatted), null, 2);
-    } catch {}
-    return <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{formatted}</pre>;
-  }
+/**
+ * Render one body, according to what it is.
+ *
+ * A body that is not text is not shown as text: an image, a PDF, audio or video is displayed, and
+ * anything else binary opens on a hex view with its type and size stated. Previously every body was
+ * decoded as UTF-8 and printed, so an image or a protobuf payload appeared as mojibake and the honest
+ * conclusion from the pane was that the capture was broken.
+ */
+function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text'; contentType: string }) {
+  const kind = () => mediaKind(props.contentType);
+  const renderable = () => RENDERABLE.has(kind());
 
-  if (props.view === 'hex') {
+  const textContent = () => new TextDecoder().decode(bodyBytes(props.body));
+
+  /** The body as a data URL, for the tags that render it. Binary arrives base64 already. */
+  const dataUrl = () =>
+    props.body.encoding === 'base64'
+      ? `data:${props.contentType || 'application/octet-stream'};base64,${props.body.content}`
+      : `data:${props.contentType || 'text/plain'},${encodeURIComponent(props.body.content)}`;
+
+  const hexPreview = () => {
     const bytes = bodyBytes(props.body);
-    const hex = Array.from(bytes)
+    const shown = bytes.subarray(0, HEX_PREVIEW_BYTES);
+    const hex = Array.from(shown)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join(' ');
-    return <pre class="whitespace-pre-wrap break-all text-[13px] text-text-dim font-mono">{hex}</pre>;
-  }
+    return { hex, shown: shown.length, total: bytes.length };
+  };
 
-  return <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{textContent()}</pre>;
+  return (
+    <div class="space-y-2">
+      {/* What it is, so the pane says something even when it cannot draw the body. */}
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-text-dim">
+        <span class="font-mono text-text">{props.contentType || 'no content-type'}</span>
+        <span>{formatBytes(props.body.size)}</span>
+        <span>stored as {props.body.encoding}</span>
+        <Show when={props.body.grpc}>
+          <span class="text-accent">
+            gRPC · {props.body.grpc!.messages.length} message
+            {props.body.grpc!.messages.length === 1 ? '' : 's'}
+          </span>
+        </Show>
+      </div>
+
+      {/* Rendered, not described: the browser can draw all of these. */}
+      <Show when={renderable()}>
+        <div class="rounded-md border border-border/60 overflow-hidden">
+          <div class="px-2 py-1 text-[12px] text-text-dim bg-surface-alt border-b border-border/60">
+            Rendered preview
+          </div>
+          <div class="p-2">
+            <Show when={kind() === 'image'}>
+              <img
+                src={dataUrl()}
+                alt="Captured image body"
+                class="max-w-full max-h-[420px] rounded border border-border/40"
+              />
+            </Show>
+            <Show when={kind() === 'pdf'}>
+              <iframe src={dataUrl()} title="Captured PDF body" class="w-full h-[420px] rounded" />
+            </Show>
+            <Show when={kind() === 'audio'}>
+              <audio controls src={dataUrl()} class="w-full" />
+            </Show>
+            <Show when={kind() === 'video'}>
+              <video controls src={dataUrl()} class="max-w-full max-h-[420px] rounded" />
+            </Show>
+          </div>
+        </div>
+      </Show>
+
+      {/* A binary body has no text view worth showing; say so rather than printing mojibake. */}
+      <Show when={kind() === 'binary' && props.view === 'text'}>
+        <div class="rounded border border-border/60 bg-surface-alt/40 px-2 py-1.5 text-[12px] text-text-dim">
+          This body is binary ({props.contentType || 'no content-type'}). The text view decodes it as
+          UTF-8 and is not meaningful; use HEX.
+        </div>
+      </Show>
+
+      <Show when={props.view === 'json'}>
+        {(() => {
+          let formatted = textContent();
+          try {
+            formatted = JSON.stringify(JSON.parse(formatted), null, 2);
+          } catch {}
+          return (
+            <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{formatted}</pre>
+          );
+        })()}
+      </Show>
+
+      <Show when={props.view === 'hex'}>
+        <div>
+          <pre class="whitespace-pre-wrap break-all text-[13px] text-text-dim font-mono">
+            {hexPreview().hex}
+          </pre>
+          <Show when={hexPreview().total > hexPreview().shown}>
+            <div class="mt-1 text-[12px] text-text-dim">
+              Showing the first {formatBytes(hexPreview().shown)} of {formatBytes(hexPreview().total)}.
+            </div>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={props.view === 'text' && kind() !== 'binary'}>
+        <pre class="whitespace-pre-wrap break-all text-[13px] text-text font-mono">{textContent()}</pre>
+      </Show>
+    </div>
+  );
 }
 
 function TimingView(props: { flow: Flow }) {

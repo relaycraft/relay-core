@@ -335,6 +335,33 @@ const PROBE_TARGETS = {
   rightPane: 'div[class*="flex-1"][class*="border-l"]',
 };
 
+/** Click the flow row whose text contains this marker, so a shot can target a known body. */
+async function clickFlowMatching(marker) {
+  const ok = await evaluate(`
+    (() => {
+      const rows = [...document.querySelectorAll('div[style*="top:"]')];
+      const row = rows.find((r) => r.textContent.includes(${JSON.stringify(marker)}));
+      if (!row) return false;
+      row.click();
+      return true;
+    })()`);
+  if (!ok) throw new Error(`no flow row containing ${JSON.stringify(marker)}`);
+  await sleep(800);
+}
+
+/** Open the Payload tab of whatever flow is selected. */
+async function openPayloadTab() {
+  const ok = await evaluate(`
+    (() => {
+      const tab = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Payload');
+      if (!tab) return false;
+      tab.click();
+      return true;
+    })()`);
+  if (!ok) throw new Error('no Payload tab');
+  await sleep(500);
+}
+
 console.log(`capturing into ${outDir}`);
 
 // The views a person moves between, each reached the way they would reach it.
@@ -406,6 +433,29 @@ await evaluate(
 );
 await sleep(400);
 await shot('13-narrow-palette-dark');
+// Close the palette and restore the window: leaving either behind silently changed every later shot,
+// which is how the body shots came out narrow with a palette covering the pane they were meant to show.
+await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+await sleep(400);
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 1600,
+  height: 1000,
+  deviceScaleFactor: dpr,
+  mobile: false,
+});
+await sleep(400);
+
+// Bodies that are not text: an image must be drawn, and binary must not be dumped as mojibake.
+await clickByTitle('Flows');
+await clickFlowMatching('/png');
+await openPayloadTab();
+await shot('14-image-body-dark');
+await clickFlowMatching('/binary');
+await openPayloadTab();
+await shot('15-binary-body-dark');
+await clickFlowMatching('/hello');
+await openPayloadTab();
+await shot('16-json-body-dark');
 
 await browser.send('Target.closeTarget', { targetId });
 console.log('done');

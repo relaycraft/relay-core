@@ -48,6 +48,35 @@ PORT = int(sys.argv[1])
 BIG = ("x" * 4096 + "\n") * 64
 
 
+def png_bytes() -> bytes:
+    """A small gradient PNG, built here so the fixture needs no image library."""
+    import struct, zlib
+
+    width = height = 96
+    raw = b""
+    for y in range(height):
+        raw += b"\x00" + bytes(
+            component
+            for x in range(width)
+            for component in (x * 255 // width, y * 255 // height, 128)
+        )
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -68,6 +97,8 @@ class Handler(BaseHTTPRequestHandler):
                 ensure_ascii=False).encode())
         elif path == "/big":
             self._send(200, BIG.encode(), "text/plain; charset=utf-8")
+        elif path == "/png":
+            self._send(200, png_bytes(), "image/png")
         elif path == "/binary":
             self._send(200, bytes(range(256)) * 8, "application/octet-stream")
         elif path == "/gz":
@@ -173,6 +204,7 @@ fetch "$U/hello"
 fetch "$U/hello?token=secret-value&q=中文"
 fetch "$U/big"
 fetch "$U/gz"
+fetch "$U/png"
 fetch "$U/binary"
 fetch "$U/notfound"
 fetch "$U/boom"

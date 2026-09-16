@@ -32,6 +32,23 @@ export interface BodyData {
   encoding: string;
   content: string;
   size: number;
+  /** Present when the body is gRPC, describing its message framing. */
+  grpc?: GrpcBody | null;
+}
+
+/** One length-prefixed message inside a gRPC body. */
+export interface GrpcMessage {
+  index: number;
+  length: number;
+  compressed: boolean;
+  /** The payload as text, when it is text (absent for binary or compressed payloads). */
+  text?: string | null;
+}
+
+export interface GrpcBody {
+  messages: GrpcMessage[];
+  /** Bytes that were not part of a complete message — a capture cut short. */
+  unparsed_bytes: number;
 }
 
 export interface Cookie {
