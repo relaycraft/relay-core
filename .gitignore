@@ -116,3 +116,6 @@ npm/**/node_modules/
 webui/node_modules/
 webui/dist/
 relay-core-http/embed/
+# The mitmproxy comparison writes vs_mitmproxy_* — a run artifact like the others, except the one
+# pair that backs the numbers published on the site, which is added deliberately.
+benchmarks/**/vs_mitmproxy_*
