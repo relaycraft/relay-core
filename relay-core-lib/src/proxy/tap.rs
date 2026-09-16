@@ -140,20 +140,51 @@ impl Body for TapBody {
                 }
 
                 // A body that hyper finishes by `is_end_stream` — never yielding a final `None` — is
-                // still not recorded. Two attempts to fix that here both deadlocked
-                // `test_h1_concurrent_connections`, and both are worth recording so the third try does
-                // not repeat them:
+                // still not recorded. Two attempts to fix that here both hung
+                // `test_h1_concurrent_connections`, and the evidence is now precise, so the third
+                // attempt can skip what these two established:
                 //
-                //   * reporting from `is_end_stream` itself: the predicate can be evaluated at any
-                //     point, and reporting takes the prefix buffer's lock;
-                //   * reporting from this branch, once a frame has arrived: same lock, same hang — so
-                //     the problem is calling `snapshot()` while the body may still be in flight, not
-                //     which of the two places calls it. The `Ready(None)` path below is safe precisely
-                //     because by then nothing else is producing frames.
+                //   * reporting from `is_end_stream` itself, and
+                //   * reporting from this branch once a frame has arrived
                 //
-                // A correct fix has to take the lock out of the reporting path — for instance by having
-                // the tap own its prefix buffer instead of asking the inner one for a snapshot — and
-                // that is a design change, not a relocation.
+                // both hang, and relocating the call changed nothing. A stack sample of the hung test
+                // (`sample <pid>`) shows the runtime **idle in `kevent` with no task runnable and no
+                // lock held** — so this is not the deadlock it was first written up as. `PrefixBuffer`
+                // holds no lock at all (`retained: Vec<u8>`); a wakeup is being lost instead, which is
+                // a different class of bug and needs a different fix. Doing the report from a task that
+                // owns the exchange, rather than from inside the body's own poll, is the direction the
+                // evidence points to.
+                //
+                // The missing body stays missing until then: a capture without a body is a smaller
+                // failure than a proxy that stops answering.
+                // A body hyper finishes without a final poll — which is how it treats a
+                // length-delimited body — never reached the `Ready(None)` branch below, so those flows
+                // were captured with no body at all.
+                //
+                // Completion is read from the size hint, and deliberately **not** from
+                // `is_end_stream()`. Two earlier attempts here hung `test_h1_concurrent_connections`:
+                // one reported from `is_end_stream` itself, one reported from this branch but asked
+                // `self.inner.is_end_stream()` to decide. A stack sample of the hung test showed the
+                // runtime idle in `kevent` with nothing runnable and no lock held, so nothing was
+                // deadlocked — a wakeup had been lost, and the common factor in both failures was
+                // calling `is_end_stream()` from inside the poll. Whatever hyper's `Incoming` does
+                // there, it is not a pure query. `size_hint()` is, and for a body whose length is known
+                // it reaches `Some(0)` exactly when the last frame has been handed over.
+                //
+                // This closes the case of a body whose length is known — the common HTTP/1 one — and
+                // only that case. A body of unknown length, which is every h2 stream without a
+                // content length, still reaches neither signal: the hint never becomes exact, and
+                // hyper ends the stream through END_STREAM and does not poll again. Measured, not
+                // assumed: a gRPC-shaped exchange over h2c is captured with no body in either
+                // direction with this code in place.
+                //
+                // Closing that needs a completion signal that is both safe to read and defined for a
+                // stream of unknown length — reporting from the task that owns the exchange, rather
+                // than from inside the body's own poll, is where the evidence points.
+                if self.inner.size_hint().exact() == Some(0) {
+                    self.report_once();
+                }
+
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
@@ -216,6 +247,69 @@ mod tests {
                 _ => Poll::Ready(None),
             }
         }
+    }
+
+    /// A body that is never polled to `None` must still be recorded.
+    ///
+    /// hyper ends a length-delimited body once the size hint says nothing is left, and does not poll
+    /// again, so the `Ready(None)` branch never runs and the capture had no body for those flows.
+    ///
+    /// It is also the regression test for the hang: deciding completion from `is_end_stream()` — in the
+    /// predicate or from inside the poll — left `test_h1_concurrent_connections` idle forever, because
+    /// that call is not the pure query it looks like.
+    #[tokio::test]
+    async fn a_body_that_ends_by_hint_is_reported() {
+        /// One data frame, then a size hint of zero and a poll that never completes.
+        struct EndsByHint {
+            sent: bool,
+        }
+
+        impl hyper::body::Body for EndsByHint {
+            type Data = Bytes;
+            type Error = BoxError;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                if self.sent {
+                    return Poll::Pending; // never reports an end-of-stream of its own
+                }
+                self.sent = true;
+                Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(b"payload")))))
+            }
+
+            fn size_hint(&self) -> hyper::body::SizeHint {
+                hyper::body::SizeHint::with_exact(if self.sent { 0 } else { 7 })
+            }
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(8);
+        let mut body = TapBody::new(
+            EndsByHint { sent: false }.boxed(),
+            "flow-hint".to_string(),
+            tx,
+            Direction::ServerToClient,
+            1024,
+            vec![("content-type".to_string(), "text/plain".to_string())],
+        );
+
+        // Exactly one poll, the way a consumer that trusts the size hint behaves.
+        let mut cx = Context::from_waker(Waker::noop());
+        let frame = Pin::new(&mut body).poll_frame(&mut cx);
+        assert!(
+            matches!(frame, Poll::Ready(Some(Ok(_)))),
+            "the data frame is available"
+        );
+
+        let update = rx
+            .try_recv()
+            .expect("the body must be reported after the poll");
+        match update {
+            FlowUpdate::HttpBody { body, .. } => assert_eq!(body.content, "payload"),
+            other => panic!("expected an HttpBody update, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "and reported only once");
     }
 
     /// Verify TapBody passes trailers through while still correctly
