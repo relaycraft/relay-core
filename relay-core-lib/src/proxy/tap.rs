@@ -179,8 +179,13 @@ impl Body for TapBody {
                 // direction with this code in place.
                 //
                 // Closing that needs a completion signal that is both safe to read and defined for a
-                // stream of unknown length — reporting from the task that owns the exchange, rather
-                // than from inside the body's own poll, is where the evidence points.
+                // stream of unknown length, and it must not come from the body's own lifecycle: a third
+                // attempt reported from `Drop` — which covers every body, including an h2 stream, and
+                // runs outside any poll — and it hung the H1 suite exactly like the `is_end_stream()`
+                // versions did, while capturing the h2 exchange correctly. So the hazard is wider than
+                // one call: reporting from inside a callback hyper controls can lose a wakeup. The
+                // signal has to come from the task that owns the exchange, after the response is
+                // written, and that is a design change rather than a fourth relocation.
                 if self.inner.size_hint().exact() == Some(0) {
                     self.report_once();
                 }
