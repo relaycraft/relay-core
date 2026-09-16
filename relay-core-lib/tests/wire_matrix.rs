@@ -360,7 +360,10 @@ async fn run_case_full(
 
     let source = TcpCaptureSource::new(listener);
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -705,7 +708,10 @@ async fn wire_matrix_ws_handshake_response_header_reaches_client() {
         phase: Phase::ResponseHeaders,
     });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -1134,7 +1140,10 @@ async fn ws_handshake_through_proxy(
 
     let source = TcpCaptureSource::new(listener);
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -1318,7 +1327,10 @@ async fn wire_matrix_large_body_is_forwarded_intact_without_body_rules() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1508,7 +1520,10 @@ async fn wire_matrix_gzip_response_rewrite_stays_decodable() {
         replacement: "REWRITTEN-CONTENT",
     });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1589,7 +1604,10 @@ async fn wire_matrix_brotli_response_rewrite_stays_decodable() {
         replacement: "REWRITTEN-BR-CONTENT",
     });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1665,7 +1683,10 @@ async fn wire_matrix_zstd_response_rewrite_stays_decodable() {
         replacement: "REWRITTEN-ZSTD-CONTENT",
     });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1744,7 +1765,10 @@ async fn wire_matrix_body_filter_matches_through_content_encoding() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(ResponseBodyRuleLikeInterceptor);
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1872,7 +1896,10 @@ async fn wire_matrix_body_filter_verdict_is_matched_not_missed_on_gzip() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(FilterOnDecodedBodyInterceptor);
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -1991,7 +2018,10 @@ async fn wire_matrix_compressed_request_rewrite_is_sent_as_plaintext_without_a_f
         replacement: "REWRITTEN-PLAINTEXT",
     });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -2320,7 +2350,10 @@ async fn wire_matrix_forwarded_request_carries_the_client_version() {
     let source = TcpCaptureSource::new(proxy_listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -2394,7 +2427,10 @@ async fn wire_matrix_response_version_matches_the_client_not_the_upstream() {
     let source = TcpCaptureSource::new(proxy_listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     tokio::spawn(async move {
         let _ = start_proxy(
@@ -2760,7 +2796,10 @@ async fn wire_matrix_client_connection_is_reused_for_a_second_request() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -3346,7 +3385,10 @@ async fn wire_matrix_grpc_shaped_request_falls_back_to_http1() {
     let source = TcpCaptureSource::new(listener);
     let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver nobody reads
+    // stops the proxy once 64 updates accumulate — a harness property, not an engine one.
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
 
     tokio::spawn(async move {
@@ -3409,6 +3451,145 @@ async fn wire_matrix_grpc_shaped_request_falls_back_to_http1() {
         "the HTTP/1.1 upstream must actually serve the request"
     );
     let _ = served;
+
+    conn_task.abort();
+}
+
+/// A captured gRPC call must be legible as messages, not as an opaque body — over h2c, in both
+/// directions.
+///
+/// This is the case that used to be missing entirely: an h2 stream carries no content length, so the
+/// tap's size hint never becomes exact, and hyper ends the stream without polling for a final `None`.
+/// The report happens when the body is dropped, which is the one moment every body reaches.
+#[tokio::test]
+async fn wire_matrix_grpc_body_is_captured_as_messages() {
+    use bytes::Bytes;
+    use hyper::body::Frame;
+
+    /// One length-prefixed message of five bytes, then a normal end of stream.
+    struct GrpcMessageBody {
+        sent: bool,
+    }
+
+    impl hyper::body::Body for GrpcMessageBody {
+        type Data = Bytes;
+        type Error = BoxError;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            if self.sent {
+                return std::task::Poll::Ready(None);
+            }
+            self.sent = true;
+            // flag 0, length 5, payload "hello".
+            std::task::Poll::Ready(Some(Ok(Frame::data(Bytes::from_static(
+                b"\x00\x00\x00\x00\x05hello",
+            )))))
+        }
+    }
+
+    fn grpc_body() -> GrpcMessageBody {
+        GrpcMessageBody { sent: false }
+    }
+
+    init_crypto();
+
+    let (upstream_addr, _requests) = spawn_h2c_only_upstream(grpc_body).await;
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+
+    let source = TcpCaptureSource::new(listener);
+    let interceptor: Arc<dyn Interceptor> = Arc::new(MutateInterceptor { phase: Phase::None });
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
+
+    // Drain in the background: `handle_http_request` sends with `send(..).await`, so a receiver nobody
+    // reads would stall the proxy once the buffer fills.
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let (mut sender, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .handshake(TokioIo::new(stream))
+            .await
+            .expect("h2c handshake");
+    let conn_task = tokio::spawn(conn);
+
+    // A unary request message: flag 0, length 3, payload "req".
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sender.send_request(
+            hyper::Request::builder()
+                .method("POST")
+                .uri(format!("http://{upstream_addr}/pkg.Service/Method"))
+                .header("content-type", "application/grpc+proto")
+                .header("te", "trailers")
+                .body("\u{0}\u{0}\u{0}\u{0}\u{3}req".to_string())
+                .expect("request"),
+        ),
+    )
+    .await
+    .expect("must not hang")
+    .expect("must be answered");
+    assert_eq!(response.status().as_u16(), 200);
+    let _ = response.into_body().collect().await.expect("body");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut request_grpc = None;
+    let mut response_grpc = None;
+    while tokio::time::Instant::now() < deadline
+        && (request_grpc.is_none() || response_grpc.is_none())
+    {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), flow_rx.recv()).await {
+            Ok(Some(FlowUpdate::HttpBody {
+                direction, body, ..
+            })) => {
+                if let Some(grpc) = body.grpc {
+                    match direction {
+                        relay_core_api::flow::Direction::ClientToServer => {
+                            request_grpc = Some(grpc)
+                        }
+                        relay_core_api::flow::Direction::ServerToClient => {
+                            response_grpc = Some(grpc)
+                        }
+                    }
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let request = request_grpc.expect("the gRPC request body must be captured as messages");
+    assert_eq!(request.messages.len(), 1, "one unary request message");
+    assert_eq!(request.messages[0].length, 3);
+    assert!(request.is_unary());
+
+    let response = response_grpc.expect("the gRPC response body must be captured as messages");
+    assert_eq!(response.messages.len(), 1, "one unary response message");
+    assert_eq!(response.messages[0].length, 5);
 
     conn_task.abort();
 }

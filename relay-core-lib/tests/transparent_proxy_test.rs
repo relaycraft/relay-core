@@ -96,7 +96,11 @@ async fn test_transparent_proxy_routing() {
     let interceptor = Arc::new(NoOpInterceptor {});
     let ca = Arc::new(CertificateAuthority::new().expect("Failed to create CA"));
 
-    let (tx, _rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver
+    // nobody reads stops the proxy as soon as 10 updates accumulate. That is a property of the
+    // harness, not the engine, and it has already made a working change look like a deadlock.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let on_flow = tx.clone();
 
     tokio::spawn(async move {
@@ -178,7 +182,11 @@ async fn test_transparent_proxy_loop_detection() {
     let interceptor = Arc::new(NoOpInterceptor {});
     let ca = Arc::new(CertificateAuthority::new().expect("Failed to create CA"));
 
-    let (tx, _rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver
+    // nobody reads stops the proxy as soon as 10 updates accumulate. That is a property of the
+    // harness, not the engine, and it has already made a working change look like a deadlock.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let on_flow = tx.clone();
 
     tokio::spawn(async move {

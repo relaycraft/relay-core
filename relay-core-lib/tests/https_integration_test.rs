@@ -535,7 +535,11 @@ async fn test_concurrent_requests() {
     let interceptor = Arc::new(NoOpInterceptor {});
     let ca = Arc::new(CertificateAuthority::new().expect("Failed to create CA"));
 
-    let (tx, _rx) = tokio::sync::mpsc::channel::<FlowUpdate>(1000);
+    // Drained on purpose: the request handler sends with `send(..).await`, so a receiver
+    // nobody reads stops the proxy as soon as 1000 updates accumulate. That is a property of the
+    // harness, not the engine, and it has already made a working change look like a deadlock.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(1000);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
         start_proxy(source, tx, interceptor, ca, policy_rx, None, None, None)

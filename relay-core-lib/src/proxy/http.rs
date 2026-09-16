@@ -18,6 +18,7 @@ use crate::proxy::http_utils::{
     update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
+use crate::proxy::tap::ObservedBody;
 use crate::proxy::tap::TapBody;
 use crate::proxy::tunnel;
 use crate::proxy::websocket::handle_websocket_handshake;
@@ -110,6 +111,40 @@ pub async fn handle_request(
         circuit_breaker,
     )
     .await
+}
+
+/// Frame observed bodies and report them, away from the connection task.
+fn spawn_observed_body_reporter(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ObservedBody>,
+    on_flow: tokio::sync::mpsc::Sender<FlowUpdate>,
+) {
+    tokio::spawn(async move {
+        while let Some(observed) = rx.recv().await {
+            let (encoding, content, grpc) = crate::proxy::body_codec::process_body_with_framing(
+                &observed.bytes,
+                &observed.headers,
+            );
+            let body = relay_core_api::flow::BodyData {
+                encoding,
+                content,
+                size: observed.total_bytes,
+                grpc,
+            };
+            let _ = on_flow.try_send(FlowUpdate::HttpBody {
+                flow_id: observed.flow_id.clone(),
+                direction: observed.direction.clone(),
+                body,
+            });
+            if observed.truncated {
+                crate::metrics::inc_proxy_body_degraded();
+                crate::metrics::inc_proxy_stream_mode_degrade();
+                let _ = on_flow.try_send(FlowUpdate::BodyBudgetExceeded {
+                    flow_id: observed.flow_id,
+                    direction: observed.direction,
+                });
+            }
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -232,6 +267,9 @@ where
         vec![]
     };
 
+    let (observed_tx, observed_rx) = tokio::sync::mpsc::unbounded_channel::<ObservedBody>();
+    spawn_observed_body_reporter(observed_rx, on_flow.clone());
+
     let tap_body = TapBody::new(
         body,
         flow.id.to_string(),
@@ -239,6 +277,7 @@ where
         Direction::ClientToServer,
         policy.max_body_size,
         req_headers,
+        Some(observed_tx.clone()),
     );
     crate::metrics::inc_proxy_http_request();
     let mut current_body = tap_body.boxed();
@@ -558,6 +597,7 @@ where
         Direction::ServerToClient,
         policy.max_body_size,
         res_headers,
+        Some(observed_tx.clone()),
     );
     let mut current_res_body = tap_res_body.boxed();
 

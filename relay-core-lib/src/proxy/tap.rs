@@ -11,12 +11,24 @@ use tokio::sync::mpsc::Sender;
 ///
 /// Prefix retention is delegated to [`crate::proxy::body_plan::buffer_prefix`] so this observation
 /// path and [`BodyPlan::Capture`](relay_core_api::body_plan::BodyPlan) share one implementation.
+/// Bytes observed on a body, handed to a task that does the framing work.
+pub struct ObservedBody {
+    pub flow_id: String,
+    pub direction: Direction,
+    pub bytes: Vec<u8>,
+    pub total_bytes: u64,
+    pub truncated: bool,
+    pub headers: Vec<(String, String)>,
+}
+
 pub struct TapBody {
     inner: PrefixBuffer,
     flow_id: String,
     on_flow: Sender<FlowUpdate>,
     direction: Direction,
     headers: Vec<(String, String)>,
+    /// Where observed bytes are handed off, so the framing work happens outside this body's callbacks.
+    observed: Option<tokio::sync::mpsc::UnboundedSender<ObservedBody>>,
     /// Whether the recorded body has been reported yet.
     ///
     /// The report must happen exactly once, and it must happen even when the consumer never polls for
@@ -33,6 +45,7 @@ impl TapBody {
         direction: Direction,
         limit: usize,
         headers: Vec<(String, String)>,
+        observed_tx: Option<tokio::sync::mpsc::UnboundedSender<ObservedBody>>,
     ) -> Self {
         crate::metrics::inc_proxy_stream_mode_tap();
         Self {
@@ -42,6 +55,7 @@ impl TapBody {
             direction,
             headers,
             reported: std::sync::atomic::AtomicBool::new(false),
+            observed: observed_tx,
         }
     }
 
@@ -94,6 +108,27 @@ impl TapBody {
     /// Bytes observed so far.
     pub fn total_bytes(&self) -> u64 {
         self.inner.observed_bytes()
+    }
+}
+
+impl Drop for TapBody {
+    fn drop(&mut self) {
+        // The signal that covers every body, including an h2 stream hyper ends without a final poll.
+        // It only moves the buffer and hands it off; the framing and the update happen in a task.
+        if self.reported.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if let Some(tx) = &self.observed {
+            let (bytes, total_bytes, truncated) = self.inner.take_retained();
+            let _ = tx.send(ObservedBody {
+                flow_id: self.flow_id.clone(),
+                direction: self.direction.clone(),
+                bytes,
+                total_bytes,
+                truncated,
+                headers: self.headers.clone(),
+            });
+        }
     }
 }
 
@@ -297,6 +332,7 @@ mod tests {
             Direction::ServerToClient,
             1024,
             vec![("content-type".to_string(), "text/plain".to_string())],
+            None,
         );
 
         // Exactly one poll, the way a consumer that trusts the size hint behaves.
@@ -331,6 +367,7 @@ mod tests {
             Direction::ServerToClient,
             4096,
             vec![],
+            None,
         );
 
         // Collect frames and FlowUpdate events

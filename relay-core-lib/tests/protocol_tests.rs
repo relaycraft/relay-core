@@ -135,7 +135,16 @@ async fn start_proxy_instance() -> (
     let source = TcpCaptureSource::new(listener);
     let interceptor = noop_interceptor();
     let ca = Arc::new(relay_core_lib::tls::CertificateAuthority::new().unwrap());
-    let (tx, rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    // The channel must be drained. `handle_http_request` sends with `on_flow.send(..).await`, so a
+    // receiver nobody reads blocks the proxy task the moment the buffer fills — which is a property of
+    // this harness, not of the engine, and it made a working change look like a deadlock: every
+    // variant that added one update hung, while the baseline sat just under the limit of ten.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(10);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    // The caller gets an empty receiver: no test here asserts on the flow stream, and one fed by a
+    // forwarding task would just move the same blocking one step back.
+    let (never_tx, rx) = tokio::sync::mpsc::channel::<FlowUpdate>(1);
+    drop(never_tx);
     let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

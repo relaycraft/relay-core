@@ -142,6 +142,15 @@ impl PrefixBuffer {
         self.total_bytes
     }
 
+    /// Move the retained prefix out, leaving the buffer empty.
+    pub fn take_retained(&mut self) -> (Vec<u8>, u64, bool) {
+        (
+            std::mem::take(&mut self.retained),
+            self.total_bytes,
+            self.truncated,
+        )
+    }
+
     /// Snapshot of what has been retained, for recording on a flow.
     pub fn snapshot(&self) -> BufferedBody {
         BufferedBody {
