@@ -3,6 +3,16 @@ name: Publish npm
 on:
   push:
     tags: ["v*"]
+  # A manual run exists because npm can leave a release half-published: it accepts a large package
+  # and processes it for minutes, so the wrapper job can refuse to continue on a version that is
+  # already on its way. Re-tagging is not the answer (see RELEASE.md); re-running this workflow for
+  # the existing tag is, and every publish step here is idempotent.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag to publish, e.g. v0.13.0"
+        required: true
+        type: string
 
 jobs:
   quality:
@@ -14,7 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node npm/scripts/set-version.js ${{ github.ref_name }}
+      - run: node npm/scripts/set-version.js ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
 
   publish-binaries:
     needs: quality
@@ -78,7 +88,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Set package versions from tag
-        run: node npm/scripts/set-version.js ${{ github.ref_name }}
+        run: node npm/scripts/set-version.js ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
 
       - name: Stage platform package binaries (unix)
         if: runner.os != 'Windows'
@@ -133,10 +143,10 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Set package versions from tag
-        run: node npm/scripts/set-version.js ${{ github.ref_name }}
+        run: node npm/scripts/set-version.js ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
 
       - name: Verify all platform packages on npm registry
-        run: node npm/scripts/verify-platform-packages.js ${{ github.ref_name }}
+        run: node npm/scripts/verify-platform-packages.js ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref_name }}
 
       - name: Publish @relay-core/cli
         # Idempotent for the same reason as the platform packages: this is the job that has
