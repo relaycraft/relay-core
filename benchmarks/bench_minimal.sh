@@ -211,9 +211,24 @@ OUT_JSON="$RESULTS_DIR/bench_${TIMESTAMP}.json"
 
 PROXY_PID=""
 TARGET_PID=""
+# The benchmark runs `relay-core-cli run`, which since 0.13 is a daemon: it takes a lock in the data
+# directory and refuses to start when one is already owned there. A benchmark that shares
+# `~/.relay-core` therefore fails whenever the user has a daemon running — and would record its
+# flows in the user's history. Give it a directory of its own.
+if [[ -z "${RELAY_DATA_DIR:-}" ]]; then
+  RELAY_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/relay-bench-XXXXXX")"
+  export RELAY_DATA_DIR
+  BENCH_DATA_DIR_CREATED=1
+fi
+
 cleanup() {
   [[ -n "$PROXY_PID" ]] && kill "$PROXY_PID" 2>/dev/null || true
   [[ -n "$TARGET_PID" ]] && kill "$TARGET_PID" 2>/dev/null || true
+  # The daemon stops its proxy when asked; killing the process is enough for a benchmark, and the
+  # directory it used is disposable.
+  if [[ "${BENCH_DATA_DIR_CREATED:-0}" == "1" ]]; then
+    rm -rf "$RELAY_DATA_DIR"
+  fi
 }
 trap cleanup EXIT
 
