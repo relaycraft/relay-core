@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::fs::File;
 use tracing::Level;
 use tracing::Subscriber;
-use tracing_appender::non_blocking::WorkerGuard;
+pub use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -102,6 +102,39 @@ pub fn init_file(file: File) -> WorkerGuard {
         )
         .init();
     guard
+}
+
+/// Log to stderr, in colour only when stderr is a terminal.
+///
+/// The daemon uses this: run in the foreground, it colours an interactive terminal; spawned by
+/// `relay start`, its stderr is a log file and the escapes would be noise.
+pub fn init_plain() {
+    use std::io::IsTerminal;
+
+    tracing_subscriber::registry()
+        .with(build_filter())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .event_format(RelayEventFormat)
+                .with_ansi(std::io::stderr().is_terminal())
+                .with_writer(std::io::stderr),
+        )
+        .init();
+}
+
+/// Log to an append-only file in plain text (daemon mode with the terminal in use by a UI).
+///
+/// Separate from [`init_file`] because the daemon's log is read after the fact: it must accumulate
+/// across restarts and must not contain ANSI escapes.
+pub fn init_daemon_log(path: &std::path::Path) -> std::io::Result<WorkerGuard> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    Ok(init_file(file))
 }
 
 #[cfg(test)]
