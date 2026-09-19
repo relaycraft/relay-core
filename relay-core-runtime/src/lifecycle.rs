@@ -32,7 +32,18 @@ impl LifecycleManager {
 
     /// Validates the current phase and transitions to Starting.
     /// Returns Err if the proxy is already active.
+    ///
+    /// The check and the transition happen under the shutdown lock, because they are one decision.
+    /// Reading the phase, deciding it is free, and writing `Starting` as separate steps lets two
+    /// callers both observe `Stopped` and both start a proxy: the second one then fails to bind,
+    /// and the daemon reports `failed` while a proxy is in fact listening. Two clients calling
+    /// `proxy_start` at the same moment is the normal case, not a corner one.
     pub fn prepare_start(&self, port: u16, shutdown_tx: oneshot::Sender<()>) -> Result<(), String> {
+        let mut guard = self
+            .shutdown_tx
+            .lock()
+            .map_err(|_| "shutdown state poisoned".to_string())?;
+
         let current = self.snapshot();
         if current.is_active() {
             return Err(format!(
@@ -42,19 +53,15 @@ impl LifecycleManager {
             ));
         }
 
-        let mut guard = self
-            .shutdown_tx
-            .lock()
-            .map_err(|_| "shutdown state poisoned".to_string())?;
         *guard = Some(shutdown_tx);
-        drop(guard);
-
         self.update(RuntimeLifecycle {
             phase: RuntimeLifecyclePhase::Starting,
             port: Some(port),
             started_at_ms: None,
             last_error: None,
         });
+        drop(guard);
+
         Ok(())
     }
 
