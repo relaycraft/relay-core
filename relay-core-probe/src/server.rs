@@ -7,13 +7,13 @@ use relay_core_api::flow::FlowUpdate;
 use relay_core_runtime::CoreState;
 use relay_core_runtime::audit::AuditEventKind;
 use relay_core_runtime::services::{
-    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
-    RuntimeStatusService, ScriptService,
+    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService,
+    ProxyControlService, RuleService, RuntimeStatusService, ScriptService,
 };
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, ErrorCode, Implementation,
+        CallToolRequestParams, CallToolResult, Content, ErrorCode, Implementation,
         ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
         RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult,
         ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo, SubscribeRequestParams,
@@ -50,6 +50,10 @@ pub struct ProbeContext {
     pub status: Arc<dyn RuntimeStatusService>,
     pub policy: Arc<dyn PolicyService>,
     pub script: Arc<dyn ScriptService>,
+    /// Proxy lifecycle control. Present when the host owns a proxy (the daemon, or any host that
+    /// passes its controller); `None` means an agent can never start one from here, which the
+    /// lifecycle tools report as `proxy_control_unavailable` rather than pretending.
+    pub proxy: Option<Arc<dyn ProxyControlService>>,
 }
 
 impl ProbeContext {
@@ -63,7 +67,14 @@ impl ProbeContext {
             status: core.clone(),
             policy: core.clone(),
             script: core.clone(),
+            proxy: None,
         }
+    }
+
+    /// Expose the proxy lifecycle to agents, so `proxy_start` / `proxy_stop` work over MCP.
+    pub fn with_proxy_control(mut self, proxy: Arc<dyn ProxyControlService>) -> Self {
+        self.proxy = Some(proxy);
+        self
     }
 }
 
@@ -80,6 +91,16 @@ impl ProbeServer {
     pub fn new(config: ProbeConfig, state: Arc<CoreState>) -> Self {
         let ctx = Arc::new(ProbeContext::new(state));
         Self { ctx, config }
+    }
+
+    /// Expose the proxy lifecycle to agents over MCP.
+    ///
+    /// Call before serving: the context is shared with in-flight requests once the server runs.
+    pub fn with_proxy_control(mut self, proxy: Arc<dyn ProxyControlService>) -> Self {
+        let ctx = Arc::get_mut(&mut self.ctx)
+            .expect("with_proxy_control must be called before the server starts serving");
+        ctx.proxy = Some(proxy);
+        self
     }
 
     /// 启动 MCP 服务，阻塞直到连接断开或 shutdown。
@@ -212,6 +233,13 @@ impl ProbeServer {
                                         ResourceUpdatedNotificationParam::new("proxy://status".to_string()),
                                     ).await;
                                 }
+                                // A client that changed the lifecycle must itself hear about it:
+                                // another client may be the one that stopped the proxy.
+                                AuditEventKind::ProxyLifecycleChanged => {
+                                    let _ = peer.notify_resource_updated(
+                                        ResourceUpdatedNotificationParam::new("proxy://status".to_string()),
+                                    ).await;
+                                }
                                 AuditEventKind::ScriptReloaded => {
                                     let _ = peer.notify_resource_list_changed().await;
                                 }
@@ -263,15 +291,22 @@ impl ServerHandler for ProbeServer {
         ))
         .with_instructions(format!(
             "relay-core traffic proxy probe (tool-contract-version: {}). \
-            Use tools to search/inspect flows, manage interception rules, \
-            and debug network traffic. \
+            This server drives a RelayCore daemon that owns the proxy and the captured traffic; \
+            the daemon outlives this connection, so flows and rules are shared with every other \
+            client. \
             \
-            To intercept HTTPS traffic, the relay-core CA certificate must be \
-            trusted by the system (I cannot do this — it requires sudo). \
-            Read the ca://install resource for platform-specific one-liner commands. \
+            Start with proxy_status: if no proxy is running, nothing is being captured, and traffic \
+            tools will tell you so instead of returning an empty list — call proxy_start first (or \
+            run `relay start` on the host). proxy_stop stops the proxy and keeps the history. \
             \
-            Tool contract is stable; new optional parameters may be added \
-            without a version bump — ignore unknown fields.",
+            Tool results carry structuredContent, and the text block is the same JSON. \
+            \
+            To intercept HTTPS traffic the relay-core CA certificate must be trusted by the system \
+            (I cannot do this — it requires sudo). Read the ca://install resource for \
+            platform-specific one-liner commands. \
+            \
+            The tool contract is versioned; new optional parameters and tools may appear without a \
+            bump, so ignore unknown fields.",
             crate::TOOL_CONTRACT_VERSION,
         ))
     }
@@ -366,7 +401,7 @@ impl ServerHandler for ProbeServer {
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
-        let content = tools::dispatch(&self.ctx, &request.name, args)
+        let outcome = tools::dispatch(&self.ctx, &request.name, args)
             .await
             .map_err(|e| {
                 let msg = e.to_string();
@@ -377,10 +412,25 @@ impl ServerHandler for ProbeServer {
                     ToolError::InvalidArgument(_) => {
                         ErrorData::new(ErrorCode::INVALID_REQUEST, msg, None)
                     }
+                    // Carries the stable code in `data` so a client can branch on the cause
+                    // (`proxy_not_running`, `start_failed`, …) without parsing the message.
+                    ToolError::Unavailable { code, .. } => ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        msg,
+                        Some(serde_json::json!({
+                            "code": code,
+                            "retryable": matches!(*code, "proxy_not_running"),
+                        })),
+                    ),
                     ToolError::Internal(_) => ErrorData::new(ErrorCode::INTERNAL_ERROR, msg, None),
                 }
             })?;
-        Ok(CallToolResult::success(content))
+
+        // Both halves are sent: `structuredContent` for agents that read typed fields, and the
+        // serialized JSON as text for clients that predate it (the MCP spec asks for exactly this).
+        let mut result = CallToolResult::success(vec![Content::text(outcome.text)]);
+        result.structured_content = Some(outcome.structured);
+        Ok(result)
     }
 
     async fn on_initialized(&self, _ctx: NotificationContext<RoleServer>) {
