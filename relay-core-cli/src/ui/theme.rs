@@ -1,7 +1,6 @@
 //! TUI color palettes — preset themes aligned with relaycore.dev branding.
 
 use ratatui::style::{Color, Modifier, Style};
-use serde::Deserialize;
 use std::sync::OnceLock;
 
 /// Built-in TUI color presets.
@@ -244,30 +243,14 @@ const HIGH_CONTRAST: ThemePalette = ThemePalette {
     ],
 };
 
-#[derive(Debug, Deserialize)]
-struct ConfigFile {
-    tui: Option<TuiConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TuiConfig {
-    theme: Option<String>,
-}
-
 fn load_config_theme() -> Option<String> {
-    let path = relay_core_runtime::paths::resolve_data_dir().join("config.toml");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return None, // missing file is normal
-    };
-    match toml::from_str::<ConfigFile>(&content) {
-        Ok(cfg) => cfg.tui?.theme.filter(|s| !s.trim().is_empty()),
-        Err(e) => {
-            tracing::warn!(
-                "failed to parse {}: {} — theme defaults will be used",
-                path.display(),
-                e
-            );
+    // The same file the daemon reads: one definition of it, so a section cannot be read by one
+    // component and silently ignored by another.
+    let data_dir = relay_core_runtime::paths::resolve_data_dir();
+    match relay_core_http::control::config::load(&data_dir) {
+        Ok(config) => config.tui.theme.filter(|theme| !theme.trim().is_empty()),
+        Err(error) => {
+            tracing::warn!("{error} — theme defaults will be used");
             None
         }
     }

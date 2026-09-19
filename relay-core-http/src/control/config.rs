@@ -20,6 +20,9 @@ pub struct RelayConfig {
     pub daemon: DaemonSection,
     pub proxy: ProxySection,
     pub client: ClientSection,
+    /// Read by the TUI. Part of this type so `relay config show` cannot silently drop a section
+    /// the user edits — the file has one reader, and it is this struct.
+    pub tui: TuiSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,13 @@ pub struct DaemonSection {
 pub struct ProxySection {
     /// Port the proxy listens on when a command does not name one.
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TuiSection {
+    /// Colour preset: `relay`, `slate`, `high-contrast`.
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +201,11 @@ port = 8080
 [client]
 # Whether the MCP bridge may start a daemon when none is running.
 autostart_daemon = true
+
+[tui]
+# Colour preset: relay, slate, high-contrast. Overridden by --theme and
+# RELAY_CORE_TUI_THEME.
+# theme = "relay"
 "#;
 
 #[cfg(test)]
@@ -249,6 +264,20 @@ mod tests {
             parsed,
             RelayConfig::default(),
             "the template documents the defaults, so it must parse to them"
+        );
+    }
+
+    #[test]
+    fn the_tui_section_is_part_of_the_same_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(config_path(dir.path()), "[tui]\ntheme = \"slate\"\n").expect("write");
+
+        let config = load(dir.path()).expect("config");
+        assert_eq!(config.tui.theme.as_deref(), Some("slate"));
+        assert_eq!(
+            config.daemon,
+            DaemonSection::default(),
+            "an unrelated section keeps its defaults"
         );
     }
 
