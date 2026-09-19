@@ -104,7 +104,19 @@ jobs:
           Copy-Item $probe $pkg
 
       - name: Publish @relay-core/binaries-${{ matrix.npm_platform }}
-        run: npm publish --access public
+        # Idempotent on purpose. npm accepts a publish and then processes a large package for
+        # minutes, so a job can go green while the version is not yet readable — the wrapper job
+        # then refuses to continue, and the only way forward is to re-run this one. A re-run that
+        # died on "cannot publish over the previously published versions" would leave the release
+        # half-published with no way to finish it.
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do."
+            exit 0
+          fi
+          npm publish --access public
         working-directory: npm/packages/binaries-${{ matrix.npm_platform }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -127,13 +139,31 @@ jobs:
         run: node npm/scripts/verify-platform-packages.js ${{ github.ref_name }}
 
       - name: Publish @relay-core/cli
-        run: npm publish --access public
+        # Idempotent for the same reason as the platform packages: this is the job that has
+        # to run again when npm's read path lagged behind a publish that already succeeded.
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do."
+            exit 0
+          fi
+          npm publish --access public
         working-directory: npm/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @relay-core/mcp
-        run: npm publish --access public
+        # Idempotent for the same reason as the platform packages: this is the job that has
+        # to run again when npm's read path lagged behind a publish that already succeeded.
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do."
+            exit 0
+          fi
+          npm publish --access public
         working-directory: npm/mcp
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
