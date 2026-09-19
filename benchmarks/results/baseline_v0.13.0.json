@@ -1,0 +1,39 @@
+{
+  "report_type": "release",
+  "version": "0.13.0",
+  "commit": "a8cbb73",
+  "timestamp": "2026-09-19T13:33:09Z",
+  "environment": {
+    "os": "macOS 27.0",
+    "cpu": "Apple M4 Max",
+    "cpu_cores": 16,
+    "ram_gb": 64,
+    "rustc": "1.95.0",
+    "load_tool": "oha 1.15.0",
+    "memory_metric": "rss"
+  },
+  "methodology": {
+    "warmup_rounds": 3,
+    "measurement_rounds": 5,
+    "duration_per_round_s": 30,
+    "connections": 25
+  },
+  "results": {
+    "cold_start_ms": {"mean": 123.0, "stddev": 4.18, "min": 118.0, "max": 127.0, "values": [119.0, 126.0, 127.0, 118.0, 125.0], "n": 5},
+    "idle_rss_mb": {"mean": 58.8, "stddev": 0.45, "min": 58.0, "max": 59.0, "values": [59.0, 59.0, 58.0, 59.0, 59.0], "n": 5},
+    "api_flows_query_ms": 0.59,
+    "api_flow_detail_ms": 0,
+    "api_sse_first_event_ms": 0
+  },
+  "load_errors": "aborted due to deadline x24; aborted due to deadline x25; aborted due to deadline x25; aborted due to deadline x23; aborted due to deadline x25; ",
+  "scenarios": [{"id":"S1","payload_kb":1,"throughput":{"mean": 36394.0, "stddev": 2256.92, "min": 32778.0, "max": 38338.0, "values": [37191.0, 38338.0, 37950.0, 32778.0, 35713.0]},"latency_p99":{"mean": 0.81, "stddev": 0.05, "min": 0.77, "max": 0.89, "values": [0.79, 0.77, 0.77, 0.89, 0.83]}}],
+  "dod": {
+    "cold_start": "PASS",
+    "idle_rss": "PASS",
+    "throughput_s1": "PASS",
+    "latency_p99_s1": "PASS",
+    "success_rate_s1": "PASS",
+    "api_flow_detail": "SKIP",
+    "api_sse": "WARN"
+  }
+}

@@ -1,14 +1,14 @@
-## RelayCore verify-defaults — Release Performance Report
+## RelayCore v0.13.0 — Release Performance Report
 
-- **Date**: 2026-09-12T10:49:10Z
-- **Commit**: `7160d99`
-- **Mode**: release (1 warmup + 2 measurement rounds, 10s each)
+- **Date**: 2026-09-19T13:33:09Z
+- **Commit**: `a8cbb73`
+- **Mode**: release (3 warmup + 5 measurement rounds, 30s each)
 
 ### Environment
 
 | Item | Detail |
 |------|--------|
-| OS | macOS 26.5.2 |
+| OS | macOS 27.0 |
 | CPU | Apple M4 Max (16 cores) |
 | RAM | 64 GB |
 | Rust | 1.95.0 |
@@ -20,31 +20,31 @@
 
 | Metric | Mean | StdDev | Min | Max | DoD Target | Status |
 |--------|------|--------|-----|-----|------------|--------|
-| Cold start | 136.5ms | ±3.54 | 134.0ms | 139.0ms | <200ms | PASS |
-| Idle RSS | 52.0MB | ±0.0 | 52.0MB | 52.0MB | <85MB | PASS |
-| Throughput | 49881.5 req/s | ±402.34 | 49597.0 | 50166.0 | >10000 req/s | PASS |
+| Cold start | 123.0ms | ±4.18 | 118.0ms | 127.0ms | <200ms | PASS |
+| Idle RSS | 58.8MB | ±0.45 | 58.0MB | 59.0MB | <85MB | PASS |
+| Throughput | 36394.0 req/s | ±2256.92 | 32778.0 | 38338.0 | >10000 req/s | PASS |
 | Success rate | 100.0% | ±0.0 | 100.0% | 100.0% | >=99.0% | PASS |
-| P99 Latency | 0.86ms | ±0.04 | 0.84ms | 0.89ms | <20ms | PASS |
+| P99 Latency | 0.81ms | ±0.05 | 0.77ms | 0.89ms | <20ms | PASS |
 
 ### Scenario Results
 
 | Scenario | Payload | Throughput (req/s) | P99 (ms) | QPS | Lat |
 |----------|---------|--------------------|----------|-----|-----|
-| S1 | 1KB | 49881.5 ±402.34 | 0.86 ±0.04 | PASS | PASS |
+| S1 | 1KB | 36394.0 ±2256.92 | 0.81 ±0.05 | PASS | PASS |
 
 ### API Path Latency
 
 | Path | Result | Status |
 |------|--------|--------|
-| GET /api/v1/flows | 3.44ms | OK |
-| GET /api/v1/flows/{id} | 0.68ms | OK |
-| GET /api/v1/events (SSE first event) | 10.88ms | OK |
+| GET /api/v1/flows | 0.59ms | OK |
+| GET /api/v1/flows/{id} | 0ms | SKIP |
+| GET /api/v1/events (SSE first event) | 0ms | WARN |
 
 ### Reproduce
 
 ```bash
-git checkout 7160d99
-./benchmarks/bench_minimal.sh release --runs 2 --warmup-runs 1 --duration 10
+git checkout a8cbb73
+./benchmarks/bench_minimal.sh release --runs 5 --warmup-runs 3 --duration 30
 ```
 
 ### Methodology Notes
