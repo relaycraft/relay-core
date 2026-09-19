@@ -22,18 +22,45 @@ pub fn load_flow(path: &PathBuf) -> Result<Flow> {
     Ok(flow)
 }
 
+/// Read a recorded flow stream (JSONL).
+///
+/// Two shapes are accepted because both exist: a bare `Flow` per line (what a stream file used to
+/// hold) and a `FlowUpdate` per line (what the engine records now, so the recording is not lossy).
+/// Making the reader care which one it was produced by is how a stream file and `relay analyze`
+/// drift apart.
 pub fn load_flows_jsonl(path: &PathBuf) -> Result<Vec<Flow>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
     let flows: Vec<Flow> = content
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            serde_json::from_str::<Flow>(line)
-                .with_context(|| format!("Failed to parse flow JSONL line: {}", line))
+        .filter_map(|line| match parse_flow_line(line) {
+            Ok(Some(flow)) => Some(Ok(flow)),
+            // Incremental updates describe a flow already present earlier in the file.
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(flows)
+}
+
+/// One line of a recorded stream: a whole flow, or the full-flow variant of an update.
+fn parse_flow_line(line: &str) -> Result<Option<Flow>> {
+    let value: serde_json::Value = serde_json::from_str(line)
+        .with_context(|| format!("Failed to parse flow JSONL line: {line}"))?;
+
+    if value.get("type").is_some() {
+        let update: relay_core_api::flow::FlowUpdate = serde_json::from_value(value)
+            .with_context(|| format!("Failed to parse flow update line: {line}"))?;
+        return Ok(match update {
+            relay_core_api::flow::FlowUpdate::Full(flow) => Some(*flow),
+            _ => None,
+        });
+    }
+
+    let flow: Flow = serde_json::from_value(value)
+        .with_context(|| format!("Failed to parse flow JSONL line: {line}"))?;
+    Ok(Some(flow))
 }
 
 pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
@@ -207,4 +234,93 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
         .collect();
 
     Ok(flows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn sample_flow_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "start_time": "2026-05-20T10:00:00Z",
+            "end_time": null,
+            "network": {
+                "client_ip": "127.0.0.1",
+                "client_port": 1234,
+                "server_ip": "0.0.0.0",
+                "server_port": 0,
+                "protocol": "TCP",
+                "tls": false
+            },
+            "layer": {
+                "type": "Http",
+                "data": {
+                    "request": {
+                        "method": "GET",
+                        "url": "http://example.com/",
+                        "version": "HTTP/1.1",
+                        "headers": [],
+                        "cookies": [],
+                        "query": [],
+                        "body": null
+                    },
+                    "response": null,
+                    "error": null
+                }
+            },
+            "tags": [],
+            "meta": {}
+        })
+    }
+
+    fn write_lines(lines: &[String]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("stream.jsonl");
+        let mut file = std::fs::File::create(&path).expect("create");
+        for line in lines {
+            writeln!(file, "{line}").expect("write");
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn a_recorded_stream_reads_both_flow_and_update_lines() {
+        let flow = sample_flow_json();
+        let full_update = serde_json::json!({ "type": "Full", "data": flow.clone() });
+
+        // Built from the real type rather than hand-written JSON: a hand-written shape is a second
+        // definition of the wire format, which is how readers and writers drift apart.
+        let body_update =
+            serde_json::to_string(&relay_core_api::flow::FlowUpdate::BodyBudgetExceeded {
+                flow_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                direction: relay_core_api::flow::Direction::ClientToServer,
+            })
+            .expect("serialize update");
+
+        let (_dir, path) = write_lines(&[flow.to_string(), full_update.to_string(), body_update]);
+
+        let flows = load_flows_jsonl(&path).expect("both shapes must be readable");
+        assert_eq!(
+            flows.len(),
+            2,
+            "the incremental update is not a flow of its own"
+        );
+        assert!(
+            flows
+                .iter()
+                .all(|flow| flow.id.to_string().ends_with("0001"))
+        );
+    }
+
+    #[test]
+    fn a_broken_line_names_the_line() {
+        let (_dir, path) = write_lines(&["{ this is not json".to_string()]);
+        let error = load_flows_jsonl(&path).expect_err("a broken line must be reported");
+        assert!(
+            error.to_string().contains("JSONL line"),
+            "the error must point at the line: {error}"
+        );
+    }
 }

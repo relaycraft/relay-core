@@ -1,3 +1,4 @@
+use crate::commands::config::ConfigAction;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -7,12 +8,15 @@ use std::path::PathBuf;
     about = "Intercept and debug HTTP traffic with ease",
     after_help = "\
 Examples:
-  relay run                      Start proxy in background (default)
-  relay run --ui                 Start proxy with interactive TUI
-  relay run --web                Start proxy with Web UI (API + dashboard on :8082)
-  relay run --web --api-port 9090  Web UI on custom port
-  relay run --ui --theme slate   TUI with alternate color preset
-  relay flows --output table     View captured flows in table format
+  relay start                    Start the daemon and the proxy (idempotent)
+  relay status                   Show the daemon, the proxy and the MCP endpoint
+  relay stop                     Stop the proxy, keep the daemon and its history
+  relay shutdown                 Stop the proxy and the daemon
+  relay run                      Run the daemon and the proxy in the foreground
+  relay run --ui                 Foreground daemon with the interactive TUI attached
+  relay run --web                Foreground daemon serving the Web UI on the API port
+  relay config init              Write a commented config file and edit your defaults
+  relay flows                    List captured flows (add --follow to watch live traffic)
   relay analyze --file flows.jsonl           Analyze captured flow data
   relay analyze --file export.har --format har  Analyze HAR export
   relay scripts init                        Scaffold a new script project
@@ -38,15 +42,169 @@ pub struct Cli {
 // variants costs nothing, and clap's derive reads better than a boxed payload would.
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
-    /// Start the proxy server
+    /// Start the RelayCore daemon and the proxy (idempotent)
+    Start {
+        /// Proxy listen address. The engine binds loopback only.
+        #[arg(short, long, env = "RELAY_PROXY_LISTEN")]
+        listen: Option<String>,
+
+        /// Control API port for a daemon this command starts
+        #[arg(long, env = "RELAY_API_PORT")]
+        api_port: Option<u16>,
+
+        /// MCP endpoint port for a daemon this command starts
+        #[arg(long, env = "RELAY_MCP_PORT")]
+        mcp_port: Option<u16>,
+
+        /// Do not serve the MCP endpoint
+        #[arg(long)]
+        no_mcp: bool,
+
+        /// Ensure the daemon runs but do not start the proxy
+        #[arg(long)]
+        no_proxy: bool,
+
+        /// Enable transparent proxy mode (macOS PF / Linux TPROXY)
+        #[arg(long)]
+        transparent: bool,
+
+        /// Enable UDP TPROXY on specified port (Linux only)
+        #[arg(long)]
+        udp_tproxy_port: Option<u16>,
+
+        /// Path to CA certificate
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
+
+        /// Keep flows and rules in memory instead of the data directory database
+        #[arg(long)]
+        in_memory: bool,
+
+        /// Append every flow update to this file as JSONL
+        #[arg(long, value_name = "PATH")]
+        save_stream: Option<PathBuf>,
+
+        /// Stop the proxy after this many seconds without captured traffic (0 = never, the default)
+        #[arg(long, env = "RELAY_PROXY_IDLE_TIMEOUT")]
+        idle_timeout: Option<u64>,
+
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the proxy (the daemon keeps running, keeping history and rules)
+    Stop {
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restart the proxy
+    Restart {
+        /// Proxy listen address
+        #[arg(short, long, env = "RELAY_PROXY_LISTEN")]
+        listen: Option<String>,
+
+        /// Enable transparent proxy mode (macOS PF / Linux TPROXY)
+        #[arg(long)]
+        transparent: bool,
+
+        /// Enable UDP TPROXY on specified port (Linux only)
+        #[arg(long)]
+        udp_tproxy_port: Option<u16>,
+
+        /// Path to CA certificate
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
+
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the daemon, the proxy and the MCP endpoint
+    Status {
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the proxy and the daemon
+    Shutdown {
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read, show and seed the configuration file
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Internal: run the daemon in the foreground
+    #[command(hide = true)]
+    Daemon {
+        /// Control API port (falls back to an ephemeral port when taken)
+        #[arg(long, env = "RELAY_API_PORT")]
+        api_port: Option<u16>,
+
+        /// Proxy listen port
+        #[arg(long, env = "RELAY_PROXY_PORT")]
+        proxy_port: Option<u16>,
+
+        /// MCP endpoint port
+        #[arg(long, env = "RELAY_MCP_PORT")]
+        mcp_port: Option<u16>,
+
+        /// Do not serve the MCP endpoint
+        #[arg(long)]
+        no_mcp: bool,
+
+        /// Also start the proxy as the daemon comes up (clients normally ask for it explicitly)
+        #[arg(long)]
+        start_proxy: bool,
+
+        /// Enable transparent proxy mode (macOS PF / Linux TPROXY)
+        #[arg(long)]
+        transparent: bool,
+
+        /// Enable UDP TPROXY on specified port (Linux only)
+        #[arg(long)]
+        udp_tproxy_port: Option<u16>,
+
+        /// Path to CA certificate
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+
+        /// Path to CA key
+        #[arg(long)]
+        ca_key: Option<PathBuf>,
+
+        /// Keep flows and rules in memory only
+        #[arg(long)]
+        in_memory: bool,
+
+        /// SQLite URL for persistence (default: a file in the data directory)
+        #[arg(long)]
+        db_url: Option<String>,
+
+        /// Append every flow update to this file as JSONL
+        #[arg(long, value_name = "PATH")]
+        save_stream: Option<PathBuf>,
+
+        /// Stop the proxy after this many seconds without captured traffic (0 = never, the default)
+        #[arg(long, env = "RELAY_PROXY_IDLE_TIMEOUT")]
+        idle_timeout: Option<u64>,
+    },
+    /// Run the daemon and the proxy in the foreground
     Run {
         /// Address to listen on (e.g., 127.0.0.1:8080)
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         listen: String,
-
-        /// Control API port
-        #[arg(short, long, default_value = "8081")]
-        control_port: u16,
 
         /// Enable UDP TPROXY on specified port (Linux only)
         #[arg(long)]
@@ -82,6 +240,11 @@ pub enum Commands {
         #[arg(long)]
         web: bool,
 
+        /// Also serve the MCP endpoint from this process on this port (e.g. 18083).
+        /// Agents that prefer a daemon they can share should use `relay start` instead.
+        #[arg(long)]
+        mcp_port: Option<u16>,
+
         /// TUI color preset (relay, slate, high-contrast). Overrides config; env: RELAY_CORE_TUI_THEME
         #[arg(long, env = "RELAY_CORE_TUI_THEME", value_name = "THEME")]
         theme: Option<String>,
@@ -90,12 +253,8 @@ pub enum Commands {
         #[arg(long)]
         transparent: bool,
 
-        /// Output format (table, json, jsonl)
-        #[arg(long, default_value = "table")]
-        output: String,
-
-        /// Save flow stream to file (JSONL format)
-        #[arg(long)]
+        /// Record every flow update to this file as JSONL
+        #[arg(long, value_name = "PATH")]
         save_stream: Option<PathBuf>,
 
         /// Enable REST/SSE HTTP API on this port (e.g. 8082).
@@ -158,15 +317,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: ScriptsAction,
     },
-    /// Traffic Monitoring (Online): live WebSocket stream, or search via REST API
+    /// List captured flows, or follow live traffic with --follow
     Flows {
-        /// Control API URL (WebSocket stream when not searching)
-        #[arg(long, default_value = "http://127.0.0.1:8081")]
-        control_url: String,
+        /// Control API base URL; discovered from the daemon manifest when omitted
+        #[arg(long)]
+        api_url: Option<String>,
 
-        /// REST API base URL for search mode (requires `relay run --api-port`)
-        #[arg(long, default_value = "http://127.0.0.1:8082")]
-        api_url: String,
+        /// Stream new flows as they arrive instead of listing what has been captured.
+        /// Filters do not apply to a live stream, so they cannot be combined with this.
+        #[arg(long)]
+        follow: bool,
 
         /// Output format (table, json, jsonl)
         #[arg(long, default_value = "table")]
@@ -194,20 +354,12 @@ pub enum Commands {
         #[arg(long)]
         has_error: bool,
 
+        /// Only list WebSocket flows
         #[arg(long)]
         websocket: bool,
 
         #[arg(long, default_value = "50")]
         limit: usize,
-    },
-    /// Interception Control (Online)
-    Intercept {
-        #[command(subcommand)]
-        action: InterceptAction,
-
-        /// Control API URL
-        #[arg(long, default_value = "http://127.0.0.1:8081")]
-        control_url: String,
     },
     /// Get Core Metrics
     Metrics {
@@ -276,12 +428,6 @@ pub enum TransparentAction {
     Unload,
     /// Check transparent proxy status
     Status,
-}
-
-#[derive(Subcommand)]
-pub enum InterceptAction {
-    Pause,
-    Resume,
 }
 
 #[derive(Subcommand)]

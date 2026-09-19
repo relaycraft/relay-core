@@ -6,56 +6,38 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-use super::super::app::{ApiMode, TuiApp};
+use super::super::app::TuiApp;
 use super::super::theme::Theme;
 
-pub(in crate::ui) fn render_help_overlay(app: &TuiApp, f: &mut Frame) {
+pub(in crate::ui) fn render_help_overlay(_app: &TuiApp, f: &mut Frame) {
     let mut lines: Vec<Line> = vec![
         Line::from(vec![Span::styled("RelayCore TUI", Theme::accent_bold())]),
         Line::from(""),
     ];
 
-    match app.api_mode {
-        ApiMode::Connected => {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("HTTP API: ", Theme::label()),
-                Span::styled("on", Theme::stat_ok()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "REST + SSE on localhost (/api/v1/flows, rules, events) for ",
-                    Theme::muted(),
-                ),
-                Span::styled("relay flows", Theme::accent_dim()),
-                Span::styled(", MCP, and other clients. ", Theme::muted()),
-                Span::styled("This TUI is unchanged.", Theme::muted()),
-            ]));
-        }
-        ApiMode::Offline => {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("HTTP API: ", Theme::label()),
-                Span::styled("off", Theme::muted()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "--api-port PORT starts REST + SSE on localhost for ",
-                    Theme::muted(),
-                ),
-                Span::styled("relay flows", Theme::accent_dim()),
-                Span::styled(", MCP, and integrations. ", Theme::muted()),
-                Span::styled("Does not change this TUI.", Theme::muted()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("Example: ", Theme::label()),
-                Span::styled("relay run --ui --api-port 8082", Theme::accent_dim()),
-            ]));
-        }
-    }
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Traffic: ", Theme::label()),
+        Span::styled("live from the daemon", Theme::stat_ok()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("  This TUI is a client — ", Theme::muted()),
+        Span::styled("relay status", Theme::accent_dim()),
+        Span::styled(
+            " shows the same flows, rules and history every other client sees.",
+            Theme::muted(),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("  Stop the proxy with ", Theme::muted()),
+        Span::styled("relay stop", Theme::accent_dim()),
+        Span::styled(
+            "; quitting this UI ends the daemon it started.",
+            Theme::muted(),
+        ),
+    ]));
 
     lines.push(Line::from(""));
     lines.push(help_section("Flow List"));

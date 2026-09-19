@@ -66,15 +66,6 @@ pub enum ActiveArea {
     FlowDetail,
 }
 
-/// Whether `--api-port` was enabled at startup (help text only; TUI behavior is the same).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum ApiMode {
-    /// `--api-port` set: REST/SSE HTTP API is listening for external clients.
-    Connected,
-    /// No `--api-port`: proxy runs without the REST/SSE HTTP API.
-    Offline,
-}
-
 pub struct TuiApp {
     pub flows: VecDeque<Flow>,
     pub table_state: TableState,
@@ -93,7 +84,6 @@ pub struct TuiApp {
     pub paused: bool,
     pub pending_count: u64,
     pub req_timestamps: VecDeque<Instant>,
-    pub api_mode: ApiMode,
     pub command_input: String,
     pub marks: BTreeMap<Uuid, char>,
     pub body_view: BodyView,
@@ -101,7 +91,9 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new(port: u16, api_mode: ApiMode) -> Self {
+    /// The TUI reads live traffic from the daemon's control API; it owns no engine, so it needs
+    /// only the port to tell the user which proxy they are looking at.
+    pub fn new(port: u16) -> Self {
         let mut app = Self {
             flows: VecDeque::with_capacity(1000),
             table_state: TableState::default(),
@@ -120,7 +112,6 @@ impl TuiApp {
             paused: false,
             pending_count: 0,
             req_timestamps: VecDeque::with_capacity(64),
-            api_mode,
             command_input: String::new(),
             marks: BTreeMap::new(),
             body_view: BodyView::Auto,
@@ -809,7 +800,7 @@ mod tests {
 
     #[test]
     fn test_new_app_has_selection() {
-        let app = TuiApp::new(8080, ApiMode::Offline);
+        let app = TuiApp::new(8080);
         assert_eq!(app.table_state.selected(), Some(0));
         assert_eq!(app.detail_tab, DetailTab::Overview);
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -819,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_next_previous_wraps_around() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         for i in 0..5 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -842,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_filtering_filters_by_url_and_method() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/users",
@@ -882,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_filtering_plain_text_case_insensitive() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://API.Example.com/x",
@@ -894,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_updates_existing_and_adds_new() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let id = "00000000-0000-0000-0000-000000000001";
 
         let flow1 = make_http_flow(id, "http://example.com/original", "GET");
@@ -913,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_on_flow_caps_at_1000() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         for i in 0..1100 {
             app.on_flow(make_http_flow(
                 &format!("00000000-0000-0000-0000-{i:012x}"),
@@ -927,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_cap_eviction_cleans_marks() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let first_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap();
         // Fill exactly 1000, marking the first one
         for i in 0..1000 {
@@ -950,14 +941,14 @@ mod tests {
 
     #[test]
     fn test_key_quit() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.on_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_detail_tab_cycle() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.detail_tab, DetailTab::Overview);
         app.active_area = ActiveArea::FlowDetail;
         app.on_key(key(KeyCode::Tab));
@@ -972,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_help_stays_open_on_key_repeat() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.on_key(key(KeyCode::Char('?')));
         assert_eq!(app.input_mode, InputMode::Help);
         app.on_key(key_repeat(KeyCode::Char('?')));
@@ -983,7 +974,7 @@ mod tests {
 
     #[test]
     fn test_filter_mode_toggle() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.input_mode, InputMode::Normal);
         app.on_key(key(KeyCode::Char('/')));
         assert_eq!(app.input_mode, InputMode::Filtering);
@@ -997,7 +988,7 @@ mod tests {
 
     #[test]
     fn test_home_and_g_jump_to_newest_at_top() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         for i in 0..3 {
             app.on_flow(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -1016,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_end_and_g_jump_to_oldest_at_bottom() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         for i in 0..3 {
             app.on_flow(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -1037,7 +1028,7 @@ mod tests {
     fn test_ui_paints_opaque_background() {
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/v1/users?limit=10",
@@ -1053,7 +1044,7 @@ mod tests {
 
     #[test]
     fn test_tab_from_flow_list_focuses_detail() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.active_area, ActiveArea::FlowList);
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.active_area, ActiveArea::FlowDetail);
@@ -1061,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_copy_curl_sets_toast() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
             "http://api.example.com/v1",
@@ -1080,7 +1071,7 @@ mod tests {
 
     #[test]
     fn test_enter_esc_switches_focus() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         assert_eq!(app.active_area, ActiveArea::FlowList);
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.active_area, ActiveArea::FlowDetail);
@@ -1090,7 +1081,7 @@ mod tests {
 
     #[test]
     fn test_keyboard_navigation_moves_selection() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         for i in 0..10 {
             app.flows.push_back(make_http_flow(
                 &format!("00000000-0000-0000-0000-00000000000{i}"),
@@ -1115,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_status_hints_omits_pending_count() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.pending_count = 5;
         let hints = app.status_hints();
         assert!(!hints.iter().any(|(_, s)| s.contains("new")));
@@ -1123,7 +1114,7 @@ mod tests {
 
     #[test]
     fn test_status_hints_changes_pause_label() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let hints = app.status_hints();
         assert!(hints.iter().any(|(_, s)| s.contains("[p]pause")));
 
@@ -1137,7 +1128,7 @@ mod tests {
         for width in [40, 50, 60, 80, 100, 120, 150, 200] {
             let backend = TestBackend::new(width, 32);
             let mut terminal = Terminal::new(backend).unwrap();
-            let mut app = TuiApp::new(8080, ApiMode::Offline);
+            let mut app = TuiApp::new(8080);
             app.flows.push_back(make_http_flow(
                 "00000000-0000-0000-0000-000000000001",
                 "http://api.example.com/v1/users",
@@ -1149,7 +1140,7 @@ mod tests {
 
     #[test]
     fn test_mark_flow_with_vim_style() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
@@ -1174,7 +1165,7 @@ mod tests {
 
     #[test]
     fn test_mark_esc_cancels() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.on_key(key(KeyCode::Char('m')));
         assert_eq!(app.input_mode, InputMode::Marking);
         app.on_key(key(KeyCode::Esc));
@@ -1183,7 +1174,7 @@ mod tests {
 
     #[test]
     fn test_next_mark_jumps_to_next_marked_flow() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let id1 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let id2 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
         app.flows.push_back(make_http_flow(
@@ -1206,7 +1197,7 @@ mod tests {
 
     #[test]
     fn test_delete_selected_removes_mark() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         app.flows.push_back(make_http_flow(
             "00000000-0000-0000-0000-000000000001",
@@ -1221,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_status_hints_shows_marks() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         app.marks.insert(id, 'A');
         let id2 = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
@@ -1236,7 +1227,7 @@ mod tests {
 
     #[test]
     fn test_set_toast_records_time() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         assert!(app.toast_at.is_none());
         app.set_toast("hello");
         assert!(app.toast_at.is_some());
@@ -1244,7 +1235,7 @@ mod tests {
 
     #[test]
     fn test_prune_expired_toast_clears_state() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.set_toast("stale");
         // Simulate old toast
         app.toast_at = Some(Instant::now() - std::time::Duration::from_secs(6));
@@ -1255,7 +1246,7 @@ mod tests {
 
     #[test]
     fn test_prune_keeps_fresh_toast() {
-        let mut app = TuiApp::new(8080, ApiMode::Offline);
+        let mut app = TuiApp::new(8080);
         app.set_toast("fresh");
         app.prune_expired_toast();
         assert!(app.toast.is_some());

@@ -4,11 +4,21 @@ use tempfile::tempdir;
 
 #[test]
 fn test_cli_help() {
+    // The lifecycle commands are the entry point now, so they must be discoverable from `--help`.
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Start the proxy server"));
+        .stdout(predicate::str::contains(
+            "Start the RelayCore daemon and the proxy",
+        ))
+        .stdout(predicate::str::contains("Stop the proxy"))
+        .stdout(predicate::str::contains(
+            "Show the daemon, the proxy and the MCP endpoint",
+        ))
+        .stdout(predicate::str::contains(
+            "Run the daemon and the proxy in the foreground",
+        ));
 }
 
 #[test]
@@ -63,17 +73,102 @@ fn test_ca_generate_arg_paths_override_env() {
     assert!(!env_dir.join("ca_cert.pem").exists());
 }
 
+/// `relay run` is the daemon in the foreground, so its flags are the daemon's flags: the legacy
+/// `--control-port` and the console `--output` are gone, and the ones that remain must be accepted.
 #[test]
-fn test_run_fails_when_ca_missing() {
+fn test_run_accepts_daemon_flags() {
     let dir = tempdir().unwrap();
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
     cmd.env("RELAY_DATA_DIR", dir.path())
-        .arg("run")
-        .arg("--listen")
-        .arg("127.0.0.1:38080")
+        .args([
+            "run",
+            "--listen",
+            "127.0.0.1:38081",
+            "--api-port",
+            "38082",
+            "--mcp-port",
+            "38083",
+            "--save-stream",
+            "/dev/null",
+        ])
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--save-stream"))
+        .stdout(predicate::str::contains("--mcp-port"));
+
+    assert!(
+        !dir.path().join("daemon.json").exists(),
+        "--help must not start anything"
+    );
+}
+
+/// The legacy control API is gone, and so are the flags that configured it.
+#[test]
+fn test_legacy_control_flags_are_gone() {
+    let dir = tempdir().unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.env("RELAY_DATA_DIR", dir.path())
+        .args(["run", "--control-port", "8081"])
+        .assert()
+        .failure();
+
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+    cmd.env("RELAY_DATA_DIR", dir.path())
+        .args(["intercept", "pause"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_config_path_init_show_and_guard() {
+    let dir = tempdir().unwrap();
+    let bin = || {
+        let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("relay-core-cli");
+        cmd.env("RELAY_DATA_DIR", dir.path());
+        cmd
+    };
+
+    bin()
+        .args(["config", "path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config.toml"));
+
+    bin()
+        .args(["config", "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config.toml"));
+    assert!(dir.path().join("config.toml").exists());
+
+    // `show` prints the effective config, not the file, so keys the file omits are still visible.
+    bin()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("autostart_daemon"))
+        .stdout(predicate::str::contains("idle_timeout"));
+
+    bin()
+        .args(["config", "show", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"api_port\""));
+
+    // A config file is user state: seeding it twice must not discard edits.
+    bin()
+        .args(["config", "init"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("ca generate"));
+        .stderr(predicate::str::contains("already exists"));
+
+    bin().args(["config", "init", "--force"]).assert().success();
+    bin()
+        .args(["config", "show", "--format", "yaml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expected toml or json"));
 }
 
 #[test]

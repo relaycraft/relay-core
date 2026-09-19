@@ -1,9 +1,9 @@
-use crate::args::InterceptAction;
-use anyhow::{Context, Result};
-use futures_util::StreamExt;
+use crate::sse_client;
+use anyhow::{Context, Result, bail};
 use relay_core_api::modification::{FlowQuery, FlowSummary, parse_flow_filter};
+use relay_core_http::control::{DaemonStatus, connect};
+use relay_core_runtime::paths;
 use serde::Deserialize;
-use tokio_tungstenite::connect_async;
 use tracing::info;
 
 #[derive(Debug, Deserialize)]
@@ -11,10 +11,12 @@ struct FlowSearchResponse {
     items: Vec<FlowSummary>,
 }
 
-/// CLI flags for `flows` search mode (`GET /api/v1/flows`).
+/// CLI flags for `relay flows`.
 pub struct FlowsOptions {
-    pub control_url: String,
-    pub api_url: String,
+    /// Control API base URL. Discovered from the daemon manifest when omitted.
+    pub api_url: Option<String>,
+    /// Follow live traffic instead of listing what has been captured.
+    pub follow: bool,
     pub output: String,
     pub filter: Option<String>,
     pub host: Option<String>,
@@ -23,19 +25,69 @@ pub struct FlowsOptions {
     pub status_min: Option<u16>,
     pub status_max: Option<u16>,
     pub has_error: bool,
+    /// Only WebSocket flows, and search rather than stream.
     pub websocket: bool,
     pub limit: usize,
 }
 
 pub async fn execute(opts: FlowsOptions) -> Result<()> {
-    if opts.is_search_mode() {
-        return execute_search(opts).await;
+    let daemon = resolve_daemon(opts.api_url.as_deref()).await?;
+
+    if opts.follow {
+        // A filter that silently does nothing is worse than a refusal: `relay flows --follow
+        // --host api.example.com` would look like it was filtering and would not be.
+        if opts.has_filters() {
+            bail!(
+                "filters apply to a listing, not to a live stream; drop --follow to search, or \
+                 drop the filters to follow everything"
+            );
+        }
+        return execute_stream(daemon).await;
     }
-    execute_stream(opts.control_url, opts.output).await
+
+    execute_search(opts, &daemon).await
+}
+
+/// Where the daemon is, and how to authenticate to it.
+///
+/// Discovered rather than defaulted: a daemon that fell back to an ephemeral port would make a
+/// hard-coded `127.0.0.1:8082` connect to something else, or to nothing.
+struct ResolvedDaemon {
+    base_url: String,
+    token: Option<String>,
+}
+
+async fn resolve_daemon(explicit: Option<&str>) -> Result<ResolvedDaemon> {
+    if let Some(url) = explicit {
+        return Ok(ResolvedDaemon {
+            base_url: url.trim_end_matches('/').to_string(),
+            token: std::env::var("RELAY_API_TOKEN").ok(),
+        });
+    }
+
+    let data_dir = paths::resolve_data_dir();
+    match connect(&data_dir).await {
+        DaemonStatus::Running { manifest, .. } => Ok(ResolvedDaemon {
+            base_url: manifest.control_base_url(),
+            token: manifest.token.clone(),
+        }),
+        DaemonStatus::NotRunning => bail!(
+            "no RelayCore daemon is running in {}. Start one with `relay start`, or pass --api-url.",
+            data_dir.display()
+        ),
+        DaemonStatus::Unresponsive(manifest) => bail!(
+            "the RelayCore daemon (pid {}) is not answering at {}",
+            manifest.pid,
+            manifest.control_base_url()
+        ),
+        DaemonStatus::Incompatible { found, expected } => bail!(
+            "the running RelayCore daemon speaks control protocol {found}, this build speaks {expected}"
+        ),
+    }
 }
 
 impl FlowsOptions {
-    fn is_search_mode(&self) -> bool {
+    fn has_filters(&self) -> bool {
         self.filter.is_some()
             || self.host.is_some()
             || self.path.is_some()
@@ -80,10 +132,10 @@ impl FlowsOptions {
     }
 }
 
-async fn execute_search(opts: FlowsOptions) -> Result<()> {
+async fn execute_search(opts: FlowsOptions, daemon: &ResolvedDaemon) -> Result<()> {
     let (query, text_tokens) = opts.to_flow_query();
 
-    let base = opts.api_url.trim_end_matches('/');
+    let base = daemon.base_url.as_str();
     let mut url =
         reqwest::Url::parse(&format!("{base}/api/v1/flows")).context("invalid --api-url")?;
     {
@@ -118,11 +170,14 @@ async fn execute_search(opts: FlowsOptions) -> Result<()> {
     }
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(url)
+    let mut request = client.get(url);
+    if let Some(token) = daemon.token.as_deref() {
+        request = request.bearer_auth(token);
+    }
+    let resp = request
         .send()
         .await
-        .context("GET /api/v1/flows failed (is the proxy running with --api-port?)")?
+        .context("GET /api/v1/flows failed (is the daemon running?)")?
         .error_for_status()
         .context("flows search request rejected")?;
 
@@ -188,114 +243,63 @@ fn print_flow_table(items: &[FlowSummary]) {
     }
 }
 
-async fn execute_stream(control_url: String, output: String) -> Result<()> {
-    let ws_url = if control_url.starts_with("https") {
-        control_url.replace("https", "wss") + "/api/flows/ws"
-    } else if control_url.starts_with("http") {
-        control_url.replace("http", "ws") + "/api/flows/ws"
-    } else {
-        control_url + "/api/flows/ws"
-    };
+/// Stream live traffic from the daemon.
+///
+/// The transport is the control API's own event stream (`/api/v1/events`), the same one the Web UI
+/// and the TUI read, so `relay flows` cannot drift from what other clients see.
+async fn execute_stream(daemon: ResolvedDaemon) -> Result<()> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<relay_core_api::flow::FlowUpdate>(256);
+    let client = sse_client::ApiClient::new(daemon.base_url.clone(), daemon.token.clone());
 
-    info!("Connecting to {}", ws_url);
-    let (ws_stream, _) = connect_async(ws_url)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to control server: {}", e))?;
-    let (_, mut read) = ws_stream.split();
+    info!("Streaming from {}/api/v1/events", daemon.base_url);
 
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(msg) => msg,
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to read message from control server: {}",
-                    e
-                ));
-            }
-        };
+    let reader = tokio::spawn(async move { client.stream_events(tx).await });
 
-        if !msg.is_text() {
-            continue;
-        }
-
-        let text = match msg.to_text() {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
-
-        if output == "jsonl" {
-            println!("{}", text);
-            continue;
-        }
-
-        let update = match serde_json::from_str::<relay_core_api::flow::FlowUpdate>(text) {
-            Ok(update) => update,
-            Err(_) => continue,
-        };
-
-        match update {
-            relay_core_api::flow::FlowUpdate::Full(flow) => {
-                if output == "json" {
-                    if let Ok(json) = serde_json::to_string_pretty(&flow) {
-                        println!("{}", json);
-                    }
-                } else {
-                    use relay_core_api::flow::Layer;
-                    let url = match &flow.layer {
-                        Layer::Http(h) => h.request.url.to_string(),
-                        Layer::WebSocket(w) => w.handshake_request.url.to_string(),
-                        _ => "unknown".to_string(),
-                    };
-                    let method = match &flow.layer {
-                        Layer::Http(h) => h.request.method.clone(),
-                        Layer::WebSocket(w) => w.handshake_request.method.clone(),
-                        _ => "".to_string(),
-                    };
-                    info!("[Flow] {} {} {}", flow.id, method, url);
-                }
-            }
-            relay_core_api::flow::FlowUpdate::WebSocketMessage { flow_id, message } => {
-                if output == "table" {
-                    info!("[WS] [{}] {} bytes", flow_id, message.content.size);
-                }
-            }
-            relay_core_api::flow::FlowUpdate::HttpBody {
-                flow_id,
-                direction,
-                body,
-            } => {
-                if output == "table" {
-                    info!("[Body] [{}] {:?} {} bytes", flow_id, direction, body.size);
-                }
-            }
-            relay_core_api::flow::FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
-                if output == "table" {
-                    info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
-                }
-            }
-            relay_core_api::flow::FlowUpdate::ResponseTrailers { flow_id, trailers } => {
-                if output == "table" {
-                    // gRPC reports the outcome of a call here, so it is worth showing.
-                    info!("[Trailers] [{}] {} trailer(s)", flow_id, trailers.len());
-                }
-            }
-        }
+    while let Some(update) = rx.recv().await {
+        print_update(&update);
     }
 
-    Ok(())
+    match reader.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(anyhow::anyhow!("flow stream task failed: {error}")),
+    }
 }
 
-pub async fn execute_intercept(action: InterceptAction, control_url: String) -> Result<()> {
-    let url = match action {
-        InterceptAction::Pause => format!("{}/api/intercept/pause", control_url),
-        InterceptAction::Resume => format!("{}/api/intercept/resume", control_url),
-    };
-    let client = reqwest::Client::new();
-    client
-        .post(&url)
-        .send()
-        .await?
-        .error_for_status()
-        .context("intercept control request failed")?;
-    Ok(())
+/// One line per update, in the requested format.
+fn print_update(update: &relay_core_api::flow::FlowUpdate) {
+    use relay_core_api::flow::{FlowUpdate, Layer};
+
+    match update {
+        FlowUpdate::Full(flow) => {
+            let url = match &flow.layer {
+                Layer::Http(http) => http.request.url.to_string(),
+                Layer::WebSocket(ws) => ws.handshake_request.url.to_string(),
+                _ => "unknown".to_string(),
+            };
+            let method = match &flow.layer {
+                Layer::Http(http) => http.request.method.clone(),
+                Layer::WebSocket(ws) => ws.handshake_request.method.clone(),
+                _ => String::new(),
+            };
+            info!("[Flow] {} {} {}", flow.id, method, url);
+        }
+        FlowUpdate::WebSocketMessage { flow_id, message } => {
+            info!("[WS] [{}] {} bytes", flow_id, message.content.size);
+        }
+        FlowUpdate::HttpBody {
+            flow_id,
+            direction,
+            body,
+        } => {
+            info!("[Body] [{}] {:?} {} bytes", flow_id, direction, body.size);
+        }
+        FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
+            info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
+        }
+        FlowUpdate::ResponseTrailers { flow_id, trailers } => {
+            // gRPC reports the outcome of a call here, so it is worth showing.
+            info!("[Trailers] [{}] {} trailer(s)", flow_id, trailers.len());
+        }
+    }
 }
