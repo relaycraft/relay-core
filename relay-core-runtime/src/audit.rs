@@ -48,6 +48,11 @@ pub enum AuditEventKind {
     InterceptResolved,
     ScriptReloaded,
     PolicyUpdated,
+    /// The proxy was started, stopped, or failed to start.
+    ///
+    /// Recorded so "why is this proxy running, and who stopped it" has an answer that outlives the
+    /// process that asked — the question a connection registry is usually built to answer.
+    ProxyLifecycleChanged,
 }
 
 impl AuditEventKind {
@@ -57,6 +62,7 @@ impl AuditEventKind {
             Self::InterceptResolved => "intercept_resolved",
             Self::ScriptReloaded => "script_reloaded",
             Self::PolicyUpdated => "policy_updated",
+            Self::ProxyLifecycleChanged => "proxy_lifecycle_changed",
         }
     }
 }
@@ -70,6 +76,7 @@ impl FromStr for AuditEventKind {
             "intercept_resolved" => Ok(Self::InterceptResolved),
             "script_reloaded" => Ok(Self::ScriptReloaded),
             "policy_updated" => Ok(Self::PolicyUpdated),
+            "proxy_lifecycle_changed" => Ok(Self::ProxyLifecycleChanged),
             _ => Err(()),
         }
     }

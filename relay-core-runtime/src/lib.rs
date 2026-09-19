@@ -545,8 +545,16 @@ impl CoreState {
         }
     }
 
+    /// Audit events matching `query`, newest first.
+    ///
+    /// Persisted events and the in-memory tail are **merged**, because persistence is asynchronous:
+    /// reading only the store means an event that happened a millisecond ago is invisible, and a
+    /// caller that just caused it is told "nothing happened". The in-memory history also holds the
+    /// newest events when no store is configured at all.
     pub async fn query_audit_snapshot(&self, query: CoreAuditQuery) -> CoreAuditSnapshot {
         let limit = query.limit.clamp(1, 500);
+
+        let mut events: Vec<AuditEvent> = Vec::new();
         if let Some(store) = &self.store {
             let rows = store
                 .query_audit_events(
@@ -555,23 +563,22 @@ impl CoreState {
                     query.actor.as_ref().map(AuditActor::as_str),
                     query.kind.as_ref().map(AuditEventKind::as_str),
                     query.outcome.as_ref().map(AuditOutcome::as_str),
+                    // A store read is capped by the same limit, so the in-memory tail can be added
+                    // without the result growing past what the caller asked for.
                     limit,
                 )
                 .await
                 .unwrap_or_default();
 
-            let mut events = Vec::with_capacity(rows.len());
             for row in rows {
                 if let Ok(event) = serde_json::from_value::<AuditEvent>(row) {
                     events.push(event);
                 }
             }
-            return CoreAuditSnapshot { events };
         }
 
-        let mut events = self.recent_audit_events();
-        events.reverse();
-        let filtered = events
+        let mut in_memory: Vec<AuditEvent> = self
+            .recent_audit_events()
             .into_iter()
             .filter(|event| {
                 query
@@ -606,9 +613,20 @@ impl CoreState {
                     .map(|v| &event.outcome == v)
                     .unwrap_or(true)
             })
-            .take(limit)
             .collect();
-        CoreAuditSnapshot { events: filtered }
+
+        // Oldest-to-newest in memory; reverse for the newest-first order callers expect.
+        in_memory.reverse();
+        events.extend(in_memory);
+
+        // An event can be in both places once its write lands; keep one copy of each.
+        let mut seen = std::collections::HashSet::new();
+        events.retain(|event| seen.insert(event.id.clone()));
+
+        events.sort_by_key(|event| std::cmp::Reverse(event.timestamp_ms));
+        events.truncate(limit);
+
+        CoreAuditSnapshot { events }
     }
 
     pub async fn get_flow(&self, id: String) -> Option<Flow> {
@@ -1516,7 +1534,7 @@ impl CoreState {
             .await;
     }
 
-    fn record_audit_event(&self, event: AuditEvent) {
+    pub(crate) fn record_audit_event(&self, event: AuditEvent) {
         const AUDIT_HISTORY_LIMIT: usize = 200;
         self.audit_events_total.fetch_add(1, Ordering::Relaxed);
         if event.outcome == AuditOutcome::Failed {
@@ -2751,6 +2769,47 @@ mod tests {
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.events[0].target, "second");
         assert_eq!(snapshot.events[0].details["index"], 2);
+    }
+
+    /// Persistence is asynchronous, so an event recorded a moment ago may not be in the store yet.
+    /// A query that reads only the store therefore answers "nothing happened" to the caller that
+    /// just caused it — which is exactly what a fresh lifecycle change looks like.
+    #[tokio::test]
+    async fn a_persisted_state_still_reports_an_event_recorded_a_moment_ago() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("audit.db").display()
+        );
+        let state = CoreState::new(Some(db)).await;
+        assert!(state.store.is_some(), "this test needs the store path");
+
+        state.record_audit_event(AuditEvent::new(
+            AuditActor::Cli,
+            AuditEventKind::ProxyLifecycleChanged,
+            "proxy:8080",
+            AuditOutcome::Success,
+            json!({ "change": "started", "requested_by": "cli:relay start" }),
+        ));
+
+        let snapshot = state
+            .query_audit_snapshot(CoreAuditQuery {
+                kind: Some(AuditEventKind::ProxyLifecycleChanged),
+                limit: 1,
+                ..Default::default()
+            })
+            .await;
+
+        assert_eq!(
+            snapshot.events.len(),
+            1,
+            "the event must be visible immediately"
+        );
+        assert_eq!(snapshot.events[0].details["change"], "started");
+        assert_eq!(
+            snapshot.events[0].details["requested_by"],
+            "cli:relay start"
+        );
     }
 
     #[tokio::test]
