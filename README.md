@@ -77,9 +77,21 @@ Internal: `relay-core-api`, `relay-core-lib`, `relay-core-storage`, `relay-core-
 
 ---
 
-## MCP for AI agents
+## Daemon, CLI and MCP
 
-Connect Cursor, Claude Desktop, or other MCP hosts to live traffic:
+One long-lived daemon owns the engine and the proxy lifecycle; every surface is a client of it.
+
+```bash
+relay-core start      # start the daemon and the proxy (idempotent)
+relay-core status     # daemon, proxy port, MCP endpoint
+relay-core stop       # stop the proxy, keep the daemon, history and rules
+relay-core shutdown   # stop everything
+relay-core run --ui   # the same daemon in the foreground, with the TUI attached as a client
+relay-core config init   # write a commented config file for ports, idle timeout, MCP
+```
+
+Connect Cursor, Claude Desktop, or other MCP hosts — the bridge attaches to that daemon instead of
+starting an engine of its own:
 
 ```json
 {
@@ -92,7 +104,10 @@ Connect Cursor, Claude Desktop, or other MCP hosts to live traffic:
 }
 ```
 
-Example tools: `search_flows`, `get_flow`, `set_rule`, `export_har`, `replay_flow`.  
+Tools include `proxy_status` / `proxy_start` / `proxy_stop` alongside `search_flows`, `get_flow`,
+`set_rule`, `export_har` and `replay_flow`. Traffic tools report `proxy_not_running` rather than an
+empty list when nothing is being captured.
+
 Docs: [MCP guide](https://relaycore.dev/en/docs/mcp) · npm: [`@relay-core/mcp`](https://www.npmjs.com/package/@relay-core/mcp)
 
 ---

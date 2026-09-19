@@ -77,9 +77,21 @@ relay-core-cli run --ui
 
 ---
 
-## AI Agent（MCP）
+## 守护进程、CLI 与 MCP
 
-在 Cursor、Claude Desktop 等 MCP 宿主中连接实时流量：
+一个常驻守护进程独占引擎与代理生命周期，其他所有界面都是它的客户端。
+
+```bash
+relay-core start      # 启动守护进程与代理（幂等）
+relay-core status     # 查看守护进程、代理端口与 MCP 端点
+relay-core stop       # 只停代理，守护进程、历史与规则保留
+relay-core shutdown   # 全部停止
+relay-core run --ui   # 同一个守护进程前台运行，TUI 作为客户端接上去
+relay-core config init   # 生成带注释的配置文件（端口、空闲超时、MCP）
+```
+
+在 Cursor、Claude Desktop 等 MCP 宿主中连接实时流量 —— 桥只 attach 到该守护进程，
+不再自己拉起一个引擎：
 
 ```json
 {
@@ -92,7 +104,10 @@ relay-core-cli run --ui
 }
 ```
 
-常用工具：`search_flows`、`get_flow`、`set_rule`、`export_har`、`replay_flow`。  
+除 `search_flows`、`get_flow`、`set_rule`、`export_har`、`replay_flow` 外，新增
+`proxy_status` / `proxy_start` / `proxy_stop`。当没有任何代理在运行时，流量类工具返回
+`proxy_not_running` 结构化错误，而不是一个会被误读为「没有流量」的空列表。
+
 文档：[MCP 指南](https://relaycore.dev/docs/mcp) · npm：[`@relay-core/mcp`](https://www.npmjs.com/package/@relay-core/mcp)
 
 ---

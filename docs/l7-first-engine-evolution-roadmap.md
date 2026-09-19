@@ -759,6 +759,22 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 - trace/Flow/日志联合诊断
 - Agent 可订阅的高层语义事件
 
+### 已交付：守护进程控制面（decision 0007）
+
+MCP/CLI 不再"连接即拉起引擎"，而是由**全局单例守护进程**独占引擎与代理生命周期：
+
+- `relay start / stop / restart / status / shutdown` 是一等命令，代理启停幂等且有明确错误。
+- `@relay-core/mcp` 默认只做 stdio → daemon 的**协议桥**，不持有引擎；工具语义只有一份实现。
+- MCP 工具补齐 `proxy_status` / `proxy_start` / `proxy_stop`；无代理且无历史时返回结构化
+  `proxy_not_running`，而不是会被误读为"没有流量"的空列表。
+- 工具契约 v2：全部工具返回 `structuredContent` + 同形状文本回退，写操作带 `ok`，
+  全部工具带只读/破坏性/幂等注解，稳定形状处声明 `outputSchema`。
+- 代理**默认不会自动关闭**；`--idle-timeout` 才启用超时关闭。
+- `relay run` 收敛为**前台守护进程**（不再是第二份引擎），legacy :8081 控制面删除。
+- 端口、MCP 开关、空闲超时等进 `$RELAY_DATA_DIR/config.toml`（flag > env > config > 默认）。
+
+详见 [`decisions/0007-daemon-control-plane.md`](./decisions/0007-daemon-control-plane.md)。
+
 ### 原则
 
 AI/MCP 是 RelayCore 的差异化 adapter，但不能替代底层协议正确性。先保证结构化事实可信，再增加自动分析。

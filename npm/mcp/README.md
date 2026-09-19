@@ -2,43 +2,35 @@
 
 [MCP](https://modelcontextprotocol.io) server for **[RelayCore](https://relaycore.dev)** — connect AI agents (OpenCode, Cursor, Claude Desktop, …) to live HTTP(S) traffic.
 
-## Two ways to run
+## How it works
 
-### A. Shared server (recommended)
+One long-lived **daemon** owns the engine: the proxy, the captured flows, the rules and the intercept
+queue. This package is a **bridge** to that daemon, not a second engine.
 
-One long-running process owns the proxy port and all captured state; every MCP client connects to the same stream of flows. Your client proxy settings stay fixed, and multiple agent windows see the same data.
+```
+MCP client ──stdio──▶ @relay-core/mcp (bridge) ──HTTP──▶ daemon ──▶ proxy ──▶ traffic
+                                                          ▲
+relay start / relay stop ─────────────────────────────────┘
+```
+
+Consequences worth knowing:
+
+- Connecting an MCP client **never starts a proxy** and never starts a second flow history. Every
+  client (CLI, bridge, Web UI, editor) reads and writes the same state.
+- The proxy is started and stopped by an explicit command: `relay start` / `relay stop`, or the
+  `proxy_start` / `proxy_stop` tools. It is **not** stopped automatically — there is no idle timeout
+  unless the daemon was started with `--idle-timeout`.
+- When no daemon is running, the bridge starts one (detached, so it outlives the editor window) and
+  attaches. Set `RELAY_MCP_NO_AUTOSTART=1` to require an explicit `relay start` instead.
+
+## Setup
 
 ```bash
-relay-core-probe --transport=sse
-# optional persistence so history survives restarts:
-relay-core-probe --transport=sse \
-  --db-url="sqlite:///$HOME/.local/share/relay-core/probe.db?mode=rwc"
+npx @relay-core/cli ca generate && npx @relay-core/cli ca install   # HTTPS interception, once
+npx @relay-core/cli start                                          # daemon + proxy
 ```
 
-Then point each MCP client at `http://127.0.0.1:18083/mcp`. OpenCode example (`~/.config/opencode/opencode.jsonc`):
-
-```jsonc
-"mcp": {
-  "relay-core": {
-    "type": "remote",
-    "url": "http://127.0.0.1:18083/mcp",
-    "enabled": true
-  }
-}
-```
-
-| Flag | Env | Default | Purpose |
-|------|-----|---------|---------|
-| `--transport=` | `RELAY_PROBE_TRANSPORT` | `stdio` | `stdio` or `sse` (streamable HTTP) |
-| `--probe-port=` | `RELAY_PROBE_PORT` | `18083` | MCP listen port (sse mode) |
-| `--probe-bind=` | `RELAY_PROBE_BIND` | `127.0.0.1` | MCP listen address |
-| `--port=` | `RELAY_PORT` | `8080` | Proxy listen port |
-| `--db-url=` | `RELAY_DB_URL` | in-memory | `sqlite:///path.db?mode=rwc` for persistence |
-| `--ca-cert=` / `--ca-key=` | `RELAY_CA_CERT` / `RELAY_CA_KEY` | data dir | CA paths |
-
-### B. Per-session stdio
-
-The client spawns one process per session. Simple, but each session is a separate proxy and a separate flow history — fine for a single window, confusing with several.
+Then point your MCP client at the bridge:
 
 ```json
 {
@@ -51,26 +43,58 @@ The client spawns one process per session. Simple, but each session is a separat
 }
 ```
 
-Requires **Node** ≥ 18. Binaries install via `@relay-core/binaries-*` (same as the CLI package).
+Whether the daemon is already running is irrelevant — the bridge attaches to it, or starts it.
 
-## HTTPS prerequisite
+### Clients that speak HTTP MCP
 
-Install and trust the RelayCore CA once:
+The daemon serves the same MCP endpoint over streamable HTTP, so an HTTP-capable client can skip the
+bridge entirely. `relay status` prints the URL:
 
-```bash
-npx @relay-core/cli ca generate && npx @relay-core/cli ca install
+```jsonc
+"mcp": {
+  "relay-core": {
+    "type": "remote",
+    "url": "http://127.0.0.1:18083/mcp",   // port from `relay status`
+    "enabled": true
+  }
+}
 ```
 
-## Tools (overview)
+## Tools
 
-| Area | Examples |
-|------|----------|
+| Area | Tools |
+|------|-------|
+| Lifecycle | `proxy_status`, `proxy_start`, `proxy_stop` |
 | Observe | `search_flows`, `get_flow`, `get_metrics` |
-| Control | `set_intercept`, `resume_flow`, `set_rule` |
+| Control | `set_intercept`, `get_pending_intercepts`, `resume_flow`, `set_rule`, `delete_rule`, `mock_url` |
+| Policy / scripts | `get_policy`, `update_policy`, `patch_policy`, `set_script` |
 | Analyze | `export_har`, `replay_flow` |
-| Policy / scripts | `get_policy`, `set_script`, `mock_url` |
 
-Details: [relaycore.dev](https://relaycore.dev) · [GitHub](https://github.com/relaycraft/relay-core)
+Call `proxy_status` first when traffic tools return nothing: it separates "no traffic yet" from
+"nothing is being captured". Traffic tools answer with a structured `proxy_not_running` error rather
+than an empty list when no proxy is running.
+
+Every tool returns `structuredContent` (typed fields, with a declared output schema where the shape
+is stable) and the same JSON as text for older clients. Every tool also carries
+`readOnlyHint` / `destructiveHint` / `idempotentHint` annotations, so a client can pre-approve the
+observation tools without pre-approving `proxy_stop`. Tool contract version: **2**.
+
+## Flags and environment
+
+| Flag | Env | Default | Purpose |
+|------|-----|---------|---------|
+| — | `RELAY_DATA_DIR` | `~/.relay-core` | Which daemon to attach to |
+| `--mcp-url=<url>` | `RELAY_MCP_URL` | discovered | Skip discovery and use this MCP endpoint |
+| `--token=<token>` | `RELAY_MCP_TOKEN` | from manifest | Bearer token for the endpoint above |
+| `--no-autostart` | `RELAY_MCP_NO_AUTOSTART=1` | from config | Refuse to start a daemon (`[client] autostart_daemon = false` in `$RELAY_DATA_DIR/config.toml` is the durable way) |
+
+There is no embedded mode: this package never owns an engine. Point it at a daemon (discovered or
+with `--mcp-url`) and it will always show you the same traffic the CLI and the Web UI see.
+
+## Requirements
+
+Requires **Node** ≥ 18. Binaries install via `@relay-core/binaries-*` (same as the CLI package). The
+bridge looks for the `relay-core-cli` binary next to itself, then on `PATH`.
 
 ## License
 
