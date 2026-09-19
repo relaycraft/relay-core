@@ -292,9 +292,17 @@ pub async fn shutdown(json: bool) -> Result<()> {
 
     client.shutdown().await?;
 
+    // All three conditions, because any one alone is a half-truth: a daemon that stopped answering
+    // but still holds its registry, or one that gave up the registry while its proxy drains and its
+    // data-directory lock is still held — in which case an immediate `relay start` would be refused
+    // by a daemon that is already gone. A caller that reads "stopped" must not have to poll.
     let deadline = Instant::now() + DAEMON_STOP_TIMEOUT;
-    while Instant::now() < deadline {
-        if !client.health().await {
+    loop {
+        let answering = client.health().await;
+        let registered = relay_core_http::control::manifest_path(&data_dir).exists();
+        let owned = relay_core_http::control::daemon_lock_path(&data_dir).exists();
+
+        if !answering && !registered && !owned {
             if json {
                 println!("{}", serde_json::json!({ "daemon": "stopped" }));
             } else {
@@ -302,14 +310,28 @@ pub async fn shutdown(json: bool) -> Result<()> {
             }
             return Ok(());
         }
+
+        if Instant::now() >= deadline {
+            let mut still = Vec::new();
+            if answering {
+                still.push("answering");
+            }
+            if registered {
+                still.push("registered in the data directory");
+            }
+            if owned {
+                still.push("holding the data-directory lock");
+            }
+            bail!(
+                "the daemon accepted the shutdown request but is still {} after {}s; see {}",
+                still.join(" and "),
+                DAEMON_STOP_TIMEOUT.as_secs(),
+                daemon::describe_log(&data_dir)
+            );
+        }
+
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-
-    bail!(
-        "the daemon accepted the shutdown request but is still answering after {}s; see {}",
-        DAEMON_STOP_TIMEOUT.as_secs(),
-        daemon::describe_log(&data_dir)
-    )
 }
 
 /// Stop the proxy, telling the daemon who asked.

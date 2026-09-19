@@ -363,12 +363,16 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
             tracing::error!(target: "relay_core_daemon", error = %error, "control API stopped");
         }
 
+        // The manifest means "this daemon is reachable", and it stopped being true the moment
+        // serving ended. Removing it after the slower work below would leave a client that saw the
+        // API go quiet still finding a manifest that looks like a running daemon.
+        remove_manifest(&serving_data_dir);
+
         let _ = tokio::time::timeout(
             EXIT_PROXY_STOP_TIMEOUT,
             controller.proxy_stop(runtime_requester("daemon shutdown")),
         )
         .await;
-        remove_manifest(&serving_data_dir);
         tracing::info!(target: "relay_core_daemon", "daemon stopped");
         drop(lock);
     });

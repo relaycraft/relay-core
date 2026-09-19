@@ -274,6 +274,9 @@ fn shutdown_cleans_up_the_registry() {
         stderr(&shutdown)
     );
 
+    // "Shutdown finished" has to mean the daemon is gone: no manifest that looks like a running
+    // daemon, and no lock that would refuse the next `relay start`. The command waits for all of
+    // it, so this cannot be a race.
     assert!(
         !harness.data_dir().join("daemon.json").exists(),
         "a stopped daemon must not leave a manifest that looks like a running one"
@@ -282,6 +285,10 @@ fn shutdown_cleans_up_the_registry() {
         !harness.data_dir().join("daemon.lock").exists(),
         "a released lock must not be left behind"
     );
+
+    // A new daemon must start immediately afterwards rather than being refused by the old one.
+    let restarted = harness.start();
+    assert_eq!(restarted["proxy"]["outcome"], "started");
 }
 
 #[test]
