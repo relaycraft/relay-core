@@ -127,6 +127,8 @@ jobs:
             exit 0
           fi
           npm publish --access public
+        # The check is POSIX shell; a Windows runner would otherwise run it under PowerShell.
+        shell: bash
         working-directory: npm/packages/binaries-${{ matrix.npm_platform }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
