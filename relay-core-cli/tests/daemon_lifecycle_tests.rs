@@ -16,19 +16,37 @@ const CLI: &str = env!("CARGO_BIN_EXE_relay-core-cli");
 /// A data directory plus the guarantee that its daemon is stopped when the test ends.
 struct Harness {
     data_dir: tempfile::TempDir,
-    proxy_port: u16,
+    /// Replaceable: a port can be taken between the moment one is found free and the moment the
+    /// daemon binds it, so the harness re-picks rather than reporting an environment collision as a
+    /// product failure.
+    proxy_port: std::cell::Cell<u16>,
+    api_port: std::cell::Cell<u16>,
 }
 
 impl Harness {
     fn new() -> Self {
         Self {
             data_dir: tempfile::tempdir().expect("temp data dir"),
-            proxy_port: free_port(),
+            proxy_port: std::cell::Cell::new(unique_port()),
+            api_port: std::cell::Cell::new(unique_port()),
         }
     }
 
     fn data_dir(&self) -> &Path {
         self.data_dir.path()
+    }
+
+    fn proxy_port(&self) -> u16 {
+        self.proxy_port.get()
+    }
+
+    fn api_port(&self) -> u16 {
+        self.api_port.get()
+    }
+
+    fn repick_ports(&self) {
+        self.proxy_port.set(unique_port());
+        self.api_port.set(unique_port());
     }
 
     fn relay(&self, args: &[&str]) -> Output {
@@ -57,16 +75,51 @@ impl Harness {
     /// The control port is left to the OS (`--api-port 0`): tests run in parallel, and a port that
     /// was free when it was picked can be taken by a sibling test's daemon a moment later — which
     /// turns into a client talking to the wrong daemon rather than a clean failure.
+    /// Run `relay start` with arguments of the caller's choosing, retrying after a collision.
+    ///
+    /// A port that was free when it was chosen can be taken by the time the daemon binds it — by a
+    /// sibling test, a daemon leaked from an earlier failing run, or a lingering socket. A suite
+    /// that spawns real processes has to absorb that instead of reporting it as a product failure.
+    ///
+    /// Any daemon is shut down between attempts: one left alive by a failed attempt keeps the ports
+    /// it was given, so attaching to it would quietly test something other than intended.
+    fn start_with_retry<F>(&self, mut build_args: F) -> serde_json::Value
+    where
+        F: FnMut(&Harness) -> Vec<String>,
+    {
+        for attempt in 0..3 {
+            let args = build_args(self);
+            let mut argv: Vec<&str> = vec!["start"];
+            argv.extend(args.iter().map(String::as_str));
+            argv.push("--json");
+
+            let output = self.relay(&argv);
+            if output.status.success() {
+                return serde_json::from_slice(&output.stdout).expect("start --json output");
+            }
+
+            let message = stderr(&output);
+            if attempt < 2 && message.contains("Address already in use") {
+                let _ = self.relay(&["shutdown"]);
+                self.repick_ports();
+                continue;
+            }
+            panic!("`relay start {}` failed: {message}", args.join(" "));
+        }
+        unreachable!("the loop returns or panics")
+    }
+
+    /// Start the daemon and the proxy, waiting for both to be up.
     fn start(&self) -> serde_json::Value {
-        self.relay_json(&[
-            "start",
-            "--listen",
-            &format!("127.0.0.1:{}", self.proxy_port),
-            "--api-port",
-            "0",
-            "--no-mcp",
-            "--json",
-        ])
+        self.start_with_retry(|harness| {
+            vec![
+                "--listen".to_string(),
+                format!("127.0.0.1:{}", harness.proxy_port()),
+                "--api-port".to_string(),
+                harness.api_port().to_string(),
+                "--no-mcp".to_string(),
+            ]
+        })
     }
 }
 
@@ -83,6 +136,46 @@ fn free_port() -> u16 {
     let port = listener.local_addr().expect("addr").port();
     drop(listener);
     port
+}
+
+/// A port no other test in this process will be given.
+///
+/// `free_port()` alone is not enough: it binds, reads the port and closes, and the OS may then hand
+/// the same port to the next caller — two tests race for it and the loser's daemon fails to bind,
+/// which looks like a product bug. Tests take ports from a shared counter, and each run of the
+/// binary uses a different band so a daemon leaked by an earlier failing run cannot be in the way.
+/// The range sits below both ephemeral ranges in play (Linux allocates from 32768, macOS from
+/// 49152), so an outgoing connection cannot take a port this suite is about to bind.
+fn unique_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+
+    let band = (std::process::id() % 40) as u16;
+    let base = 20_000 + band * 100;
+
+    for _ in 0..500 {
+        let port = base + NEXT.fetch_add(1, Ordering::Relaxed);
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    free_port()
+}
+
+/// The port the daemon actually serves MCP on, from its own status output.
+///
+/// A requested MCP port that is busy is not an error by design — the daemon serves an ephemeral one
+/// rather than refusing to start — so the contract is "an endpoint is served", not "the number I
+/// asked for was free".
+fn served_mcp_port(started: &serde_json::Value) -> u16 {
+    let url = started["mcp_url"]
+        .as_str()
+        .expect("the daemon must report an MCP endpoint");
+    url.trim_start_matches("http://127.0.0.1:")
+        .trim_end_matches("/mcp")
+        .parse()
+        .expect("mcp_url must carry a port")
 }
 
 fn run_in(data_dir: &Path, args: &[&str]) -> Output {
@@ -117,17 +210,17 @@ fn start_status_stop_shutdown_round_trip() {
     let started = harness.start();
     assert_eq!(started["daemon"], "running");
     assert_eq!(started["proxy"]["outcome"], "started");
-    assert_eq!(started["proxy"]["port"], harness.proxy_port);
+    assert_eq!(started["proxy"]["port"], harness.proxy_port());
     assert!(
-        wait_for_listener(harness.proxy_port, Duration::from_secs(5)),
+        wait_for_listener(harness.proxy_port(), Duration::from_secs(5)),
         "the proxy must actually be listening on {}",
-        harness.proxy_port
+        harness.proxy_port()
     );
 
     let status = harness.relay_json(&["status", "--json"]);
     assert_eq!(status["daemon"]["status"], "running");
     assert_eq!(status["proxy"]["phase"], "running");
-    assert_eq!(status["proxy"]["port"], harness.proxy_port);
+    assert_eq!(status["proxy"]["port"], harness.proxy_port());
 
     // `stop` stops the proxy and keeps the daemon: history and rules outlive a client session.
     let stopped = harness.relay_json(&["stop", "--json"]);
@@ -138,7 +231,7 @@ fn start_status_stop_shutdown_round_trip() {
     assert_eq!(status["proxy"]["phase"], "stopped");
     assert_eq!(status["daemon"]["status"], "running");
     assert!(
-        !wait_for_listener(harness.proxy_port, Duration::from_millis(300)),
+        !wait_for_listener(harness.proxy_port(), Duration::from_millis(300)),
         "a stopped proxy must stop listening"
     );
 
@@ -171,7 +264,7 @@ fn starting_twice_keeps_one_daemon() {
     // A second start is the normal case: an agent connects while the daemon already runs.
     let second_start = harness.start();
     assert_eq!(second_start["proxy"]["outcome"], "already_running");
-    assert_eq!(second_start["proxy"]["port"], harness.proxy_port);
+    assert_eq!(second_start["proxy"]["port"], harness.proxy_port());
 
     let second = harness.relay_json(&["status", "--json"]);
     assert_eq!(
@@ -191,7 +284,7 @@ fn concurrent_starts_converge_on_one_daemon() {
             .args([
                 "start",
                 "--listen",
-                &format!("127.0.0.1:{}", harness.proxy_port),
+                &format!("127.0.0.1:{}", harness.proxy_port()),
                 "--api-port",
                 "0",
                 "--no-mcp",
@@ -224,7 +317,7 @@ fn concurrent_starts_converge_on_one_daemon() {
         stderr(&first),
         stderr(&second)
     );
-    assert_eq!(status["proxy"]["port"], harness.proxy_port);
+    assert_eq!(status["proxy"]["port"], harness.proxy_port());
 }
 
 #[test]
@@ -294,28 +387,28 @@ fn shutdown_cleans_up_the_registry() {
 #[test]
 fn the_daemon_serves_the_mcp_endpoint() {
     let harness = Harness::new();
-    let mcp_port = free_port();
+    let mut requested_mcp_port = unique_port();
 
-    harness.relay_json(&[
-        "start",
-        "--listen",
-        &format!("127.0.0.1:{}", harness.proxy_port),
-        "--api-port",
-        "0",
-        "--mcp-port",
-        &mcp_port.to_string(),
-        "--json",
-    ]);
+    harness.start_with_retry(|harness| {
+        requested_mcp_port = unique_port();
+        vec![
+            "--listen".to_string(),
+            format!("127.0.0.1:{}", harness.proxy_port()),
+            "--api-port".to_string(),
+            harness.api_port().to_string(),
+            "--mcp-port".to_string(),
+            requested_mcp_port.to_string(),
+        ]
+    });
 
-    assert!(
-        wait_for_listener(mcp_port, Duration::from_secs(5)),
-        "the daemon must serve the MCP endpoint on {mcp_port}"
-    );
-
+    // The start output reports the control URL; the MCP endpoint is part of the daemon's status.
+    // A requested MCP port that is busy is not fatal by design (the daemon serves an ephemeral one
+    // instead), so the assertion reads the port the daemon reports.
     let status = harness.relay_json(&["status", "--json"]);
-    assert_eq!(
-        status["mcp_url"],
-        format!("http://127.0.0.1:{mcp_port}/mcp")
+    let served = served_mcp_port(&status);
+    assert!(
+        wait_for_listener(served, Duration::from_secs(5)),
+        "the daemon reported MCP on {served} but nothing answers there (asked for {requested_mcp_port})"
     );
 }
 
@@ -330,7 +423,7 @@ fn a_foreground_run_is_discoverable_and_stoppable() {
         .args([
             "run",
             "--listen",
-            &format!("127.0.0.1:{}", harness.proxy_port),
+            &format!("127.0.0.1:{}", harness.proxy_port()),
             "--api-port",
             "0",
             "--mcp-port",
@@ -359,13 +452,13 @@ fn a_foreground_run_is_discoverable_and_stoppable() {
 
     assert_eq!(status["daemon"]["status"], "running");
     assert_eq!(status["proxy"]["phase"], "running");
-    assert_eq!(status["proxy"]["port"], harness.proxy_port);
+    assert_eq!(status["proxy"]["port"], harness.proxy_port());
     assert_eq!(
         status["mcp_url"],
         format!("http://127.0.0.1:{mcp_port}/mcp")
     );
     assert!(wait_for_listener(
-        harness.proxy_port,
+        harness.proxy_port(),
         Duration::from_secs(5)
     ));
 
@@ -409,48 +502,80 @@ fn wait_for_status(harness: &Harness, timeout: Duration) -> Option<serde_json::V
 #[test]
 fn the_config_file_supplies_ports() {
     let harness = Harness::new();
-    let configured_api_port = free_port();
-    std::fs::write(
-        harness.data_dir().join("config.toml"),
-        format!(
-            "[daemon]\napi_port = {configured_api_port}\nmcp = false\n\n[proxy]\nport = {}\n",
-            harness.proxy_port
-        ),
-    )
-    .expect("write config");
 
-    let started = harness.relay_json(&["start", "--json"]);
-    assert_eq!(started["proxy"]["port"], harness.proxy_port);
+    // The ports come from the file, so a retry rewrites it — and because a daemon that is already
+    // running keeps the port it was given, a collision restarts rather than attaches.
+    let started = {
+        let mut started = None;
+        for attempt in 0..3 {
+            std::fs::write(
+                harness.data_dir().join("config.toml"),
+                format!(
+                    "[daemon]\napi_port = {}\nmcp = false\n\n[proxy]\nport = {}\n",
+                    harness.api_port(),
+                    harness.proxy_port()
+                ),
+            )
+            .expect("write config");
+
+            let output = harness.relay(&["start", "--json"]);
+            let value = output.status.success().then(|| {
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("json")
+            });
+
+            let honoured = value.as_ref().is_some_and(|value| {
+                value["control_url"] == format!("http://127.0.0.1:{}", harness.api_port())
+            });
+
+            if honoured {
+                started = value;
+                break;
+            }
+
+            if attempt == 2 {
+                panic!(
+                    "a configured API port was not honoured after 3 attempts; last output: {}",
+                    stderr(&output)
+                );
+            }
+            let _ = harness.relay(&["shutdown"]);
+            harness.repick_ports();
+        }
+        started.expect("a start attempt must succeed")
+    };
+
+    assert_eq!(started["proxy"]["port"], harness.proxy_port());
     assert_eq!(
         started["control_url"],
-        format!("http://127.0.0.1:{configured_api_port}")
+        format!("http://127.0.0.1:{}", harness.api_port())
     );
 
     let status = harness.relay_json(&["status", "--json"]);
     assert_eq!(status["mcp_url"], serde_json::Value::Null, "mcp = false");
-    assert_eq!(status["proxy"]["port"], harness.proxy_port);
+    assert_eq!(status["proxy"]["port"], harness.proxy_port());
 }
 
 /// A flag still wins over the file, so a one-off override never requires editing it.
 #[test]
 fn a_flag_overrides_the_config_file() {
     let harness = Harness::new();
-    let other_port = free_port();
+    let mut other_port = unique_port();
     std::fs::write(
         harness.data_dir().join("config.toml"),
-        format!("[proxy]\nport = {}\n", harness.proxy_port),
+        format!("[proxy]\nport = {}\n", harness.proxy_port()),
     )
     .expect("write config");
 
-    let started = harness.relay_json(&[
-        "start",
-        "--listen",
-        &format!("127.0.0.1:{other_port}"),
-        "--api-port",
-        "0",
-        "--no-mcp",
-        "--json",
-    ]);
+    let started = harness.start_with_retry(|_| {
+        other_port = unique_port();
+        vec![
+            "--listen".to_string(),
+            format!("127.0.0.1:{other_port}"),
+            "--api-port".to_string(),
+            "0".to_string(),
+            "--no-mcp".to_string(),
+        ]
+    });
 
     assert_eq!(started["proxy"]["port"], other_port);
 }

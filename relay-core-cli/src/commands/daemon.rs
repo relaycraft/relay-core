@@ -314,7 +314,8 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
     };
     write_manifest(&data_dir, &manifest).context("publishing the daemon manifest")?;
 
-    spawn_manifest_updater(data_dir.clone(), controller.clone(), manifest.clone());
+    let manifest_updater =
+        spawn_manifest_updater(data_dir.clone(), controller.clone(), manifest.clone());
     spawn_signal_handler(shutdown.clone());
 
     tracing::info!(
@@ -366,6 +367,12 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
         // The manifest means "this daemon is reachable", and it stopped being true the moment
         // serving ended. Removing it after the slower work below would leave a client that saw the
         // API go quiet still finding a manifest that looks like a running daemon.
+        //
+        // The updater is stopped and *awaited* first: it rewrites the manifest on every lifecycle
+        // change, so a stop that merely removes the file can be undone by it a moment later,
+        // stranding a manifest for a daemon that is gone.
+        manifest_updater.abort();
+        let _ = manifest_updater.await;
         remove_manifest(&serving_data_dir);
 
         let _ = tokio::time::timeout(
@@ -785,7 +792,7 @@ fn spawn_manifest_updater(
     data_dir: PathBuf,
     controller: Arc<CoreProxyController>,
     mut manifest: DaemonManifest,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut rx = controller.proxy_lifecycle_watch();
         loop {
@@ -804,7 +811,7 @@ fn spawn_manifest_updater(
                 break;
             }
         }
-    });
+    })
 }
 
 /// Exit on SIGINT/SIGTERM by requesting the graceful shutdown the API also uses.
