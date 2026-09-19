@@ -1,8 +1,10 @@
+pub mod daemon;
 pub mod events;
 pub mod flows;
 pub mod intercepts;
 pub mod metrics;
 pub mod policy;
+pub mod proxy;
 pub mod rules;
 #[cfg(feature = "script")]
 pub mod scripts;

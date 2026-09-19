@@ -15,8 +15,8 @@ use relay_core_runtime::CoreState;
 #[cfg(feature = "script")]
 use relay_core_runtime::services::ScriptService;
 use relay_core_runtime::services::{
-    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService, RuleService,
-    RuntimeStatusService,
+    AuditService, FlowEventHub, FlowReadService, InterceptService, PolicyService,
+    ProxyControlService, RuleService, RuntimeStatusService,
 };
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -73,6 +73,12 @@ pub struct HttpApiContext {
     pub audit: Arc<dyn AuditService>,
     pub policy: Arc<dyn PolicyService>,
     pub status: Arc<dyn RuntimeStatusService>,
+    /// Proxy lifecycle control. `None` for hosts that serve the API without owning a proxy
+    /// lifecycle; those answer the lifecycle routes with `proxy_control_unavailable` instead of
+    /// pretending to have started something.
+    pub proxy: Option<Arc<dyn ProxyControlService>>,
+    /// Notified when a caller asks the host to exit (daemon shutdown).
+    pub shutdown: Option<Arc<tokio::sync::Notify>>,
     #[cfg(feature = "script")]
     pub scripts: Arc<dyn ScriptService>,
 }
@@ -87,9 +93,23 @@ impl HttpApiContext {
             audit: core.clone(),
             policy: core.clone(),
             status: core.clone(),
+            proxy: None,
+            shutdown: None,
             #[cfg(feature = "script")]
             scripts: core.clone(),
         }
+    }
+
+    /// Enable the proxy lifecycle routes for this context.
+    pub fn with_proxy_control(mut self, proxy: Arc<dyn ProxyControlService>) -> Self {
+        self.proxy = Some(proxy);
+        self
+    }
+
+    /// Enable the daemon shutdown route for this context.
+    pub fn with_shutdown_signal(mut self, shutdown: Arc<tokio::sync::Notify>) -> Self {
+        self.shutdown = Some(shutdown);
+        self
     }
 }
 
@@ -97,19 +117,72 @@ impl HttpApiContext {
 pub struct HttpApiServer {
     config: HttpApiConfig,
     state: Arc<CoreState>,
+    proxy: Option<Arc<dyn ProxyControlService>>,
+    shutdown: Option<Arc<tokio::sync::Notify>>,
+    /// Pre-bound listener from [`HttpApiServer::bind`].
+    listener: Option<tokio::net::TcpListener>,
 }
 
 impl HttpApiServer {
     pub fn new(config: HttpApiConfig, state: Arc<CoreState>) -> Self {
-        Self { config, state }
+        Self {
+            config,
+            state,
+            proxy: None,
+            shutdown: None,
+            listener: None,
+        }
+    }
+
+    /// Serve the proxy lifecycle routes. Without this the routes answer `proxy_control_unavailable`.
+    pub fn with_proxy_control(mut self, proxy: Arc<dyn ProxyControlService>) -> Self {
+        self.proxy = Some(proxy);
+        self
+    }
+
+    /// Exit gracefully when `POST /api/v1/daemon/shutdown` is called.
+    pub fn with_shutdown_signal(mut self, shutdown: Arc<tokio::sync::Notify>) -> Self {
+        self.shutdown = Some(shutdown);
+        self
+    }
+
+    /// Bind now and serve later, so the caller can learn the *actual* port before serving.
+    ///
+    /// A daemon needs this: it publishes the port in its manifest, and a client that reads a
+    /// guessed port instead of the bound one would attach to whatever else happens to hold it.
+    /// Binding to port 0 (or falling back to it) makes the real port knowable only this way.
+    pub async fn bind(self) -> std::io::Result<(Self, SocketAddr)> {
+        let listener = tokio::net::TcpListener::bind(self.config.addr).await?;
+        let addr = listener.local_addr()?;
+        Ok((
+            Self {
+                listener: Some(listener),
+                ..self
+            },
+            addr,
+        ))
+    }
+
+    /// The address this server will serve on, if it was pre-bound.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.listener
+            .as_ref()
+            .and_then(|listener| listener.local_addr().ok())
     }
 
     /// Start the server; resolves when the server exits or an error occurs.
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        let ctx = Arc::new(HttpApiContext::new(self.state));
+        let mut ctx = HttpApiContext::new(self.state);
+        ctx.proxy = self.proxy;
+        ctx.shutdown = self.shutdown.clone();
+        let ctx = Arc::new(ctx);
         let config = Arc::new(self.config.clone());
-        let listener = tokio::net::TcpListener::bind(config.addr).await?;
-        info!("relay-core HTTP API listening on {}", config.addr);
+        let listener = match self.listener {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(config.addr).await?,
+        };
+        let bound = listener.local_addr().unwrap_or(config.addr);
+        info!("relay-core HTTP API listening on {}", bound);
 
         if !config.addr.ip().is_loopback() && config.bearer_token.is_none() {
             tracing::warn!(
@@ -121,7 +194,14 @@ impl HttpApiServer {
         }
 
         let app = build_router(ctx, config);
-        axum::serve(listener, app).await?;
+        match self.shutdown {
+            Some(shutdown) => {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { shutdown.notified().await })
+                    .await?;
+            }
+            None => axum::serve(listener, app).await?,
+        }
         Ok(())
     }
 }
@@ -134,7 +214,9 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
         .merge(routes::rules::router(ctx.clone()))
         .merge(routes::intercepts::router(ctx.clone()))
         .merge(routes::events::router(ctx.clone()))
-        .merge(routes::policy::router(ctx.clone()));
+        .merge(routes::policy::router(ctx.clone()))
+        .merge(routes::proxy::router(ctx.clone()))
+        .merge(routes::daemon::router(ctx.clone()));
 
     #[cfg(feature = "script")]
     let router = router.merge(routes::scripts::router(ctx.clone()));
@@ -171,6 +253,39 @@ fn build_router(ctx: Arc<HttpApiContext>, config: Arc<HttpApiConfig>) -> Router 
     router
 }
 
+/// Name of the cookie the Web UI uses to authenticate.
+///
+/// A browser cannot attach an `Authorization` header to an `EventSource`, so the Web UI cannot use
+/// the bearer token for its live stream. It gets the token from the URL fragment the daemon prints
+/// (fragments are never sent to a server, so the token stays out of request logs), stores it in this
+/// cookie, and the cookie rides along on both `fetch` and `EventSource`.
+pub const AUTH_COOKIE_NAME: &str = "relay_core_token";
+
+/// Is this request carrying the token, as a bearer header or as the Web UI cookie?
+fn is_authorized(headers: &axum::http::HeaderMap, expected_token: &str) -> bool {
+    let bearer_ok = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == format!("Bearer {expected_token}"));
+
+    if bearer_ok {
+        return true;
+    }
+
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|cookies| cookie_value(cookies, AUTH_COOKIE_NAME) == Some(expected_token))
+}
+
+/// Read one cookie out of a `Cookie` header.
+fn cookie_value<'a>(cookies: &'a str, name: &str) -> Option<&'a str> {
+    cookies.split(';').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key.trim() == name).then(|| value.trim())
+    })
+}
+
 async fn require_bearer_token(
     State(config): State<Arc<HttpApiConfig>>,
     request: Request<axum::body::Body>,
@@ -184,15 +299,7 @@ async fn require_bearer_token(
         return next.run(request).await;
     };
 
-    let expected_value = format!("Bearer {}", expected_token);
-    let is_authorized = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value == expected_value)
-        .unwrap_or(false);
-
-    if is_authorized {
+    if is_authorized(request.headers(), expected_token) {
         return next.run(request).await;
     }
 
@@ -487,6 +594,52 @@ mod tests {
             .await
             .expect("request should succeed");
         assert_eq!(authorized.status(), StatusCode::OK);
+    }
+
+    /// A browser cannot set headers on an `EventSource`, so the Web UI authenticates with a cookie
+    /// that the same middleware accepts.
+    #[test]
+    fn the_webui_cookie_authorizes_a_request() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("theme=dark; relay_core_token=s3cret; other=1"),
+        );
+
+        assert!(super::is_authorized(&headers, "s3cret"));
+        assert!(
+            !super::is_authorized(&headers, "different"),
+            "a cookie that is merely present is not authorization"
+        );
+    }
+
+    #[test]
+    fn a_bearer_header_still_authorizes_a_request() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer s3cret"),
+        );
+
+        assert!(super::is_authorized(&headers, "s3cret"));
+        assert!(
+            !super::is_authorized(&axum::http::HeaderMap::new(), "s3cret"),
+            "no credential is not authorization"
+        );
+    }
+
+    #[test]
+    fn cookie_values_are_read_by_exact_name() {
+        assert_eq!(
+            super::cookie_value("relay_core_token=a b; x=1", "relay_core_token"),
+            Some("a b")
+        );
+        assert_eq!(
+            super::cookie_value("relay_core_token_extra=1", "relay_core_token"),
+            None,
+            "a name that merely starts the same is a different cookie"
+        );
+        assert_eq!(super::cookie_value("", "relay_core_token"), None);
     }
 
     #[tokio::test]

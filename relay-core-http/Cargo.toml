@@ -26,9 +26,17 @@ regex.workspace = true
 tower-http = { version = "0.6.8", features = ["cors", "trace"] }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+toml = "0.8"
 tracing.workspace = true
 reqwest = { version = "0.13.2", features = ["json"] }
 rust-embed = { version = "8", optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.182"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3.26.0"
+# Starting a real proxy in a route test builds a real CA, which needs a process-level TLS provider.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
