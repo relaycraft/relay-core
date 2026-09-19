@@ -1,16 +1,17 @@
 use super::ToolError;
-use super::{make_tool, ok_json, ok_text, require_str};
+use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_api::modification::FlowModification;
 use relay_core_api::rule::RuleTermination;
 use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::InterceptRuleConfig;
-use rmcp::model::{Content, Tool};
+use rmcp::model::Tool;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn set_intercept_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "set_intercept",
         "Set up a one-shot intercept breakpoint. The next request matching the URL pattern \
          will be paused. Use get_pending_intercepts to see it, resume_flow to release it.",
@@ -29,19 +30,39 @@ pub fn set_intercept_schema() -> Tool {
                 }
             }
         }),
+        false,
+        true,
+    )
+        .with_output(ack_output_schema(json!({
+            "rule_id": { "type": "string" },
+            "url_pattern": { "type": "string" },
+            "phase": { "type": "string" },
+        }))),
     )
 }
 
 pub fn get_pending_intercepts_schema() -> Tool {
-    make_tool(
-        "get_pending_intercepts",
-        "List all flows currently paused waiting for an intercept decision.",
-        json!({ "type": "object", "properties": {} }),
+    tool(
+        ToolSpec::read_only(
+            "get_pending_intercepts",
+            "List all flows currently paused waiting for an intercept decision.",
+            json!({ "type": "object", "properties": {} }),
+        )
+        .with_output(json!({
+            "type": "object",
+            "properties": {
+                "pending_count": { "type": "integer" },
+                "ws_pending_count": { "type": "integer" },
+                "items": { "type": "array", "items": { "type": "object" } }
+            },
+            "required": ["pending_count", "ws_pending_count"],
+        })),
     )
 }
 
 pub fn resume_flow_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "resume_flow",
         "Resume a paused (intercepted) flow. Optionally apply modifications before releasing.",
         json!({
@@ -67,13 +88,17 @@ pub fn resume_flow_schema() -> Tool {
                 "message_content":  { "type": "string" }
             }
         }),
+        false,
+        false,
+    )
+        .with_output(ack_output_schema(json!({
+            "key": { "type": "string" },
+            "action": { "type": "string" },
+        }))),
     )
 }
 
-pub async fn set_intercept(
-    ctx: &Arc<ProbeContext>,
-    args: Value,
-) -> Result<Vec<Content>, ToolError> {
+pub async fn set_intercept(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let phase = args
         .get("phase")
@@ -104,17 +129,24 @@ pub async fn set_intercept(
             },
         )
         .await?;
-    ok_text(format!(
-        "Intercept breakpoint set (rule_id: {}). Waiting for matching request…",
-        rule_id
-    ))
+    ok_ack(
+        format!(
+            "Intercept breakpoint set (rule_id: {}). Waiting for a matching request.",
+            rule_id
+        ),
+        json!({
+            "rule_id": rule_id,
+            "url_pattern": url_pattern,
+            "phase": phase,
+        }),
+    )
 }
 
-pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
+pub async fn get_pending_intercepts(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
     ok_json(&ctx.intercepts.intercept_snapshot().await)
 }
 
-pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let key = require_str(&args, "key")?.to_string();
     let action = args
         .get("action")
@@ -126,7 +158,10 @@ pub async fn resume_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
     ctx.intercepts
         .resolve_intercept_with_modifications_from(AuditActor::Probe, key.clone(), &action, mods)
         .await?;
-    ok_text(format!("Flow {} resumed with action '{}'", key, action))
+    ok_ack(
+        format!("Flow {} resumed with action '{}'", key, action),
+        json!({ "key": key, "action": action }),
+    )
 }
 
 #[cfg(test)]
@@ -140,17 +175,17 @@ mod tests {
     async fn pending_intercepts_tool_returns_shared_snapshot_shape() {
         let state = Arc::new(CoreState::new(None).await);
         let ctx = Arc::new(ProbeContext::new(state));
-        let contents = get_pending_intercepts(&ctx)
+        let outcome = get_pending_intercepts(&ctx)
             .await
             .expect("tool should succeed");
 
-        let serialized = serde_json::to_value(&contents[0]).expect("content should serialize");
-        let text = serialized["text"]
-            .as_str()
-            .expect("tool content should contain text");
-        let json: serde_json::Value =
-            serde_json::from_str(text).expect("tool output should be valid json");
-        assert_eq!(json["pending_count"], 0);
-        assert_eq!(json["ws_pending_count"], 0);
+        assert_eq!(outcome.structured["pending_count"], 0);
+        assert_eq!(outcome.structured["ws_pending_count"], 0);
+
+        // The text half is the serialized structured half, so a client that only reads text sees
+        // exactly the same facts.
+        let from_text: serde_json::Value =
+            serde_json::from_str(&outcome.text).expect("text fallback should be valid json");
+        assert_eq!(from_text, outcome.structured);
     }
 }

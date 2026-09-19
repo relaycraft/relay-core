@@ -1,16 +1,17 @@
 use super::ToolError;
-use super::{make_tool, ok_json, ok_text, require_str};
+use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
 use relay_core_api::rule::Rule;
 use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::MockResponseRuleConfig;
-use rmcp::model::{Content, Tool};
+use rmcp::model::Tool;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn set_rule_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "set_rule",
         "Add or replace a traffic rule. Accepts the full Rule JSON object. \
          If a rule with the same ID already exists, it is replaced.",
@@ -24,25 +25,39 @@ pub fn set_rule_schema() -> Tool {
                 }
             }
         }),
+        false,
+        true,
+    )
+        .with_output(ack_output_schema(json!({
+            "rule_id": { "type": "string" },
+        }))),
     )
 }
 
 pub fn delete_rule_schema() -> Tool {
-    make_tool(
-        "delete_rule",
-        "Delete a rule by ID.",
-        json!({
-            "type": "object",
-            "required": ["id"],
-            "properties": {
-                "id": { "type": "string", "description": "Rule ID to delete" }
-            }
-        }),
+    tool(
+        ToolSpec::write(
+            "delete_rule",
+            "Delete a rule by ID.",
+            json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string", "description": "Rule ID to delete" }
+                }
+            }),
+            true,
+            true,
+        )
+        .with_output(ack_output_schema(json!({
+            "rule_id": { "type": "string" },
+        }))),
     )
 }
 
 pub fn mock_url_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "mock_url",
         "Quickly mock all requests matching a URL pattern to return a fixed response. \
          Creates a MockResponse rule with the given status, headers, and body.",
@@ -56,22 +71,30 @@ pub fn mock_url_schema() -> Tool {
                 "content_type":{ "type": "string",  "description": "Content-Type header (default application/json)" }
             }
         }),
+        false,
+        true,
+    )
+        .with_output(ack_output_schema(json!({
+            "rule_id": { "type": "string" },
+            "url_pattern": { "type": "string" },
+        }))),
     )
 }
 
 pub fn get_policy_schema() -> Tool {
-    make_tool(
+    tool(ToolSpec::read_only(
         "get_policy",
         "Get current proxy policy (including redaction settings).",
         json!({
             "type": "object",
             "properties": {}
         }),
-    )
+    ))
 }
 
 pub fn update_policy_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "update_policy",
         "Replace the current proxy policy with a full ProxyPolicy object.",
         json!({
@@ -84,11 +107,16 @@ pub fn update_policy_schema() -> Tool {
                 }
             }
         }),
+        true,
+        true,
+    )
+        .with_output(ack_output_schema(json!({}))),
     )
 }
 
 pub fn patch_policy_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "patch_policy",
         "Partially update proxy policy with merge-patch semantics.",
         json!({
@@ -101,10 +129,14 @@ pub fn patch_policy_schema() -> Tool {
                 }
             }
         }),
+        false,
+        true,
+    )
+        .with_output(ack_output_schema(json!({}))),
     )
 }
 
-pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let rule_val = args.get("rule").ok_or("Missing 'rule' parameter")?;
     let rule: Rule = serde_json::from_value(rule_val.clone())
         .map_err(|e| format!("Invalid rule JSON: {}", e))?;
@@ -120,10 +152,13 @@ pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
         )
         .await?;
 
-    ok_text(format!("Rule '{}' set successfully.", rule_id))
+    ok_ack(
+        format!("Rule '{}' set successfully.", rule_id),
+        json!({ "rule_id": rule_id }),
+    )
 }
 
-pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let id = require_str(&args, "id")?.to_string();
     let deleted = ctx
         .rules
@@ -137,13 +172,13 @@ pub async fn delete_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
         .await?;
 
     if deleted {
-        ok_text(format!("Rule '{}' deleted.", id))
+        ok_ack(format!("Rule '{}' deleted.", id), json!({ "rule_id": id }))
     } else {
         Err(format!("Rule '{}' not found.", id).into())
     }
 }
 
-pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let url_pattern = require_str(&args, "url_pattern")?.to_string();
     let status = args
         .get("status")
@@ -183,35 +218,39 @@ pub async fn mock_url(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
         )
         .await?;
 
-    ok_text(format!(
-        "Mock created (rule_id: {}). All requests matching '{}' will return {}.",
-        rule_id, url_pattern, status
-    ))
+    ok_ack(
+        format!(
+            "Mock created (rule_id: {}). All requests matching '{}' will return {}.",
+            rule_id, url_pattern, status
+        ),
+        json!({
+            "rule_id": rule_id,
+            "url_pattern": url_pattern,
+            "status": status,
+        }),
+    )
 }
 
-pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
+pub async fn get_policy(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
     ok_json(&ctx.policy.policy_snapshot())
 }
 
-pub async fn update_policy(
-    ctx: &Arc<ProbeContext>,
-    args: Value,
-) -> Result<Vec<Content>, ToolError> {
+pub async fn update_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let policy_val = args.get("policy").ok_or("Missing 'policy' parameter")?;
     let policy: ProxyPolicy = serde_json::from_value(policy_val.clone())
         .map_err(|e| format!("Invalid policy JSON: {}", e))?;
 
     ctx.policy
         .update_policy_from(AuditActor::Probe, "probe.policy".to_string(), policy);
-    ok_text("Policy updated.")
+    ok_ack("Policy updated.", json!({}))
 }
 
-pub async fn patch_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn patch_policy(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let patch_val = args.get("patch").ok_or("Missing 'patch' parameter")?;
     let patch: ProxyPolicyPatch = serde_json::from_value(patch_val.clone())
         .map_err(|e| format!("Invalid patch JSON: {}", e))?;
 
     ctx.policy
         .patch_policy_from(AuditActor::Probe, "probe.policy.patch".to_string(), patch);
-    ok_text("Policy patched.")
+    ok_ack("Policy patched.", json!({}))
 }

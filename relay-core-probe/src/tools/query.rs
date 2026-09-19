@@ -1,18 +1,19 @@
 use super::ToolError;
-use super::{make_tool, ok_json, require_str};
+use super::{ToolOutcome, ToolSpec, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_api::flow::Layer;
 use relay_core_api::har::flow_to_har_entry;
 use relay_core_api::modification::FlowQuery;
-use rmcp::model::{Content, Tool};
+use rmcp::model::Tool;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn search_flows_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::read_only(
         "search_flows",
         "Search captured HTTP/WebSocket flows with optional filters. \
-         Returns a list of flow summaries sorted by most recent first.",
+         Returns flow summaries sorted by most recent first.",
         json!({
             "type": "object",
             "properties": {
@@ -28,10 +29,19 @@ pub fn search_flows_schema() -> Tool {
             }
         }),
     )
+        .with_output(json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer", "description": "Number of summaries returned" },
+                "flows": { "type": "array", "items": { "type": "object" }, "description": "Flow summaries, most recent first" }
+            },
+            "required": ["count", "flows"],
+        })),
+    )
 }
 
 pub fn get_flow_schema() -> Tool {
-    make_tool(
+    tool(ToolSpec::read_only(
         "get_flow",
         "Get full details of a specific flow by ID, including headers, body, timing, and tags.",
         json!({
@@ -41,18 +51,18 @@ pub fn get_flow_schema() -> Tool {
                 "id": { "type": "string", "description": "Flow UUID" }
             }
         }),
-    )
+    ))
 }
 
 pub fn get_metrics_schema() -> Tool {
-    make_tool(
+    tool(ToolSpec::read_only(
         "get_metrics",
         "Get proxy runtime metrics: total flows, memory usage, intercepts pending, rule errors.",
         json!({ "type": "object", "properties": {} }),
-    )
+    ))
 }
 
-pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let query = FlowQuery {
         host: args.get("host").and_then(Value::as_str).map(str::to_string),
         path_contains: args
@@ -83,10 +93,32 @@ pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Co
             .map(|v| v as usize),
     };
     let summaries = ctx.flows.search_flows(query).await;
-    ok_json(&summaries)
+
+    // An empty list has two very different meanings, and returning it for both is how an agent
+    // concludes "the app sent no requests" when in fact nothing was being captured at all. With no
+    // proxy running and no history to show, say so instead.
+    if summaries.is_empty() && !proxy_is_running(ctx) {
+        return Err(ToolError::proxy_not_running(
+            "No flows matched, and none have ever been captured.",
+        ));
+    }
+
+    ok_json(&json!({ "count": summaries.len(), "flows": summaries }))
 }
 
-pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+/// Whether the host this probe runs in reports an active proxy.
+///
+/// Absent proxy control (a host that embedded the probe without passing a controller) is not
+/// treated as "not running": such a host may well be capturing traffic, and a false error would be
+/// worse than an empty list.
+fn proxy_is_running(ctx: &Arc<ProbeContext>) -> bool {
+    match &ctx.proxy {
+        Some(proxy) => proxy.proxy_lifecycle().is_active(),
+        None => true,
+    }
+}
+
+pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let id = require_str(&args, "id")?;
     match ctx.flows.get_flow(&id).await {
         Some(flow) => ok_json(&flow),
@@ -94,13 +126,14 @@ pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Conten
     }
 }
 
-pub async fn get_metrics(ctx: &Arc<ProbeContext>) -> Result<Vec<Content>, ToolError> {
+pub async fn get_metrics(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
     let m = ctx.status.get_metrics().await;
     ok_json(&m)
 }
 
 pub fn replay_flow_schema() -> Tool {
-    make_tool(
+    tool(
+        ToolSpec::write(
         "replay_flow",
         "Re-send a captured HTTP request and return the new response. \
          Only works for HTTP flows.",
@@ -115,10 +148,14 @@ pub fn replay_flow_schema() -> Tool {
                 }
             }
         }),
+        false,
+        false,
+    )
+        .open_world(),
     )
 }
 
-pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let id = require_str(&args, "id")?.to_string();
     let accept_invalid_certs = args
         .get("accept_invalid_certs")
@@ -182,19 +219,16 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Con
         .collect();
     let resp_body = resp.text().await.map_err(|e| e.to_string())?;
 
-    Ok(vec![Content::text(
-        serde_json::to_string_pretty(&json!({
-            "status": status,
-            "url": url,
-            "headers": resp_headers,
-            "body": resp_body,
-        }))
-        .map_err(|e| e.to_string())?,
-    )])
+    ok_json(&json!({
+        "status": status,
+        "url": url,
+        "headers": resp_headers,
+        "body": resp_body,
+    }))
 }
 
 pub fn export_har_schema() -> Tool {
-    make_tool(
+    tool(ToolSpec::read_only(
         "export_har",
         "Export one or more flows as HAR (HTTP Archive) 1.2 format. \
          Specify an ID for a single flow, or use host/path_contains/limit for batch.",
@@ -207,10 +241,10 @@ pub fn export_har_schema() -> Tool {
                 "limit": { "type": "integer", "description": "Max results (batch mode, default 50)" }
             }
         }),
-    )
+    ))
 }
 
-pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<Vec<Content>, ToolError> {
+pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let entries = if let Some(id) = args.get("id").and_then(Value::as_str) {
         let flow = ctx
             .flows
