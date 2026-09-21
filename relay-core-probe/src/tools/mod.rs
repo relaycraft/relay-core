@@ -12,9 +12,11 @@ pub mod script;
 // Re-export all public tool functions for external testing
 pub use intercept::{get_pending_intercepts, resume_flow, set_intercept};
 pub use lifecycle::{PROXY_CONTROL_HINT, lifecycle_tool_schemas};
-pub use query::{export_har, get_flow, get_metrics, replay_flow, search_flows};
-pub use rules::{delete_rule, get_policy, mock_url, patch_policy, set_rule, update_policy};
-pub use script::set_script;
+pub use query::{clear_flows, export_har, get_flow, get_metrics, replay_flow, search_flows};
+pub use rules::{
+    delete_rule, get_policy, list_rules, mock_url, patch_policy, set_rule, update_policy,
+};
+pub use script::{get_script, set_script};
 
 #[derive(Debug)]
 pub enum ToolError {
@@ -104,11 +106,14 @@ pub fn tool_list() -> Vec<Tool> {
         intercept::get_pending_intercepts_schema(),
         intercept::resume_flow_schema(),
         rules::set_rule_schema(),
+        rules::list_rules_schema(),
         rules::delete_rule_schema(),
         rules::mock_url_schema(),
         rules::get_policy_schema(),
         rules::update_policy_schema(),
         rules::patch_policy_schema(),
+        query::clear_flows_schema(),
+        script::get_script_schema(),
         script::set_script_schema(),
     ];
 
@@ -139,11 +144,14 @@ pub async fn dispatch(
         "get_pending_intercepts" => intercept::get_pending_intercepts(ctx).await,
         "resume_flow" => intercept::resume_flow(ctx, args).await,
         "set_rule" => rules::set_rule(ctx, args).await,
+        "list_rules" => rules::list_rules(ctx).await,
         "delete_rule" => rules::delete_rule(ctx, args).await,
         "mock_url" => rules::mock_url(ctx, args).await,
         "get_policy" => rules::get_policy(ctx).await,
         "update_policy" => rules::update_policy(ctx, args).await,
         "patch_policy" => rules::patch_policy(ctx, args).await,
+        "clear_flows" => query::clear_flows(ctx).await,
+        "get_script" => script::get_script(ctx).await,
         "set_script" => script::set_script(ctx, args).await,
         other => Err(ToolError::not_found(format!("Unknown tool: {other}"))),
     }

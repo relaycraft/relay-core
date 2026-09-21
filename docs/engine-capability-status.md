@@ -83,7 +83,7 @@
 
 | API | 调用者 | 后果 |
 |---|---|---|
-| `CoreState::set_retention_policy` | **已接线**：`ProxyPolicy.retention` → `update_policy_from` | 任何能设策略的宿主（HTTP `PATCH /policy`、Tauri、MCP）现在都能给存储设界；未设界时仍不启动裁剪任务 |
+| `CoreState::set_retention_policy` | **已接线**：`ProxyPolicy.retention` → `update_policy_from` | 默认 5000 条且 7 天，进程启动后会裁剪；显式无界才不裁。MCP `clear_flows` 可立即清空捕获，不动规则和审计 |
 | `CoreState::redact_stored_history` | **已接线**：脱敏 `false → true` 时自动执行（后台） | 打开脱敏现在会重写既有历史；只重写历史、不再重复重写（已锁测试） |
 | `ScriptEngine::set_fetch_config` | **已接线**：`--script-fetch-allow` → `CoreState::set_script_fetch_allow` → 引擎 | `relay.fetch` 首次可由宿主启用；**必须在 `load_script` 之前设置**（引擎在构造时快照配置），该顺序要求已写在 setter 文档上 |
 | `QuicMode::ExperimentalMitm` | **零调用者**（cfg 门控变体） | 与 §20「暂不投入」边界一致，但它是「未接线的 API 枚举」，正是该条禁止的形态 |

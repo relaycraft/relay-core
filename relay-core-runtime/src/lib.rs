@@ -39,7 +39,7 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -325,13 +325,19 @@ pub struct CoreState {
     store: Option<Store>,
     #[cfg(feature = "script")]
     pub script_interceptor: Arc<ScriptInterceptor>,
+    /// Source of the script that last loaded successfully. A failed reload leaves this in place.
+    #[cfg(feature = "script")]
+    loaded_script: std::sync::RwLock<Option<String>>,
     pub policy_tx: watch::Sender<ProxyPolicy>,
     /// Redaction view used when persisting, kept in step with `policy_tx`'s redaction section.
     pub(crate) redaction_handle: Arc<std::sync::RwLock<RedactionPolicy>>,
     /// Connection string for the store, kept so retention can prune in the background.
     db_url: Option<String>,
-    /// How much history to keep. `unbounded()` leaves the store untouched.
+    /// How much history to keep. Seeded from [`ProxyPolicy::default`], so a host that never
+    /// touches policy still prunes. An explicit unbounded policy turns pruning into a no-op.
     retention: Arc<std::sync::RwLock<relay_core_storage::RetentionPolicy>>,
+    /// The background prune loop is started at most once; later policy edits only update `retention`.
+    retention_task_started: AtomicBool,
     pub flows_dropped: Arc<AtomicUsize>,
     audit_events_total: Arc<AtomicUsize>,
     audit_events_failed: Arc<AtomicUsize>,
@@ -345,6 +351,16 @@ pub struct CoreState {
     audit_broadcast_tx: broadcast::Sender<AuditEvent>,
     audit_history: Arc<Mutex<VecDeque<AuditEvent>>>,
     lifecycle: LifecycleManager,
+}
+
+fn storage_retention(
+    retention: &relay_core_api::policy::RetentionPolicy,
+) -> relay_core_storage::RetentionPolicy {
+    relay_core_storage::RetentionPolicy {
+        max_flows: retention.max_flows,
+        max_age_secs: retention.max_age_secs,
+        max_audit_events: retention.max_audit_events,
+    }
 }
 
 impl CoreState {
@@ -392,19 +408,22 @@ impl CoreState {
         let script_interceptor = ScriptInterceptor::new()
             .await
             .expect("Failed to initialize ScriptInterceptor");
-        Self {
+        let state = Self {
             flow_store: flow_tx,
             intercept_broker: intercept_tx,
             rule_store: rule_tx,
             store,
             #[cfg(feature = "script")]
             script_interceptor: Arc::new(script_interceptor),
+            #[cfg(feature = "script")]
+            loaded_script: std::sync::RwLock::new(None),
             policy_tx,
             redaction_handle,
             db_url,
-            retention: Arc::new(std::sync::RwLock::new(
-                relay_core_storage::RetentionPolicy::unbounded(),
-            )),
+            retention: Arc::new(std::sync::RwLock::new(storage_retention(
+                &ProxyPolicy::default().retention,
+            ))),
+            retention_task_started: AtomicBool::new(false),
             flows_dropped: Arc::new(AtomicUsize::new(0)),
             audit_events_total: Arc::new(AtomicUsize::new(0)),
             audit_events_failed: Arc::new(AtomicUsize::new(0)),
@@ -415,7 +434,9 @@ impl CoreState {
             audit_broadcast_tx,
             audit_history: Arc::new(Mutex::new(VecDeque::with_capacity(AUDIT_HISTORY_LIMIT))),
             lifecycle: LifecycleManager::new(),
-        }
+        };
+        state.ensure_retention_task();
+        state
     }
 
     pub async fn get_metrics(&self) -> CoreMetrics {
@@ -977,30 +998,29 @@ impl CoreState {
         }
     }
 
-    /// Set how much history the store keeps, and start pruning in the background.
+    /// Apply the policy's storage bounds.
     ///
-    /// The policy is opt-in: the default keeps everything, so an existing deployment is unaffected
-    /// until a bound is set. Pruning runs on an interval rather than per write, so a busy instance
-    /// does not pay for a delete pass on every flow.
-    /// Apply the policy's storage bounds, if any.
-    ///
-    /// Unbounded is a no-op rather than a reconfiguration: the background pruning task is only
-    /// started once a bound exists, so a host that never sets one pays nothing.
+    /// The default policy is already bounded. An unbounded value is written through as well, so a
+    /// host can turn pruning off; the background task notices and skips the pass.
     fn apply_retention_from(&self, retention: &relay_core_api::policy::RetentionPolicy) {
-        if retention.is_unbounded() {
-            return;
-        }
-
-        self.set_retention_policy(relay_core_storage::RetentionPolicy {
-            max_flows: retention.max_flows,
-            max_age_secs: retention.max_age_secs,
-            max_audit_events: retention.max_audit_events,
-        });
+        self.set_retention_policy(storage_retention(retention));
     }
 
     pub fn set_retention_policy(&self, policy: relay_core_storage::RetentionPolicy) {
         if let Ok(mut current) = self.retention.write() {
             *current = policy;
+        }
+        self.ensure_retention_task();
+    }
+
+    /// Start the prune loop the first time a bound exists. Later updates only change the policy
+    /// the loop already reads.
+    fn ensure_retention_task(&self) {
+        if self.retention_policy().is_unbounded() {
+            return;
+        }
+        if self.retention_task_started.swap(true, Ordering::Relaxed) {
+            return;
         }
         self.spawn_retention_task();
     }
@@ -1395,6 +1415,19 @@ impl CoreState {
             .collect()
     }
 
+    /// Drop captured flows from memory and from the database. Rules and audit events stay.
+    ///
+    /// The delete runs on the flow actor so it cannot race an in-flight persist.
+    pub async fn clear_captured_flows(&self) -> Result<(u64, u64), String> {
+        let (tx, rx) = oneshot::channel();
+        self.flow_store
+            .send(FlowStoreMessage::ClearCaptured { respond_to: tx })
+            .await
+            .map_err(|e| format!("flow store is gone: {e}"))?;
+        rx.await
+            .map_err(|e| format!("flow store dropped the clear: {e}"))?
+    }
+
     pub fn redact_flow_update_for_output(&self, update: FlowUpdate) -> FlowUpdate {
         let redaction = self.current_redaction_policy();
         redact_flow_update(update, &redaction)
@@ -1509,7 +1542,22 @@ impl CoreState {
             }),
         ));
 
+        if result.is_ok()
+            && let Ok(mut loaded) = self.loaded_script.write()
+        {
+            *loaded = Some(script.to_string());
+        }
+
         result
+    }
+
+    /// The script currently loaded, if one has loaded successfully.
+    #[cfg(feature = "script")]
+    pub fn current_script(&self) -> Option<String> {
+        self.loaded_script
+            .read()
+            .ok()
+            .and_then(|script| script.clone())
     }
 
     /// S5: Set the env var whitelist for relay.env() in user scripts.
@@ -2256,6 +2304,18 @@ mod tests {
         format!("sqlite://{}?mode=rwc", db_path.display())
     }
 
+    async fn wait_for_audit_rows(store: &relay_core_storage::store::Store) -> i64 {
+        for _ in 0..50 {
+            if let Ok(count) = store.count_audit_events().await
+                && count > 0
+            {
+                return count;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        0
+    }
+
     fn sample_http_flow(host: &str, path: &str, method: &str, status: u16, ts: i64) -> Flow {
         let start_time =
             chrono::DateTime::<Utc>::from_timestamp_millis(ts).expect("timestamp should be valid");
@@ -2937,6 +2997,7 @@ mod tests {
                     ..Default::default()
                 }),
                 upstream: None,
+                retention: None,
             },
         );
 
@@ -3315,10 +3376,12 @@ mod tests {
         sleep(Duration::from_millis(80)).await;
 
         // The host-facing path: one policy update, no direct call to the storage setter.
+        // Age is left unset so this asserts the count bound, not the clock on the sample flows.
         state.update_policy(ProxyPolicy {
             retention: relay_core_api::policy::RetentionPolicy {
                 max_flows: Some(1),
-                ..Default::default()
+                max_age_secs: None,
+                max_audit_events: None,
             },
             ..Default::default()
         });
@@ -3339,7 +3402,8 @@ mod tests {
         );
     }
 
-    /// An unbounded policy must not start a pruning task or delete anything.
+    /// An explicit unbounded policy must not delete anything, even after the process started
+    /// with the default bound.
     #[tokio::test]
     async fn an_unbounded_policy_leaves_storage_alone() {
         let url = sqlite_url();
@@ -3348,11 +3412,14 @@ mod tests {
         state.upsert_flow(Box::new(flow));
         sleep(Duration::from_millis(80)).await;
 
-        state.update_policy(ProxyPolicy::default());
+        state.update_policy(ProxyPolicy {
+            retention: relay_core_api::policy::RetentionPolicy::unbounded(),
+            ..Default::default()
+        });
 
         assert!(
             state.prune_now().await.is_none(),
-            "the default policy is unbounded, so pruning must not even run"
+            "an explicit unbounded policy must not prune"
         );
 
         let store = relay_core_storage::store::Store::connect(&url)
@@ -3361,18 +3428,85 @@ mod tests {
         assert_eq!(store.count_flows().await.expect("count"), 1);
     }
 
-    /// The default is unbounded, so an existing deployment must not start deleting history.
+    /// The process starts already bounded, so a fresh flow under the cap survives a prune.
     #[tokio::test]
-    async fn pruning_is_a_no_op_until_a_policy_is_set() {
-        let state = CoreState::new(Some(sqlite_url())).await;
+    async fn default_retention_is_bounded_and_keeps_a_fresh_flow() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+        let policy = state.retention_policy();
+        assert_eq!(policy.max_flows, Some(5_000));
+        assert_eq!(policy.max_age_secs, Some(7 * 24 * 60 * 60));
+
         let flow = sample_http_flow("api.example.com", "/keep", "GET", 200, 1_700_000_020_000);
         state.upsert_flow(Box::new(flow));
-        sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(80)).await;
 
         assert!(
-            state.prune_now().await.is_none(),
-            "an unbounded policy must not prune, so history is kept by default"
+            state.prune_now().await.is_some(),
+            "the default policy is bounded, so a prune pass runs"
         );
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        assert_eq!(
+            store.count_flows().await.expect("count"),
+            1,
+            "a single fresh flow is under both the count and the age bound"
+        );
+    }
+
+    /// Clearing history removes flows and summaries and leaves audit rows alone.
+    #[tokio::test]
+    async fn clear_captured_flows_drops_history_and_keeps_audit() {
+        let url = sqlite_url();
+        let state = CoreState::new(Some(url.clone())).await;
+        state.update_policy(ProxyPolicy::default());
+        let flow = sample_http_flow("api.example.com", "/gone", "GET", 200, 1_700_000_030_000);
+        let id = flow.id.to_string();
+        state.upsert_flow(Box::new(flow));
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        let audit_before = wait_for_audit_rows(&store).await;
+        assert!(audit_before > 0);
+
+        let (flows, summaries) = state
+            .clear_captured_flows()
+            .await
+            .expect("clear should reach the store");
+        assert!(
+            flows >= 1,
+            "the persisted flow should be deleted, got {flows}"
+        );
+        assert!(
+            summaries >= 1,
+            "its summary should be deleted, got {summaries}"
+        );
+        assert!(state.get_flow(id).await.is_none());
+        assert!(
+            state
+                .search_flows(relay_core_api::modification::FlowQuery::default())
+                .await
+                .is_empty()
+        );
+
+        let store = relay_core_storage::store::Store::connect(&url)
+            .await
+            .expect("reopen store");
+        assert_eq!(store.count_flows().await.expect("count"), 0);
+        assert_eq!(
+            store.count_audit_events().await.expect("audit"),
+            audit_before,
+            "clearing captures must not wipe the audit log"
+        );
+
+        let (again_flows, again_summaries) = state
+            .clear_captured_flows()
+            .await
+            .expect("a second clear still succeeds");
+        assert_eq!((again_flows, again_summaries), (0, 0));
     }
 
     /// A configured redaction policy must apply **before** persistence, not only on output.
@@ -3673,5 +3807,23 @@ mod tests {
         assert_eq!(event.kind, AuditEventKind::ScriptReloaded);
         assert_eq!(event.outcome, AuditOutcome::Success);
         assert_eq!(event.target, "tauri.load_script");
+        assert_eq!(
+            state.current_script().as_deref(),
+            Some("globalThis.onRequestHeaders = (_flow) => {};")
+        );
+
+        let failed = state
+            .load_script_from(
+                AuditActor::Tauri,
+                "tauri.load_script".to_string(),
+                "function (",
+            )
+            .await;
+        assert!(failed.is_err(), "a broken script must not load");
+        assert_eq!(
+            state.current_script().as_deref(),
+            Some("globalThis.onRequestHeaders = (_flow) => {};"),
+            "a failed reload keeps the script that is still running"
+        );
     }
 }

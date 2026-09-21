@@ -1,5 +1,5 @@
 use super::ToolError;
-use super::{ToolOutcome, ToolSpec, ok_json, require_str, tool};
+use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_api::flow::Layer;
 use relay_core_api::har::flow_to_har_entry;
@@ -285,4 +285,31 @@ pub async fn export_har(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutc
     });
 
     ok_json(&har)
+}
+
+pub fn clear_flows_schema() -> Tool {
+    tool(
+        ToolSpec::write(
+            "clear_flows",
+            "Delete captured flows and their summaries from memory and the database. \
+             Rules, policy, and the audit log stay. Calling it again when history is already \
+             empty is a no-op. Retention (default 5000 flows or 7 days) is what keeps a \
+             long-running proxy bounded between clears.",
+            json!({ "type": "object", "properties": {} }),
+            true,
+            true,
+        )
+        .with_output(ack_output_schema(json!({
+            "flows": { "type": "integer", "description": "Flow rows deleted" },
+            "flow_summaries": { "type": "integer", "description": "Summary rows deleted" }
+        }))),
+    )
+}
+
+pub async fn clear_flows(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
+    let (flows, summaries) = ctx.flows.clear_captured_flows().await?;
+    ok_ack(
+        format!("Cleared {flows} flows and {summaries} summaries."),
+        json!({ "flows": flows, "flow_summaries": summaries }),
+    )
 }

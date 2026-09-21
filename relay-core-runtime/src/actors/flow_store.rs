@@ -38,6 +38,11 @@ pub enum FlowStoreMessage {
         query: FlowQuery,
         respond_to: oneshot::Sender<Vec<FlowSummary>>,
     },
+    /// Delete captured flows from memory and from the database. The counts are
+    /// `(flows, summaries)` removed.
+    ClearCaptured {
+        respond_to: oneshot::Sender<Result<(u64, u64), String>>,
+    },
 }
 
 pub struct FlowStoreActor {
@@ -179,6 +184,18 @@ impl FlowStoreActor {
                     let results: Vec<FlowSummary> =
                         results.into_iter().skip(offset).take(limit).collect();
                     let _ = respond_to.send(results);
+                }
+                FlowStoreMessage::ClearCaptured { respond_to } => {
+                    self.flows.clear();
+                    let result = if let Some(store) = &self.store {
+                        match store.clear_captured_flows().await {
+                            Ok(counts) => Ok((counts.flows, counts.flow_summaries)),
+                            Err(error) => Err(error.to_string()),
+                        }
+                    } else {
+                        Ok((0, 0))
+                    };
+                    let _ = respond_to.send(result);
                 }
                 FlowStoreMessage::TagBudgetExceeded { flow_id, direction } => {
                     let direction_tag = match direction {

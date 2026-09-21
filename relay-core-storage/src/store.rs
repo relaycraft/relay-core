@@ -345,7 +345,41 @@ impl Store {
             counts.audit_events += deleted.rows_affected();
         }
 
+        if counts.total() > 0 {
+            // Drop the deleted pages out of the WAL. The main file keeps free pages and
+            // reuses them; a full rewrite is reserved for an explicit clear.
+            let _ = self.checkpoint_wal().await;
+        }
+
         Ok(counts)
+    }
+
+    /// Delete every captured flow and its summary. Rules and audit events stay.
+    ///
+    /// Also truncates the WAL, which is what actually stops the sidecar file growing
+    /// after a long session of deletes.
+    pub async fn clear_captured_flows(&self) -> Result<crate::PrunedCounts> {
+        let flows = sqlx::query("DELETE FROM flows;")
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        let flow_summaries = sqlx::query("DELETE FROM flow_summaries;")
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        let _ = self.checkpoint_wal().await;
+        Ok(crate::PrunedCounts {
+            flows,
+            flow_summaries,
+            audit_events: 0,
+        })
+    }
+
+    async fn checkpoint_wal(&self) -> Result<()> {
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Number of stored flows, for retention reporting and tests.

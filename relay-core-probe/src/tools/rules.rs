@@ -34,6 +34,25 @@ pub fn set_rule_schema() -> Tool {
     )
 }
 
+pub fn list_rules_schema() -> Tool {
+    tool(
+        ToolSpec::read_only(
+            "list_rules",
+            "List the rules currently loaded in the daemon. Use this before set_rule or delete_rule \
+             so a change replaces or removes the rule that is actually active.",
+            json!({ "type": "object", "properties": {} }),
+        )
+        .with_output(json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" },
+                "rules": { "type": "array", "items": { "type": "object" } }
+            },
+            "required": ["count", "rules"]
+        })),
+    )
+}
+
 pub fn delete_rule_schema() -> Tool {
     tool(
         ToolSpec::write(
@@ -118,16 +137,18 @@ pub fn patch_policy_schema() -> Tool {
     tool(
         ToolSpec::write(
         "patch_policy",
-        "Partially update proxy policy. Accepted fields are only `redaction` and `upstream`; \
-         any other field is rejected and the current policy is left unchanged. \
-         To change fields such as request_timeout_ms, send a full policy via update_policy.",
+        "Partially update proxy policy. Accepted fields are `redaction`, `upstream`, and \
+         `retention`. A retention field you omit stays as it is; `null` removes that bound. \
+         The default keeps 5000 flows and drops anything older than 7 days. Any other field is \
+         rejected and the current policy is left unchanged. To change fields such as \
+         request_timeout_ms, send a full policy via update_policy.",
         json!({
             "type": "object",
             "required": ["patch"],
             "properties": {
                 "patch": {
                     "type": "object",
-                    "description": "ProxyPolicyPatch. Only redaction and upstream are accepted. Example: {\"redaction\": {\"enabled\": true}}"
+                    "description": "ProxyPolicyPatch. Accepted: redaction, upstream, retention. Example: {\"retention\": {\"max_flows\": 5000, \"max_age_secs\": 604800}}"
                 }
             }
         }),
@@ -136,6 +157,12 @@ pub fn patch_policy_schema() -> Tool {
     )
         .with_output(ack_output_schema(json!({}))),
     )
+}
+
+pub async fn list_rules(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
+    let rules = ctx.rules.get_rules().await;
+    let count = rules.len();
+    ok_json(&json!({ "count": count, "rules": rules }))
 }
 
 pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {

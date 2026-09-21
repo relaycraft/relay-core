@@ -1,10 +1,30 @@
 use super::ToolError;
-use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, require_str, tool};
+use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_runtime::audit::AuditActor;
 use rmcp::model::Tool;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+pub fn get_script_schema() -> Tool {
+    tool(
+        ToolSpec::read_only(
+            "get_script",
+            "Read the JavaScript source currently loaded in the daemon. \
+             loaded is false until the first successful set_script. A failed reload leaves the \
+             previous source in place.",
+            json!({ "type": "object", "properties": {} }),
+        )
+        .with_output(json!({
+            "type": "object",
+            "properties": {
+                "loaded": { "type": "boolean" },
+                "script": { "type": ["string", "null"] }
+            },
+            "required": ["loaded", "script"]
+        })),
+    )
+}
 
 pub fn set_script_schema() -> Tool {
     tool(
@@ -34,6 +54,14 @@ pub fn set_script_schema() -> Tool {
             "bytes": { "type": "integer" },
         }))),
     )
+}
+
+pub async fn get_script(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolError> {
+    let script = ctx.script.current_script();
+    ok_json(&json!({
+        "loaded": script.is_some(),
+        "script": script,
+    }))
 }
 
 pub async fn set_script(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {

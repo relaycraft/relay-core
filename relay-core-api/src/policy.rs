@@ -36,6 +36,9 @@ pub struct ProxyPolicyPatch {
     pub redaction: Option<RedactionPolicyPatch>,
     #[serde(default)]
     pub upstream: Option<UpstreamProxyConfig>,
+    /// Storage bounds to change. Absent fields stay as they are; `null` removes that bound.
+    #[serde(default)]
+    pub retention: Option<RetentionPolicyPatch>,
 }
 
 // ── Upstream Proxy ──────────────────────────────────────
@@ -259,13 +262,12 @@ pub struct ProxyPolicy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capture_exclude: Vec<String>,
 
-    /// How much history the store may keep. Every field `None` means unbounded, which is the
-    /// pre-existing behaviour: nothing pruned the database before this, so a long-running instance
-    /// grew until the disk filled.
+    /// How much history the store may keep. The default keeps 5 000 flows and drops anything older
+    /// than 7 days. Every field `None` means unbounded, which a host must set explicitly — a
+    /// long-running proxy otherwise grows until the disk fills.
     ///
     /// It lives in the policy rather than behind a host-specific command because every host already
-    /// sets policy, and because a bound a user cannot reach is not a bound at all — the pruning
-    /// implementation existed without any caller outside its own test.
+    /// sets policy, and because a bound a user cannot reach is not a bound at all.
     #[serde(default)]
     pub retention: RetentionPolicy,
 }
@@ -304,9 +306,18 @@ fn default_circuit_backoff_ms() -> u64 {
     5_000
 }
 
+/// Flows kept when a host has not chosen its own count bound.
+pub const DEFAULT_MAX_FLOWS: usize = 5_000;
+/// Seconds of history kept when a host has not chosen its own age bound (7 days).
+pub const DEFAULT_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Storage bounds, mirroring the store's own policy so a host can set them without depending on the
 /// storage crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// [`Default`] is the product bound (5 000 flows, 7 days). An all-`None` value is unbounded and is
+/// not the default: deserializing a present but empty `retention` object yields that, because each
+/// field defaults to `None` on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionPolicy {
     /// Keep at most this many flows and summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -315,12 +326,54 @@ pub struct RetentionPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_age_secs: Option<u64>,
     /// Keep at most this many audit events. Bounded separately: audit is a compliance record and
-    /// should not be evicted by traffic history.
+    /// should not be evicted by traffic history. Unbounded unless a host sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_audit_events: Option<usize>,
 }
 
+/// A partial retention update. Each field is tri-state: absent leaves the current bound, `null`
+/// removes it, and a number sets it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionPolicyPatch {
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
+    pub max_flows: Option<Option<usize>>,
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
+    pub max_age_secs: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
+    pub max_audit_events: Option<Option<usize>>,
+}
+
+/// `null` is "clear this bound", not "field was absent". Absent fields never reach here: they take
+/// [`Default`] via `serde(default)`.
+fn deserialize_tri_state<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_flows: Some(DEFAULT_MAX_FLOWS),
+            max_age_secs: Some(DEFAULT_MAX_AGE_SECS),
+            max_audit_events: None,
+        }
+    }
+}
+
 impl RetentionPolicy {
+    /// Keep every captured flow and every audit event.
+    pub const fn unbounded() -> Self {
+        Self {
+            max_flows: None,
+            max_age_secs: None,
+            max_audit_events: None,
+        }
+    }
+
     /// Does this policy bound anything at all?
     pub const fn is_unbounded(&self) -> bool {
         self.max_flows.is_none() && self.max_age_secs.is_none() && self.max_audit_events.is_none()
@@ -408,6 +461,17 @@ impl ProxyPolicy {
         if let Some(upstream) = patch.upstream {
             self.upstream = Some(upstream);
         }
+        if let Some(retention) = patch.retention {
+            if let Some(max_flows) = retention.max_flows {
+                self.retention.max_flows = max_flows;
+            }
+            if let Some(max_age_secs) = retention.max_age_secs {
+                self.retention.max_age_secs = max_age_secs;
+            }
+            if let Some(max_audit_events) = retention.max_audit_events {
+                self.retention.max_audit_events = max_audit_events;
+            }
+        }
     }
 }
 
@@ -471,6 +535,64 @@ mod tests {
         assert!(
             message.contains("request_timeout_ms"),
             "error should name the rejected field, got {message}"
+        );
+    }
+
+    #[test]
+    fn default_retention_keeps_five_thousand_flows_for_seven_days() {
+        let retention = super::RetentionPolicy::default();
+        assert_eq!(retention.max_flows, Some(super::DEFAULT_MAX_FLOWS));
+        assert_eq!(retention.max_age_secs, Some(super::DEFAULT_MAX_AGE_SECS));
+        assert!(retention.max_audit_events.is_none());
+        assert!(!retention.is_unbounded());
+        assert!(super::RetentionPolicy::unbounded().is_unbounded());
+    }
+
+    #[test]
+    fn retention_patch_changes_only_the_named_bound() {
+        let mut policy = super::ProxyPolicy::default();
+        let age = policy.retention.max_age_secs;
+        policy.apply_patch(ProxyPolicyPatch {
+            retention: Some(super::RetentionPolicyPatch {
+                max_flows: Some(Some(10)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(policy.retention.max_flows, Some(10));
+        assert_eq!(policy.retention.max_age_secs, age);
+
+        policy.apply_patch(ProxyPolicyPatch {
+            retention: Some(super::RetentionPolicyPatch {
+                max_flows: Some(None),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(policy.retention.max_flows, None);
+        assert_eq!(policy.retention.max_age_secs, age);
+    }
+
+    #[test]
+    fn retention_patch_json_null_clears_only_that_bound() {
+        let patch: ProxyPolicyPatch = serde_json::from_value(serde_json::json!({
+            "retention": { "max_flows": null }
+        }))
+        .expect("null is a clear, not an unknown field");
+        let retention = patch.retention.expect("retention was present");
+        assert_eq!(
+            retention.max_flows,
+            Some(None),
+            "null must be distinguishable from an omitted field"
+        );
+        assert_eq!(retention.max_age_secs, None);
+
+        let mut policy = super::ProxyPolicy::default();
+        policy.apply_patch(patch);
+        assert_eq!(policy.retention.max_flows, None);
+        assert_eq!(
+            policy.retention.max_age_secs,
+            Some(super::DEFAULT_MAX_AGE_SECS)
         );
     }
 
@@ -586,6 +708,7 @@ mod tests {
         policy.apply_patch(ProxyPolicyPatch {
             redaction: None,
             upstream: Some(upstream.clone()),
+            retention: None,
         });
         assert_eq!(policy.upstream, Some(upstream));
     }

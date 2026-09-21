@@ -13,7 +13,7 @@
 //! | Version | Status      | Notes                                                        |
 //! |---------|-------------|--------------------------------------------------------------|
 //! | 1       | superseded  | 15 tools, JSON returned as text only                         |
-//! | 2       | current     | 18 tools, `structuredContent` + schemas + annotations        |
+//! | 2       | current     | 18 tools at introduction; later tools do not bump this       |
 //!
 //! ## What changed in v2 (breaking)
 //!
@@ -30,10 +30,11 @@
 //! - `proxy_status` / `proxy_start` / `proxy_stop` — proxy lifecycle of the owning daemon
 //! - `search_flows` / `get_flow` / `get_metrics` — read-only, no side effects
 //! - `replay_flow` / `export_har` — flow replay and HAR export
-//! - `set_rule` / `delete_rule` / `mock_url` — rule engine management
+//! - `set_rule` / `list_rules` / `delete_rule` / `mock_url` — rule engine management
 //! - `set_intercept` / `get_pending_intercepts` / `resume_flow` — breakpoint flow
 //! - `get_policy` / `update_policy` / `patch_policy` — policy management
-//! - `set_script` — load Deno scripts for dynamic modification
+//! - `clear_flows` — drop captured history without touching rules or audit
+//! - `get_script` / `set_script` — read and load Deno scripts for dynamic modification
 //!
 //! # Quick start
 //! ```no_run

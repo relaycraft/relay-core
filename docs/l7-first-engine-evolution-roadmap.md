@@ -1125,14 +1125,16 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `journal_mode=WAL` 与 `busy_timeout=5000`。4 个测试覆盖：全新库版本、幂等、无版本库前滚、
   未来版本拒绝；已双向验证。
 - ✅ **保留策略已建立**：`RetentionPolicy { max_flows, max_age_secs, max_audit_events }`
-  + `Store::prune`（返回 `PrunedCounts`），默认 `unbounded()` 即保持既有行为不变。
-  flows 与 summaries 按同一排序键裁剪以免两表漂移；audit 独立设界（合规记录不应被流量历史
+  + `Store::prune`（返回 `PrunedCounts`）。存储层的 `unbounded()` 仍表示不裁剪；
+  产品默认是 5000 条且 7 天（决策 [`0008`](./decisions/0008-bounded-flow-retention.md)）。
+  flows 与 summaries 按同一排序键裁剪以免两表漂移；audit 默认不设界（合规记录不应被流量历史
   挤掉）。
-- ✅ **已接入 runtime**：`CoreState::set_retention_policy` 设定策略并启动后台裁剪任务
-  （30s 后首次、之后每 300s 一次，避免与启动竞争且不随流量波动）；
-  `prune_now()` 供测试与运维手动触发。**默认无界**，因此既有部署不会突然开始删除历史。
-  6 个测试覆盖：无界不删、按数量保留最新、按时间只删过期、audit 独立界、
-  经 runtime 落盘后被真实裁剪、未设策略时 `prune_now` 为空操作。
+- ✅ **已接入 runtime**：`CoreState` 启动即套用产品默认并启动后台裁剪任务
+  （30s 后首次、之后每 300s 一次）；`prune_now()` 供测试与运维手动触发。
+  显式无界策略才让 `prune_now` 为空操作。`clear_captured_flows` / MCP `clear_flows`
+  立即清掉流量与摘要，不动规则和审计。
+  测试覆盖：显式无界不删、按数量保留最新、按时间只删过期、audit 独立界、
+  经 runtime 落盘后被真实裁剪、默认有界时新鲜流量仍保留、清空捕获不碰审计。
 - ✅ **落盘前脱敏已修复**：`FlowStoreActor` 持有与 `CoreState` **共享**的 `RedactionPolicy`
   （`update_policy_from` 同步更新），`persist_flow` 在序列化**之前**对 Flow 与 Summary 脱敏。
   此前脱敏只存在于输出路径，因此开启策略后**磁盘上仍是原始 headers/URL/body**——

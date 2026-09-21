@@ -457,6 +457,7 @@ fn apply_startup_policy(state: &Arc<CoreState>, options: &DaemonOptions) -> Resu
                 bypass_hosts,
                 fail_open: options.upstream_fail_open,
             }),
+            retention: None,
         },
     );
     tracing::info!(target: "relay_core_daemon", upstream = upstream_url, "upstream proxy configured");
@@ -486,6 +487,9 @@ fn exclude_own_endpoints(
 
     let mut policy = state.policy_snapshot();
     policy.capture_exclude = exclude;
+    // The engine default keeps bodies off the live flow. This host is what CLI and MCP read, so it
+    // asks for a bounded prefix while the body keeps streaming. Desktop still sets Full on its own.
+    policy.body_observation = relay_core_api::body_plan::BodyObservation::Prefixed;
     state.update_policy_from(
         relay_core_runtime::audit::AuditActor::Cli,
         "daemon.capture_exclude".to_string(),
@@ -954,6 +958,30 @@ mod tests {
         assert!(
             !should_stop_idle(timeout, Duration::from_secs(9_999), false),
             "a stopped proxy is not stopped again"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daemon_keeps_a_body_prefix_for_agents() {
+        let state = Arc::new(relay_core_runtime::CoreState::new(None).await);
+        assert_eq!(
+            state.policy_snapshot().body_observation,
+            relay_core_api::body_plan::BodyObservation::Off,
+            "the engine default stays off until this host declares otherwise"
+        );
+
+        exclude_own_endpoints(&state, 18082, Some(18083), 8080);
+
+        let policy = state.policy_snapshot();
+        assert_eq!(
+            policy.body_observation,
+            relay_core_api::body_plan::BodyObservation::Prefixed
+        );
+        assert!(
+            policy
+                .capture_exclude
+                .iter()
+                .any(|host| host == "127.0.0.1:18082")
         );
     }
 

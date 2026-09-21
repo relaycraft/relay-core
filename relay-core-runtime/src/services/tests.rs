@@ -294,6 +294,7 @@ async fn policy_service_trait_read_and_write() {
                 ..Default::default()
             }),
             upstream: None,
+            retention: None,
         },
     );
     let patched = service.policy_snapshot();

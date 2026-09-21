@@ -254,6 +254,7 @@ fn test_redaction_patch_partial_update_keeps_unspecified_fields() {
             ..Default::default()
         }),
         upstream: None,
+        retention: None,
     });
 
     assert!(policy.redaction.enabled);

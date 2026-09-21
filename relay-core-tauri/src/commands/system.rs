@@ -429,6 +429,7 @@ mod tests {
                     ..Default::default()
                 }),
                 upstream: None,
+                retention: None,
             },
         );
 

@@ -47,9 +47,9 @@ fn all_tool_schemas_registered() {
     let schemas = tools::tool_list();
     let names: Vec<&str> = schemas.iter().map(|t| t.name.as_ref()).collect();
 
-    // 15 traffic/policy tools plus the 3 lifecycle tools an agent needs in order to control the
+    // 18 traffic/policy tools plus the 3 lifecycle tools an agent needs in order to control the
     // proxy it is reading traffic from.
-    assert_eq!(schemas.len(), 18, "registered tools: {names:?}");
+    assert_eq!(schemas.len(), 21, "registered tools: {names:?}");
 
     for expected in [
         "proxy_status",
@@ -64,11 +64,14 @@ fn all_tool_schemas_registered() {
         "get_pending_intercepts",
         "resume_flow",
         "set_rule",
+        "list_rules",
         "delete_rule",
         "mock_url",
         "get_policy",
         "update_policy",
         "patch_policy",
+        "clear_flows",
+        "get_script",
         "set_script",
     ] {
         assert!(names.contains(&expected), "missing tool: {expected}");
@@ -194,6 +197,34 @@ async fn patch_policy_rejects_unknown_fields_without_changing_policy() {
     assert_eq!(after["request_timeout_ms"], before["request_timeout_ms"]);
 }
 
+#[tokio::test]
+async fn patch_policy_updates_retention_without_clearing_the_other_bound() {
+    let ctx = new_ctx().await;
+    tools::patch_policy(&ctx, json!({"patch": {"retention": {"max_flows": 10}}}))
+        .await
+        .unwrap();
+    let json = structured(&tools::get_policy(&ctx).await.unwrap());
+    assert_eq!(json["retention"]["max_flows"], 10);
+    assert_eq!(json["retention"]["max_age_secs"], 7 * 24 * 60 * 60);
+
+    tools::patch_policy(&ctx, json!({"patch": {"retention": {"max_flows": null}}}))
+        .await
+        .unwrap();
+    let json = structured(&tools::get_policy(&ctx).await.unwrap());
+    assert!(json["retention"]["max_flows"].is_null());
+    assert_eq!(json["retention"]["max_age_secs"], 7 * 24 * 60 * 60);
+}
+
+#[tokio::test]
+async fn clear_flows_reports_an_empty_history() {
+    let ctx = new_ctx().await;
+    let outcome = tools::clear_flows(&ctx).await.unwrap();
+    let json = structured(&outcome);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["flows"], 0);
+    assert_eq!(json["flow_summaries"], 0);
+}
+
 // ── rule CRUD ──
 
 #[tokio::test]
@@ -222,6 +253,48 @@ async fn set_and_delete_rule() {
         .await
         .unwrap();
     assert!(text_of(&result).contains("deleted"));
+}
+
+#[tokio::test]
+async fn list_rules_returns_the_rule_that_was_set() {
+    let ctx = new_ctx().await;
+    let empty = structured(&tools::list_rules(&ctx).await.unwrap());
+    assert_eq!(empty["count"], 0);
+
+    let rule = Rule {
+        id: "probe-listed-rule".to_string(),
+        name: "Listed".to_string(),
+        active: true,
+        stage: RuleStage::RequestHeaders,
+        priority: 1,
+        termination: RuleTermination::Continue,
+        filter: Filter::All,
+        actions: vec![],
+        constraints: None,
+    };
+    tools::set_rule(&ctx, json!({"rule": serde_json::to_value(&rule).unwrap()}))
+        .await
+        .unwrap();
+
+    let listed = structured(&tools::list_rules(&ctx).await.unwrap());
+    assert_eq!(listed["count"], 1);
+    assert_eq!(listed["rules"][0]["id"], "probe-listed-rule");
+}
+
+#[tokio::test]
+async fn get_script_reports_nothing_until_a_script_loads() {
+    let ctx = new_ctx().await;
+    let before = structured(&tools::get_script(&ctx).await.unwrap());
+    assert_eq!(before["loaded"], false);
+    assert!(before["script"].is_null());
+
+    let source = "globalThis.onRequestHeaders = (_flow) => {};";
+    tools::set_script(&ctx, json!({"script": source}))
+        .await
+        .unwrap();
+    let after = structured(&tools::get_script(&ctx).await.unwrap());
+    assert_eq!(after["loaded"], true);
+    assert_eq!(after["script"], source);
 }
 
 #[tokio::test]
@@ -598,6 +671,8 @@ fn observation_tools_are_marked_read_only() {
         "export_har",
         "get_pending_intercepts",
         "get_policy",
+        "list_rules",
+        "get_script",
     ] {
         let schema = schemas
             .iter()

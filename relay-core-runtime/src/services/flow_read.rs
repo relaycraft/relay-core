@@ -7,6 +7,8 @@ use relay_core_api::modification::{FlowQuery, FlowSummary};
 pub trait FlowReadService: Send + Sync {
     async fn get_flow(&self, id: &str) -> Option<Flow>;
     async fn search_flows(&self, query: FlowQuery) -> Vec<FlowSummary>;
+    /// Delete captured flows and summaries. Returns `(flows, summaries)` removed.
+    async fn clear_captured_flows(&self) -> Result<(u64, u64), String>;
 }
 
 #[async_trait]
@@ -17,5 +19,9 @@ impl FlowReadService for CoreState {
 
     async fn search_flows(&self, query: FlowQuery) -> Vec<FlowSummary> {
         CoreState::search_flows(self, query).await
+    }
+
+    async fn clear_captured_flows(&self) -> Result<(u64, u64), String> {
+        CoreState::clear_captured_flows(self).await
     }
 }

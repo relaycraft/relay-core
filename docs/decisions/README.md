@@ -32,3 +32,5 @@
 | [0005](./0005-circuit-breaker-defaults.md) | 熔断器默认值与可配置化 | Accepted |
 | [0006](./0006-redaction-on-by-default.md) | 敏感信息默认脱敏 | Accepted |
 | [0007](./0007-daemon-control-plane.md) | 守护进程控制面（daemon control plane） | Accepted |
+| [0008](./0008-bounded-flow-retention.md) | 流量历史默认有界 | Accepted |
+| [0009](./0009-daemon-observes-body-prefix.md) | Daemon 保留 body 前缀 | Accepted |
