@@ -80,10 +80,24 @@ pub fn resume_flow_schema() -> Tool {
                 },
                 "method":           { "type": "string" },
                 "url":              { "type": "string" },
-                "request_headers":  { "type": "object" },
+                "request_headers": {
+                    "type": "object",
+                    "description": "Replaces the entire request header map. Omit the field to leave headers unchanged. To add or overwrite headers without deleting the rest, use request_header_upserts."
+                },
+                "request_header_upserts": {
+                    "type": "object",
+                    "description": "Adds or overwrites request headers by name (case-insensitive, first match). Other headers are kept. Does not delete headers."
+                },
                 "request_body":     { "type": "string" },
                 "status_code":      { "type": "integer" },
-                "response_headers": { "type": "object" },
+                "response_headers": {
+                    "type": "object",
+                    "description": "Replaces the entire response header map. Omit the field to leave headers unchanged. To add or overwrite headers without deleting the rest, use response_header_upserts."
+                },
+                "response_header_upserts": {
+                    "type": "object",
+                    "description": "Adds or overwrites response headers by name (case-insensitive, first match). Other headers are kept. Does not delete headers."
+                },
                 "response_body":    { "type": "string" },
                 "message_content":  { "type": "string" }
             }

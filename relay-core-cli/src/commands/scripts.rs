@@ -86,6 +86,7 @@ const SCRIPT_TEMPLATE: &str = r#"// RelayCore User Script
 
 /**
  * Called when response headers are received.
+ * Return the flow after editing headers. The upstream body keeps streaming.
  */
 // globalThis.onResponseHeaders = (ctx, flow) => {
 //   return flow;
@@ -93,6 +94,8 @@ const SCRIPT_TEMPLATE: &str = r#"// RelayCore User Script
 
 /**
  * Called when response body is available.
+ * `body.text()` / `body.json()` read a buffered copy (1 MiB). Past that they throw,
+ * and the original body is still forwarded. A hook that never settles is aborted.
  */
 // globalThis.onResponse = async (body, flow) => {
 //   return flow;

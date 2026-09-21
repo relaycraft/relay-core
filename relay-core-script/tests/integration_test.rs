@@ -961,3 +961,147 @@ async fn set_fetch_allow_enables_fetch_after_construction() {
         enabled_flow.tags
     );
 }
+
+#[tokio::test]
+async fn async_on_response_passthrough_does_not_hang_and_keeps_the_body() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    interceptor
+        .load_script(
+            r#"
+            globalThis.onResponse = async (body, flow) => {
+                return flow;
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+
+    let mut flow = create_dummy_flow();
+    let body = Full::new(Bytes::from_static(b"upstream-body"))
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+    let started = std::time::Instant::now();
+    let action = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        interceptor.on_response(&mut flow, body),
+    )
+    .await
+    .expect("async onResponse that only returns the flow must not hang")
+    .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    match action {
+        ResponseAction::Continue(body) => {
+            let bytes = body.collect().await.unwrap().to_bytes();
+            assert_eq!(&bytes[..], b"upstream-body");
+        }
+        other => panic!("expected Continue, got {other:?}"),
+    }
+
+    interceptor
+        .load_script("globalThis.onResponse = (body, flow) => flow;")
+        .await
+        .expect("a later set_script must still load");
+}
+
+#[tokio::test]
+async fn async_on_response_json_rewrite_replaces_the_body() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    interceptor
+        .load_script(
+            r#"
+            globalThis.onResponse = async (body, flow) => {
+                const data = await body.json();
+                data.n = data.n + 1;
+                const content = JSON.stringify(data);
+                flow.layer.data.response.body = {
+                    encoding: "utf-8",
+                    content,
+                    size: content.length,
+                };
+                return flow;
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+
+    let mut flow = create_dummy_flow();
+    if let Layer::Http(http) = &mut flow.layer {
+        http.response = Some(HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            version: "HTTP/1.1".to_string(),
+            headers: vec![],
+            body: None,
+            trailers: vec![],
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+            cookies: vec![],
+        });
+    }
+    let body = Full::new(Bytes::from_static(b"{\"n\":1}"))
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+    let action = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        interceptor.on_response(&mut flow, body),
+    )
+    .await
+    .expect("body.json() on a buffered body must not hang")
+    .unwrap();
+    match action {
+        ResponseAction::Continue(body) => {
+            let bytes = body.collect().await.unwrap().to_bytes();
+            assert_eq!(&bytes[..], b"{\"n\":2}");
+        }
+        other => panic!("expected Continue, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn never_settling_on_response_is_aborted_and_the_engine_stays_usable() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    interceptor
+        .load_script(
+            r#"
+            globalThis.onResponse = async () => {
+                await new Promise(() => {});
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+
+    let mut flow = create_dummy_flow();
+    let body = Full::new(Bytes::from_static(b"still-here"))
+        .map_err(|e| Box::new(e) as BoxError)
+        .boxed();
+    let action = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        interceptor.on_response(&mut flow, body),
+    )
+    .await
+    .expect("a promise that never settles must not pin the script queue")
+    .unwrap();
+    assert!(
+        flow.tags.iter().any(|tag| tag == "script-error"),
+        "aborted hook should be visible on the flow, tags: {:?}",
+        flow.tags
+    );
+    match action {
+        ResponseAction::Continue(body) => {
+            let bytes = body.collect().await.unwrap().to_bytes();
+            assert_eq!(&bytes[..], b"still-here");
+        }
+        other => panic!("expected the original body to be forwarded, got {other:?}"),
+    }
+
+    interceptor
+        .load_script("globalThis.onResponseHeaders = (ctx, flow) => flow;")
+        .await
+        .expect("load_script must work after an aborted hook");
+}

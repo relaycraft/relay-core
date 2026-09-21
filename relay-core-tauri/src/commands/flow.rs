@@ -135,9 +135,11 @@ impl From<Modification> for FlowModification {
             method: m.method,
             url: m.url,
             request_headers: m.request_headers,
+            request_header_upserts: None,
             request_body: m.request_body,
             status_code: m.status_code,
             response_headers: m.response_headers,
+            response_header_upserts: None,
             response_body: m.response_body,
             message_content: m.message_content,
         }

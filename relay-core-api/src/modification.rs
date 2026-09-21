@@ -54,11 +54,19 @@ pub struct FlowModification {
     pub method: Option<String>,
     pub url: Option<String>,
     pub request_headers: Option<HashMap<String, String>>,
+    /// Add or overwrite request headers by name. Other headers stay.
+    /// Matching is case-insensitive and updates the first header of that name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_header_upserts: Option<HashMap<String, String>>,
     pub request_body: Option<String>,
 
     // 响应字段
     pub status_code: Option<u16>,
     pub response_headers: Option<HashMap<String, String>>,
+    /// Add or overwrite response headers by name. Other headers stay.
+    /// Matching is case-insensitive and updates the first header of that name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_header_upserts: Option<HashMap<String, String>>,
     pub response_body: Option<String>,
 
     // WebSocket 字段
@@ -70,9 +78,11 @@ impl FlowModification {
         self.method.is_none()
             && self.url.is_none()
             && self.request_headers.is_none()
+            && self.request_header_upserts.is_none()
             && self.request_body.is_none()
             && self.status_code.is_none()
             && self.response_headers.is_none()
+            && self.response_header_upserts.is_none()
             && self.response_body.is_none()
             && self.message_content.is_none()
     }
@@ -89,6 +99,7 @@ impl FlowModification {
                 .map(str::to_string),
             url: value.get("url").and_then(Value::as_str).map(str::to_string),
             request_headers: string_map_from_json(value.get("request_headers")),
+            request_header_upserts: string_map_from_json(value.get("request_header_upserts")),
             request_body: value
                 .get("request_body")
                 .and_then(Value::as_str)
@@ -98,6 +109,7 @@ impl FlowModification {
                 .and_then(Value::as_u64)
                 .map(|code| code as u16),
             response_headers: string_map_from_json(value.get("response_headers")),
+            response_header_upserts: string_map_from_json(value.get("response_header_upserts")),
             response_body: value
                 .get("response_body")
                 .and_then(Value::as_str)

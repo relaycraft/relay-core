@@ -5,9 +5,8 @@ use axum::{
     http::StatusCode,
     routing::{get, patch},
 };
-use relay_core_api::policy::{ProxyPolicyPatch, UpstreamProxyConfig};
+use relay_core_api::policy::ProxyPolicyPatch;
 use relay_core_runtime::audit::AuditActor;
-use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -37,32 +36,19 @@ async fn patch_policy(
     State(ctx): State<Arc<HttpApiContext>>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    #[derive(Deserialize)]
-    struct PatchBody {
-        #[serde(default)]
-        redaction: Option<relay_core_api::policy::RedactionPolicyPatch>,
-        #[serde(default)]
-        upstream: Option<UpstreamProxyConfig>,
-    }
-
-    let patch_body: PatchBody = serde_json::from_value(body).map_err(|e| {
+    let patch: ProxyPolicyPatch = serde_json::from_value(body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Invalid patch JSON: {}", e),
         )
     })?;
 
-    let patch = ProxyPolicyPatch {
-        redaction: patch_body.redaction,
-        upstream: patch_body.upstream.clone(),
-    };
-
     // R-N1: upstream connector is built once at startup; changing upstream
     // at runtime has no effect on active connections. Return 409 to avoid
     // the silent-failure UX.
-    if patch_body.upstream.is_some() {
+    if patch.upstream.is_some() {
         let current = ctx.policy.policy_snapshot();
-        if current.upstream != patch_body.upstream {
+        if current.upstream != patch.upstream {
             return Err((
                 StatusCode::CONFLICT,
                 "upstream proxy config change requires proxy restart".to_string(),

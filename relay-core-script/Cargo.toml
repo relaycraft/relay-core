@@ -38,3 +38,6 @@ tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
+hyper.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true

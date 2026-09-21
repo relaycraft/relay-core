@@ -118,14 +118,16 @@ pub fn patch_policy_schema() -> Tool {
     tool(
         ToolSpec::write(
         "patch_policy",
-        "Partially update proxy policy with merge-patch semantics.",
+        "Partially update proxy policy. Accepted fields are only `redaction` and `upstream`; \
+         any other field is rejected and the current policy is left unchanged. \
+         To change fields such as request_timeout_ms, send a full policy via update_policy.",
         json!({
             "type": "object",
             "required": ["patch"],
             "properties": {
                 "patch": {
                     "type": "object",
-                    "description": "ProxyPolicyPatch object. Example: {\"redaction\": {\"enabled\": true}}"
+                    "description": "ProxyPolicyPatch. Only redaction and upstream are accepted. Example: {\"redaction\": {\"enabled\": true}}"
                 }
             }
         }),

@@ -17,6 +17,7 @@ pub struct RedactionPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RedactionPolicyPatch {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -29,6 +30,7 @@ pub struct RedactionPolicyPatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyPolicyPatch {
     #[serde(default)]
     pub redaction: Option<RedactionPolicyPatch>,
@@ -457,6 +459,21 @@ fn default_sensitive_query_keys() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::ProxyPolicyPatch;
+
+    #[test]
+    fn proxy_policy_patch_rejects_unknown_fields() {
+        let err = serde_json::from_value::<ProxyPolicyPatch>(serde_json::json!({
+            "request_timeout_ms": 35000
+        }))
+        .expect_err("unknown policy patch fields must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("request_timeout_ms"),
+            "error should name the rejected field, got {message}"
+        );
+    }
+
     /// The default policy must not make the engine copy bodies it has no reason to keep.
     ///
     /// Caught a real regression: defaulting observation to a mode that buffers materialized every

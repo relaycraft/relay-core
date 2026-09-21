@@ -1,6 +1,7 @@
 use relay_core_api::flow::{BodyData, Flow, HttpResponse, Layer, ResponseTiming, WebSocketMessage};
 use relay_core_api::modification::FlowModification;
 use relay_core_lib::InterceptionResult;
+use std::collections::HashMap;
 use url::Url;
 
 // Re-export API modification types at relay_core_runtime::modification::
@@ -35,6 +36,9 @@ pub fn apply_flow_modification(
         }
         if let Some(h) = mods.request_headers {
             req.headers = h.into_iter().collect();
+        }
+        if let Some(upserts) = mods.request_header_upserts {
+            upsert_headers(&mut req.headers, upserts);
         }
         if let Some(b) = mods.request_body {
             req.body = Some(BodyData {
@@ -73,6 +77,9 @@ pub fn apply_flow_modification(
         if let Some(h) = mods.response_headers {
             res.headers = h.into_iter().collect();
         }
+        if let Some(upserts) = mods.response_header_upserts {
+            upsert_headers(&mut res.headers, upserts);
+        }
         if let Some(b) = mods.response_body {
             res.body = Some(BodyData {
                 encoding: "utf-8".to_string(),
@@ -102,6 +109,23 @@ pub fn apply_ws_modification(
         new_msg.content.content = content;
     }
     InterceptionResult::ModifiedMessage(new_msg)
+}
+
+/// Overwrite the first header with the same name, or append one.
+///
+/// HTTP header names are case-insensitive. A second `Set-Cookie` is left alone:
+/// only the first match is updated, so this cannot express "delete" or "replace all".
+fn upsert_headers(headers: &mut Vec<(String, String)>, upserts: HashMap<String, String>) {
+    for (name, value) in upserts {
+        if let Some((_, existing)) = headers
+            .iter_mut()
+            .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+        {
+            *existing = value;
+        } else {
+            headers.push((name, value));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +296,76 @@ mod tests {
         } else {
             panic!("expected ModifiedRequest");
         }
+    }
+
+    #[test]
+    fn test_request_headers_replace_drops_headers_that_were_not_sent() {
+        let mut flow = make_http_flow("http://example.com/api");
+        if let Layer::Http(http) = &mut flow.layer {
+            http.request.headers = vec![
+                ("User-Agent".to_string(), "curl/8.0".to_string()),
+                ("Accept".to_string(), "*/*".to_string()),
+            ];
+        }
+        let mods = FlowModification {
+            request_headers: Some(HashMap::from([(
+                "X-Relay-Intercept".to_string(),
+                "resumed".to_string(),
+            )])),
+            ..Default::default()
+        };
+
+        let InterceptionResult::ModifiedRequest(req) =
+            apply_flow_modification(&flow, "request", mods)
+        else {
+            panic!("expected ModifiedRequest");
+        };
+        assert_eq!(
+            req.headers,
+            vec![("X-Relay-Intercept".to_string(), "resumed".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_request_header_upsert_keeps_other_headers() {
+        let mut flow = make_http_flow("http://example.com/api");
+        if let Layer::Http(http) = &mut flow.layer {
+            http.request.headers = vec![
+                ("User-Agent".to_string(), "curl/8.0".to_string()),
+                ("Accept".to_string(), "*/*".to_string()),
+            ];
+        }
+        let mods = FlowModification {
+            request_header_upserts: Some(HashMap::from([
+                ("X-Relay-Intercept".to_string(), "resumed".to_string()),
+                ("user-agent".to_string(), "relay".to_string()),
+            ])),
+            ..Default::default()
+        };
+
+        let InterceptionResult::ModifiedRequest(req) =
+            apply_flow_modification(&flow, "request", mods)
+        else {
+            panic!("expected ModifiedRequest");
+        };
+        assert!(req.headers.iter().any(|(k, v)| k == "Accept" && v == "*/*"));
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v == "relay")
+        );
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k == "X-Relay-Intercept" && v == "resumed")
+        );
+        assert_eq!(
+            req.headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+                .count(),
+            1
+        );
     }
 
     #[test]

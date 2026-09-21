@@ -248,6 +248,13 @@ impl ScriptInterceptor {
     }
 }
 
+fn script_error_tags(flow: &Flow) -> usize {
+    flow.tags
+        .iter()
+        .filter(|tag| tag.as_str() == "script-error")
+        .count()
+}
+
 #[async_trait]
 impl Interceptor for ScriptInterceptor {
     async fn on_request_headers(&self, flow: &mut Flow) -> InterceptionResult {
@@ -299,6 +306,7 @@ impl Interceptor for ScriptInterceptor {
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
+        let errors_before = script_error_tags(flow);
         match engine.on_request(flow, body).await {
             Ok(action) => {
                 let dur_us = start.elapsed().as_micros() as u64;
@@ -308,6 +316,11 @@ impl Interceptor for ScriptInterceptor {
                 self.metrics
                     .on_request_invocations
                     .fetch_add(1, Ordering::Relaxed);
+                if script_error_tags(flow) > errors_before {
+                    self.metrics
+                        .on_request_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 Ok(action)
             }
             Err(e) => {
@@ -327,17 +340,11 @@ impl Interceptor for ScriptInterceptor {
 
         let result = match engine.on_response_headers(flow).await {
             Ok(Some(modified_flow)) => {
+                // Header edits stay on the flow. Continue lets the proxy stream the upstream
+                // body; ModifiedResponse would finish the exchange with whatever body is
+                // already on the flow, which at this stage is usually empty.
                 *flow = modified_flow;
-                InterceptionResult::ModifiedResponse(match &flow.layer {
-                    relay_core_api::flow::Layer::Http(h) => h.response.clone().unwrap(),
-                    relay_core_api::flow::Layer::WebSocket(w) => w.handshake_response.clone(),
-                    _ => {
-                        self.metrics
-                            .on_response_headers_errors
-                            .fetch_add(1, Ordering::Relaxed);
-                        return InterceptionResult::Continue;
-                    }
-                })
+                InterceptionResult::Continue
             }
             Ok(None) => InterceptionResult::Continue,
             Err(e) => {
@@ -372,6 +379,7 @@ impl Interceptor for ScriptInterceptor {
         let engine_lock = &self.engines[index];
         let engine = engine_lock.read().await;
 
+        let errors_before = script_error_tags(flow);
         match engine.on_response(flow, body).await {
             Ok(action) => {
                 let dur_us = start.elapsed().as_micros() as u64;
@@ -381,6 +389,11 @@ impl Interceptor for ScriptInterceptor {
                 self.metrics
                     .on_response_invocations
                     .fetch_add(1, Ordering::Relaxed);
+                if script_error_tags(flow) > errors_before {
+                    self.metrics
+                        .on_response_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 Ok(action)
             }
             Err(e) => {

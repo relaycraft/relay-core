@@ -1,13 +1,12 @@
 use crate::engine_trait::ScriptEngineTrait;
-use crate::streams::HttpBodyResource;
+use crate::streams::{self, MemoryBodyResource};
 use async_trait::async_trait;
 use base64::Engine as _;
 use bytes::Bytes;
 use deno_core::{
     Extension, JsRuntime, Op, OpState, ResourceId, RuntimeOptions, error::AnyError, op2,
 };
-use http_body_util::{BodyExt, Full};
-use relay_core_api::flow::{Flow, WebSocketMessage};
+use relay_core_api::flow::{BodyData, Flow, Layer, WebSocketMessage};
 use relay_core_lib::interceptor::{
     BoxError, ConnectAction, ConnectionInfo, ConnectionStats, HttpBody, RequestAction,
     ResponseAction, WebSocketMessageAction,
@@ -16,7 +15,27 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::thread;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+
+/// Bytes copied for a script before `text()` / `json()` refuse the rest.
+/// Matches the default rule body inspect budget.
+const SCRIPT_BODY_BUDGET: usize = 1024 * 1024;
+
+/// A hook that neither settles nor fails is aborted so it cannot pin the isolate queue.
+const DEFAULT_SCRIPT_HOOK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `JsRuntime::resolve` only watches the promise. An `async` hook stays pending forever
+/// unless something pumps the event loop; sync returns are not promises and skip that wait.
+async fn settle_promise(
+    runtime: &mut JsRuntime,
+    value: deno_core::v8::Global<deno_core::v8::Value>,
+) -> Result<deno_core::v8::Global<deno_core::v8::Value>, AnyError> {
+    let pending = runtime.resolve(value);
+    runtime
+        .with_event_loop_promise(pending, Default::default())
+        .await
+}
 
 #[op2(fast)]
 fn op_log_level(#[string] level: String, #[string] msg: String) {
@@ -29,8 +48,16 @@ fn op_log_level(#[string] level: String, #[string] msg: String) {
     }
 }
 
+/// Test and internal escape hatch. Not part of the script-facing `relay` API.
+/// Capped so a script cannot park the isolate longer than the hook timeout by much.
 #[op2(async)]
-#[serde]
+async fn op_wait_ms(#[smi] ms: u32) {
+    let capped = u64::from(ms.min(30_000));
+    tokio::time::sleep(Duration::from_millis(capped)).await;
+}
+
+#[op2(async)]
+#[buffer]
 async fn op_read_body(
     state: Rc<RefCell<OpState>>,
     #[smi] rid: ResourceId,
@@ -42,6 +69,12 @@ async fn op_read_body(
     };
     let view = resource.read(limit).await?;
     Ok(view.to_vec())
+}
+
+#[op2]
+#[string]
+fn op_decode_utf8(#[buffer] bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[op2(fast)]
@@ -309,8 +342,18 @@ fn op_json_stringify_pretty(#[serde] value: serde_json::Value) -> String {
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| String::new())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BodyHookKind {
+    Request,
+    Response,
+}
+
+type BodyHookReply = oneshot::Sender<Result<(Option<Flow>, Option<Bytes>), String>>;
+
 enum DenoCommand {
     LoadScript(String, oneshot::Sender<Result<(), String>>),
+    /// `true` when `globalThis[name]` is a function. Name is one of the engine's own hook names.
+    HasHook(BodyHookKind, oneshot::Sender<bool>),
     OnConnect(
         ConnectionInfo,
         oneshot::Sender<Result<ConnectAction, String>>,
@@ -321,17 +364,9 @@ enum DenoCommand {
         oneshot::Sender<Result<(), String>>,
     ),
     OnRequestHeaders(Flow, oneshot::Sender<Result<Option<Flow>, String>>),
-    OnRequest(
-        Flow,
-        HttpBody,
-        oneshot::Sender<Result<(Option<Flow>, RequestAction), String>>,
-    ),
+    OnRequest(Flow, Bytes, bool, BodyHookReply),
     OnResponseHeaders(Flow, oneshot::Sender<Result<Option<Flow>, String>>),
-    OnResponse(
-        Flow,
-        HttpBody,
-        oneshot::Sender<Result<(Option<Flow>, ResponseAction), String>>,
-    ),
+    OnResponse(Flow, Bytes, bool, BodyHookReply),
     OnWebSocketMessage(
         Flow,
         WebSocketMessage,
@@ -358,12 +393,234 @@ impl Default for DenoScriptEngine {
     }
 }
 
+fn build_js_runtime(env_allow: HashSet<String>, fetch_config: ScriptFetchConfig) -> JsRuntime {
+    let ext = Extension {
+        name: "relay_core",
+        ops: std::borrow::Cow::Borrowed(&[
+            op_log_level::DECL,
+            op_wait_ms::DECL,
+            op_read_body::DECL,
+            op_decode_utf8::DECL,
+            op_close_body::DECL,
+            op_shared_state_get::DECL,
+            op_shared_state_set::DECL,
+            op_shared_state_delete::DECL,
+            op_shared_state_clear::DECL,
+            op_shared_state_keys::DECL,
+            op_shared_state_size::DECL,
+            op_env_get::DECL,
+            op_uuid_v4::DECL,
+            op_hash::DECL,
+            op_base64_encode::DECL,
+            op_base64_decode::DECL,
+            op_json_parse_safe::DECL,
+            op_json_stringify_pretty::DECL,
+            op_script_fetch::DECL,
+        ]),
+        op_state_fn: Some(Box::new({
+            let env_allow = env_allow.clone();
+            let fetch_config = fetch_config.clone();
+            move |state| {
+                state.put(HashMap::<String, serde_json::Value>::new());
+                state.put(env_allow.clone());
+                state.put(fetch_config.clone());
+            }
+        })),
+        ..Default::default()
+    };
+
+    let mut js_runtime = JsRuntime::new(RuntimeOptions {
+        extensions: vec![ext],
+        ..Default::default()
+    });
+
+    // Bootstrap JS — S1/S3: sharedState + console levels
+    let bootstrap = r#"
+    globalThis.console = {
+        log: (...args) => {
+            Deno.core.ops.op_log_level("log", _format(args));
+        },
+        info: (...args) => {
+            Deno.core.ops.op_log_level("info", _format(args));
+        },
+        warn: (...args) => {
+            Deno.core.ops.op_log_level("warn", _format(args));
+        },
+        error: (...args) => {
+            Deno.core.ops.op_log_level("error", _format(args));
+        },
+        debug: (...args) => {
+            Deno.core.ops.op_log_level("debug", _format(args));
+        },
+    };
+
+    function _format(args) {
+        return args.map(arg => {
+            if (typeof arg === 'object') {
+                try { return JSON.stringify(arg); }
+                catch { return String(arg); }
+            }
+            return String(arg);
+        }).join(" ");
+    }
+
+    class RelayBody {
+        constructor(rid, truncated) {
+            this.rid = rid;
+            this.truncated = !!truncated;
+        }
+        async read(limit) {
+            return await Deno.core.ops.op_read_body(this.rid, limit || 65536);
+        }
+        close() {
+            Deno.core.ops.op_close_body(this.rid);
+        }
+                        async text() {
+                            if (this.truncated) {
+                                throw new Error("body exceeds script inspect budget");
+                            }
+                            const bytes = await this.read(10 * 1024 * 1024);
+                            return Deno.core.ops.op_decode_utf8(bytes);
+                        }
+        async json() {
+            const txt = await this.text();
+            return JSON.parse(txt);
+        }
+    }
+    globalThis.RelayBody = RelayBody;
+
+    globalThis.relay = {
+        log: globalThis.console.log,
+        env: function(name) {
+            return Deno.core.ops.op_env_get(name) ?? undefined;
+        },
+        uuid: function() {
+            return Deno.core.ops.op_uuid_v4();
+        },
+        hash: function(alg, data) {
+            return Deno.core.ops.op_hash(alg, data);
+        },
+        base64: {
+            encode: function(data) {
+                return Deno.core.ops.op_base64_encode(data);
+            },
+            decode: function(data) {
+                return Deno.core.ops.op_base64_decode(data);
+            },
+        },
+        json: {
+            parseSafe: function(str) {
+                return Deno.core.ops.op_json_parse_safe(str);
+            },
+            stringifyPretty: function(obj) {
+                return Deno.core.ops.op_json_stringify_pretty(obj);
+            },
+        },
+        fetch: function(url) {
+            return JSON.parse(Deno.core.ops.op_script_fetch(url));
+        },
+    };
+
+    // S12a: ctx.setTag / ctx.setVariable (script→rule injection) deferred to 1.x.
+    // Cross-thread synchronous V8 callback into the rule execution engine would
+    // require architectural changes that risk rule engine atomicity.
+    // Script-side rule context reading (flow.matched_rules, flow.rule_variables)
+    // is fully supported (S10a/S11).
+
+    // S1: sharedState — cross-hook shared map per isolate
+    globalThis.sharedState = {
+        get(key) {
+            return Deno.core.ops.op_shared_state_get(key);
+        },
+        set(key, value) {
+            Deno.core.ops.op_shared_state_set(key, value);
+        },
+        delete(key) {
+            return Deno.core.ops.op_shared_state_delete(key);
+        },
+        clear() {
+            Deno.core.ops.op_shared_state_clear();
+        },
+        keys() {
+            return Deno.core.ops.op_shared_state_keys();
+        },
+        size() {
+            return Deno.core.ops.op_shared_state_size();
+        },
+    };
+"#;
+    js_runtime.execute_script("bootstrap", bootstrap).unwrap();
+    js_runtime
+}
+
+fn discard_body_resource(runtime: &mut JsRuntime, rid: ResourceId) {
+    let op_state_rc = runtime.op_state();
+    let mut state = op_state_rc.borrow_mut();
+    state.resource_table.take::<MemoryBodyResource>(rid).ok();
+}
+
+fn authored_body(flow: &Flow, response: bool) -> Option<Bytes> {
+    let Layer::Http(http) = &flow.layer else {
+        return None;
+    };
+    let data: &BodyData = if response {
+        http.response.as_ref().and_then(|resp| resp.body.as_ref())?
+    } else {
+        http.request.body.as_ref()?
+    };
+    if data.content.is_empty() {
+        return None;
+    }
+    Some(decode_body_content(data))
+}
+
+fn decode_body_content(data: &BodyData) -> Bytes {
+    if data.encoding == "base64" {
+        base64::engine::general_purpose::STANDARD
+            .decode(&data.content)
+            .unwrap_or_default()
+            .into()
+    } else {
+        Bytes::from(data.content.clone())
+    }
+}
+
+fn note_truncated(flow: &mut Flow, truncated: bool) {
+    if truncated
+        && !flow
+            .tags
+            .iter()
+            .any(|tag| tag == "script_skipped:body_truncated")
+    {
+        flow.tags.push("script_skipped:body_truncated".to_string());
+    }
+}
+
+async fn load_user_script(runtime: &mut JsRuntime, script: &str) -> Result<(), String> {
+    runtime
+        .execute_script("<anon>", script.to_string())
+        .map_err(|e| e.to_string())?;
+    runtime
+        .run_event_loop(Default::default())
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 impl DenoScriptEngine {
     pub fn new(env_allow: HashSet<String>) -> Self {
         Self::new_with_fetch(env_allow, ScriptFetchConfig::default())
     }
 
     pub fn new_with_fetch(env_allow: HashSet<String>, fetch_config: ScriptFetchConfig) -> Self {
+        Self::with_hook_timeout(env_allow, fetch_config, DEFAULT_SCRIPT_HOOK_TIMEOUT)
+    }
+
+    pub(crate) fn with_hook_timeout(
+        env_allow: HashSet<String>,
+        fetch_config: ScriptFetchConfig,
+        hook_timeout: Duration,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel(32);
 
         thread::spawn(move || {
@@ -373,186 +630,72 @@ impl DenoScriptEngine {
                 .unwrap();
 
             rt.block_on(async move {
-                let env_allow = env_allow; // capture into async block
-                let ext = Extension {
-                    name: "relay_core",
-                    ops: std::borrow::Cow::Borrowed(&[
-                        op_log_level::DECL,
-                        op_read_body::DECL,
-                        op_close_body::DECL,
-                        op_shared_state_get::DECL,
-                        op_shared_state_set::DECL,
-                        op_shared_state_delete::DECL,
-                        op_shared_state_clear::DECL,
-                        op_shared_state_keys::DECL,
-                        op_shared_state_size::DECL,
-                        op_env_get::DECL,
-                        op_uuid_v4::DECL,
-                        op_hash::DECL,
-                        op_base64_encode::DECL,
-                        op_base64_decode::DECL,
-                        op_json_parse_safe::DECL,
-                        op_json_stringify_pretty::DECL,
-                        op_script_fetch::DECL,
-                    ]),
-                    op_state_fn: Some(Box::new({
-                        let env_allow = env_allow.clone();
-                        let fetch_config = fetch_config.clone();
-                        move |state| {
-                            state.put(HashMap::<String, serde_json::Value>::new());
-                            state.put(env_allow.clone());
-                            state.put(fetch_config.clone());
-                        }
-                    })),
-                    ..Default::default()
-                };
+                let mut js_runtime = build_js_runtime(env_allow.clone(), fetch_config.clone());
 
-                let mut js_runtime = JsRuntime::new(RuntimeOptions {
-                    extensions: vec![ext],
-                    ..Default::default()
-                });
-
-                // Bootstrap JS — S1/S3: sharedState + console levels
-                let bootstrap = r#"
-                    globalThis.console = {
-                        log: (...args) => {
-                            Deno.core.ops.op_log_level("log", _format(args));
-                        },
-                        info: (...args) => {
-                            Deno.core.ops.op_log_level("info", _format(args));
-                        },
-                        warn: (...args) => {
-                            Deno.core.ops.op_log_level("warn", _format(args));
-                        },
-                        error: (...args) => {
-                            Deno.core.ops.op_log_level("error", _format(args));
-                        },
-                        debug: (...args) => {
-                            Deno.core.ops.op_log_level("debug", _format(args));
-                        },
-                    };
-
-                    function _format(args) {
-                        return args.map(arg => {
-                            if (typeof arg === 'object') {
-                                try { return JSON.stringify(arg); }
-                                catch { return String(arg); }
+                macro_rules! drive_body_hook {
+                    ($kind:expr, $flow:expr, $bytes:expr, $truncated:expr, $resp:expr) => {{
+                        let timed = tokio::time::timeout(
+                            hook_timeout,
+                            Self::handle_body_hook(
+                                &mut js_runtime,
+                                $kind,
+                                $flow,
+                                $bytes,
+                                $truncated,
+                            ),
+                        )
+                        .await;
+                        match timed {
+                            Ok(res) => {
+                                let _ = $resp.send(res);
                             }
-                            return String(arg);
-                        }).join(" ");
-                    }
-
-                    class RelayBody {
-                        constructor(rid) { this.rid = rid; }
-                        async read(limit) {
-                            return await Deno.core.ops.op_read_body(this.rid, limit || 65536);
+                            Err(_) => {
+                                // Cancelling the hook leaves this isolate in place. Building a
+                                // replacement first and then dropping the cancelled one panics:
+                                // V8 requires isolates to be dropped in reverse creation order.
+                                let _ = $resp.send(Err("script hook timed out".to_string()));
+                            }
                         }
-                        close() {
-                            Deno.core.ops.op_close_body(this.rid);
-                        }
-                        async text() {
-                            const bytes = await this.read(10 * 1024 * 1024);
-                            return new TextDecoder().decode(bytes);
-                        }
-                        async json() {
-                            const txt = await this.text();
-                            return JSON.parse(txt);
-                        }
-                    }
-                    globalThis.RelayBody = RelayBody;
-
-                    globalThis.relay = {
-                        log: globalThis.console.log,
-                        env: function(name) {
-                            return Deno.core.ops.op_env_get(name) ?? undefined;
-                        },
-                        uuid: function() {
-                            return Deno.core.ops.op_uuid_v4();
-                        },
-                        hash: function(alg, data) {
-                            return Deno.core.ops.op_hash(alg, data);
-                        },
-                        base64: {
-                            encode: function(data) {
-                                return Deno.core.ops.op_base64_encode(data);
-                            },
-                            decode: function(data) {
-                                return Deno.core.ops.op_base64_decode(data);
-                            },
-                        },
-                        json: {
-                            parseSafe: function(str) {
-                                return Deno.core.ops.op_json_parse_safe(str);
-                            },
-                            stringifyPretty: function(obj) {
-                                return Deno.core.ops.op_json_stringify_pretty(obj);
-                            },
-                        },
-                        fetch: function(url) {
-                            return JSON.parse(Deno.core.ops.op_script_fetch(url));
-                        },
-                    };
-
-                    // S12a: ctx.setTag / ctx.setVariable (script→rule injection) deferred to 1.x.
-                    // Cross-thread synchronous V8 callback into the rule execution engine would
-                    // require architectural changes that risk rule engine atomicity.
-                    // Script-side rule context reading (flow.matched_rules, flow.rule_variables)
-                    // is fully supported (S10a/S11).
-
-                    // S1: sharedState — cross-hook shared map per isolate
-                    globalThis.sharedState = {
-                        get(key) {
-                            return Deno.core.ops.op_shared_state_get(key);
-                        },
-                        set(key, value) {
-                            Deno.core.ops.op_shared_state_set(key, value);
-                        },
-                        delete(key) {
-                            return Deno.core.ops.op_shared_state_delete(key);
-                        },
-                        clear() {
-                            Deno.core.ops.op_shared_state_clear();
-                        },
-                        keys() {
-                            return Deno.core.ops.op_shared_state_keys();
-                        },
-                        size() {
-                            return Deno.core.ops.op_shared_state_size();
-                        },
-                    };
-                "#;
-                js_runtime.execute_script("bootstrap", bootstrap).unwrap();
+                    }};
+                }
 
                 while let Some(cmd) = rx.recv().await {
                     match cmd {
                         DenoCommand::LoadScript(script, resp) => {
-                            let res = js_runtime.execute_script("<anon>", script);
-                            let res = if let Err(e) = res {
-                                Err(e.to_string())
-                            } else {
-                                js_runtime
-                                    .run_event_loop(Default::default())
-                                    .await
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string())
-                            };
+                            let res = load_user_script(&mut js_runtime, &script).await;
                             let _ = resp.send(res);
+                        }
+                        DenoCommand::HasHook(kind, resp) => {
+                            let code = match kind {
+                                BodyHookKind::Request => {
+                                    "typeof globalThis.onRequest === 'function'"
+                                }
+                                BodyHookKind::Response => {
+                                    "typeof globalThis.onResponse === 'function'"
+                                }
+                            };
+                            let exists = match js_runtime.execute_script("check_hook", code) {
+                                Ok(val) => {
+                                    let scope = &mut js_runtime.handle_scope();
+                                    deno_core::v8::Local::new(scope, val).is_true()
+                                }
+                                Err(_) => false,
+                            };
+                            let _ = resp.send(exists);
                         }
                         DenoCommand::OnRequestHeaders(flow, resp) => {
                             let res = Self::handle_on_request_headers(&mut js_runtime, flow);
                             let _ = resp.send(res);
                         }
-                        DenoCommand::OnRequest(flow, body, resp) => {
-                            let res = Self::handle_on_request(&mut js_runtime, flow, body).await;
-                            let _ = resp.send(res);
+                        DenoCommand::OnRequest(flow, bytes, truncated, resp) => {
+                            drive_body_hook!(BodyHookKind::Request, flow, bytes, truncated, resp);
                         }
                         DenoCommand::OnResponseHeaders(flow, resp) => {
                             let res = Self::handle_on_response_headers(&mut js_runtime, flow);
                             let _ = resp.send(res);
                         }
-                        DenoCommand::OnResponse(flow, body, resp) => {
-                            let res = Self::handle_on_response(&mut js_runtime, flow, body).await;
-                            let _ = resp.send(res);
+                        DenoCommand::OnResponse(flow, bytes, truncated, resp) => {
+                            drive_body_hook!(BodyHookKind::Response, flow, bytes, truncated, resp);
                         }
                         DenoCommand::OnWebSocketMessage(flow, message, resp) => {
                             let res =
@@ -707,375 +850,85 @@ impl DenoScriptEngine {
         Ok(Some(modified_flow))
     }
 
-    async fn handle_on_request(
+    async fn handle_body_hook(
         runtime: &mut JsRuntime,
+        kind: BodyHookKind,
         flow: Flow,
-        body: HttpBody,
-    ) -> Result<(Option<Flow>, RequestAction), String> {
-        let resource = HttpBodyResource::new(body);
+        visible: Bytes,
+        truncated: bool,
+    ) -> Result<(Option<Flow>, Option<Bytes>), String> {
+        let stage = match kind {
+            BodyHookKind::Request => "onRequest",
+            BodyHookKind::Response => "onResponse",
+        };
+        let resource = MemoryBodyResource::new(visible);
         let rid = {
             let op_state_rc = runtime.op_state();
             let mut state = op_state_rc.borrow_mut();
             state.resource_table.add(resource)
         };
 
-        let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
-
-        let check_code = "typeof globalThis.onRequest === 'function'";
-        let exists = runtime
-            .execute_script("check_onRequest", check_code)
-            .map_err(|e| {
-                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
-                e.to_string()
-            })?;
-
-        let exists_bool = {
-            let scope = &mut runtime.handle_scope();
-            let exists_val = deno_core::v8::Local::new(scope, exists);
-            exists_val.is_true()
-        };
-
-        if !exists_bool {
-            let resource = {
-                let op_state_rc = runtime.op_state();
-                let mut state = op_state_rc.borrow_mut();
-                state.resource_table.take::<HttpBodyResource>(rid).ok()
-            };
-            if let Some(res) = resource {
-                let body = crate::streams::create_body_from_resource(&res);
-                return Ok((None, RequestAction::Continue(body)));
-            } else {
-                return Ok((
-                    None,
-                    RequestAction::Continue(
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed(),
-                    ),
-                ));
-            }
-        }
-
-        let code = format!(
-            "globalThis.onRequest(new RelayBody({}), {})",
-            rid, flow_json
-        );
-        let result = runtime
-            .execute_script("call_onRequest", code)
-            .map_err(|e| {
-                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
-                e.to_string()
-            })?;
-
-        let result = runtime.resolve(result).await.map_err(|e| {
-            Self::try_call_on_error(runtime, &flow, &e.to_string(), "onRequest");
-            e.to_string()
-        })?;
-
-        let (is_empty, modified_flow) = {
-            let mut scope = runtime.handle_scope();
-            let result_val = deno_core::v8::Local::new(&mut scope, result);
-
-            if result_val.is_undefined() || result_val.is_null() {
-                (true, None)
-            } else {
-                let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
-                drop(scope);
-                match deser {
-                    Ok(f) => (false, Some(f)),
-                    Err(e) => {
-                        let err_str = format!("Failed to deserialize flow: {}", e);
-                        Self::try_call_on_error(runtime, &flow, &err_str, "onRequest");
-                        return Err(err_str);
-                    }
-                }
-            }
-        };
-
-        if is_empty {
-            let resource = {
-                let op_state_rc = runtime.op_state();
-                let mut state = op_state_rc.borrow_mut();
-                state.resource_table.take::<HttpBodyResource>(rid).ok()
-            };
-            if let Some(res) = resource {
-                let body = crate::streams::create_body_from_resource(&res);
-                return Ok((None, RequestAction::Continue(body)));
-            } else {
-                return Ok((
-                    None,
-                    RequestAction::Continue(
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed(),
-                    ),
-                ));
-            }
-        }
-
-        let modified_flow = modified_flow.unwrap();
-
-        let resource = {
-            let op_state_rc = runtime.op_state();
-            let mut state = op_state_rc.borrow_mut();
-            state.resource_table.take::<HttpBodyResource>(rid).ok()
-        };
-
-        let new_body: HttpBody = if let Some(res) = resource {
-            let has_new_body = if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer
-            {
-                http.request
-                    .body
-                    .as_ref()
-                    .map(|b| !b.content.is_empty())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_new_body {
-                if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
-                    if let Some(b) = &http.request.body {
-                        let bytes: Bytes = if b.encoding == "base64" {
-                            base64::engine::general_purpose::STANDARD
-                                .decode(&b.content)
-                                .unwrap_or_default()
-                                .into()
-                        } else {
-                            Bytes::from(b.content.clone())
-                        };
-                        Full::new(bytes)
-                            .map_err(|e| -> BoxError { e.into() })
-                            .boxed()
-                    } else {
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed()
-                    }
-                } else {
-                    http_body_util::Empty::new()
-                        .map_err(|_| -> BoxError { unreachable!() })
-                        .boxed()
-                }
-            } else {
-                crate::streams::create_body_from_resource(&res)
-            }
-        } else if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
-            if let Some(b) = &http.request.body {
-                let bytes: Bytes = if b.encoding == "base64" {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(&b.content)
-                        .unwrap_or_default()
-                        .into()
-                } else {
-                    Bytes::from(b.content.clone())
-                };
-                Full::new(bytes)
-                    .map_err(|e| -> BoxError { e.into() })
-                    .boxed()
-            } else {
-                http_body_util::Empty::new()
-                    .map_err(|_| -> BoxError { unreachable!() })
-                    .boxed()
-            }
-        } else {
-            http_body_util::Empty::new()
-                .map_err(|_| -> BoxError { unreachable!() })
-                .boxed()
-        };
-
-        Ok((Some(modified_flow), RequestAction::Continue(new_body)))
+        let invoked = Self::invoke_body_hook(runtime, stage, &flow, rid, truncated).await;
+        discard_body_resource(runtime, rid);
+        let modified = invoked?;
+        let replacement = modified
+            .as_ref()
+            .and_then(|flow| authored_body(flow, matches!(kind, BodyHookKind::Response)));
+        Ok((modified, replacement))
     }
 
-    async fn handle_on_response(
+    async fn invoke_body_hook(
         runtime: &mut JsRuntime,
-        flow: Flow,
-        body: HttpBody,
-    ) -> Result<(Option<Flow>, ResponseAction), String> {
-        let resource = HttpBodyResource::new(body);
-        let rid = {
-            let op_state_rc = runtime.op_state();
-            let mut state = op_state_rc.borrow_mut();
-            state.resource_table.add(resource)
-        };
-
-        let flow_json = serde_json::to_string(&flow).map_err(|e| e.to_string())?;
-
-        let check_code = "typeof globalThis.onResponse === 'function'";
+        stage: &str,
+        flow: &Flow,
+        rid: ResourceId,
+        truncated: bool,
+    ) -> Result<Option<Flow>, String> {
+        let flow_json = serde_json::to_string(flow).map_err(|e| e.to_string())?;
+        let check_code = format!("typeof globalThis.{stage} === 'function'");
         let exists = runtime
-            .execute_script("check_onResponse", check_code)
+            .execute_script("check_body_hook", check_code)
             .map_err(|e| {
-                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+                Self::try_call_on_error(runtime, flow, &e.to_string(), stage);
                 e.to_string()
             })?;
-
         let exists_bool = {
             let scope = &mut runtime.handle_scope();
-            let exists_val = deno_core::v8::Local::new(scope, exists);
-            exists_val.is_true()
+            deno_core::v8::Local::new(scope, exists).is_true()
         };
-
         if !exists_bool {
-            let resource = {
-                let op_state_rc = runtime.op_state();
-                let mut state = op_state_rc.borrow_mut();
-                state.resource_table.take::<HttpBodyResource>(rid).ok()
-            };
-            if let Some(res) = resource {
-                let body = crate::streams::create_body_from_resource(&res);
-                return Ok((None, ResponseAction::Continue(body)));
-            } else {
-                return Ok((
-                    None,
-                    ResponseAction::Continue(
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed(),
-                    ),
-                ));
-            }
+            return Ok(None);
         }
 
-        let code = format!(
-            "globalThis.onResponse(new RelayBody({}), {})",
-            rid, flow_json
-        );
+        let truncated_lit = if truncated { "true" } else { "false" };
+        let code =
+            format!("globalThis.{stage}(new RelayBody({rid}, {truncated_lit}), {flow_json})");
         let result = runtime
-            .execute_script("call_onResponse", code)
+            .execute_script("call_body_hook", code)
             .map_err(|e| {
-                Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+                Self::try_call_on_error(runtime, flow, &e.to_string(), stage);
                 e.to_string()
             })?;
-        let result = runtime.resolve(result).await.map_err(|e| {
-            Self::try_call_on_error(runtime, &flow, &e.to_string(), "onResponse");
+        let result = settle_promise(runtime, result).await.map_err(|e| {
+            Self::try_call_on_error(runtime, flow, &e.to_string(), stage);
             e.to_string()
         })?;
 
-        let (is_empty, modified_flow) = {
-            let mut scope = runtime.handle_scope();
-            let result_val = deno_core::v8::Local::new(&mut scope, result);
-
-            if result_val.is_undefined() || result_val.is_null() {
-                (true, None)
-            } else {
-                let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
-                drop(scope);
-                match deser {
-                    Ok(f) => (false, Some(f)),
-                    Err(e) => {
-                        let err_str = format!("Failed to deserialize flow: {}", e);
-                        Self::try_call_on_error(runtime, &flow, &err_str, "onResponse");
-                        return Err(err_str);
-                    }
-                }
-            }
-        };
-
-        if is_empty {
-            let resource = {
-                let op_state_rc = runtime.op_state();
-                let mut state = op_state_rc.borrow_mut();
-                state.resource_table.take::<HttpBodyResource>(rid).ok()
-            };
-            if let Some(res) = resource {
-                let body = crate::streams::create_body_from_resource(&res);
-                return Ok((None, ResponseAction::Continue(body)));
-            } else {
-                return Ok((
-                    None,
-                    ResponseAction::Continue(
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed(),
-                    ),
-                ));
+        let mut scope = runtime.handle_scope();
+        let result_val = deno_core::v8::Local::new(&mut scope, result);
+        if result_val.is_undefined() || result_val.is_null() {
+            return Ok(None);
+        }
+        let deser: Result<Flow, _> = deno_core::serde_v8::from_v8(&mut scope, result_val);
+        drop(scope);
+        match deser {
+            Ok(flow) => Ok(Some(flow)),
+            Err(e) => {
+                let err_str = format!("Failed to deserialize flow: {e}");
+                Self::try_call_on_error(runtime, flow, &err_str, stage);
+                Err(err_str)
             }
         }
-
-        let modified_flow = modified_flow.unwrap();
-
-        let resource = {
-            let op_state_rc = runtime.op_state();
-            let mut state = op_state_rc.borrow_mut();
-            state.resource_table.take::<HttpBodyResource>(rid).ok()
-        };
-
-        let new_body: HttpBody = if let Some(res) = resource {
-            let has_new_body = if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer
-            {
-                http.response
-                    .as_ref()
-                    .and_then(|r| r.body.as_ref())
-                    .map(|b| !b.content.is_empty())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_new_body {
-                if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
-                    if let Some(resp) = &http.response {
-                        if let Some(b) = &resp.body {
-                            let bytes: Bytes = if b.encoding == "base64" {
-                                base64::engine::general_purpose::STANDARD
-                                    .decode(&b.content)
-                                    .unwrap_or_default()
-                                    .into()
-                            } else {
-                                Bytes::from(b.content.clone())
-                            };
-                            Full::new(bytes)
-                                .map_err(|e| -> BoxError { e.into() })
-                                .boxed()
-                        } else {
-                            http_body_util::Empty::new()
-                                .map_err(|_| -> BoxError { unreachable!() })
-                                .boxed()
-                        }
-                    } else {
-                        http_body_util::Empty::new()
-                            .map_err(|_| -> BoxError { unreachable!() })
-                            .boxed()
-                    }
-                } else {
-                    http_body_util::Empty::new()
-                        .map_err(|_| -> BoxError { unreachable!() })
-                        .boxed()
-                }
-            } else {
-                crate::streams::create_body_from_resource(&res)
-            }
-        } else if let relay_core_api::flow::Layer::Http(http) = &modified_flow.layer {
-            if let Some(resp) = &http.response {
-                if let Some(b) = &resp.body {
-                    let bytes: Bytes = if b.encoding == "base64" {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(&b.content)
-                            .unwrap_or_default()
-                            .into()
-                    } else {
-                        Bytes::from(b.content.clone())
-                    };
-                    Full::new(bytes)
-                        .map_err(|e| -> BoxError { e.into() })
-                        .boxed()
-                } else {
-                    http_body_util::Empty::new()
-                        .map_err(|_| -> BoxError { unreachable!() })
-                        .boxed()
-                }
-            } else {
-                http_body_util::Empty::new()
-                    .map_err(|_| -> BoxError { unreachable!() })
-                    .boxed()
-            }
-        } else {
-            http_body_util::Empty::new()
-                .map_err(|_| -> BoxError { unreachable!() })
-                .boxed()
-        };
-
-        Ok((Some(modified_flow), ResponseAction::Continue(new_body)))
     }
 
     fn handle_on_websocket_message(
@@ -1350,6 +1203,70 @@ impl DenoScriptEngine {
             deno_core::serde_v8::from_v8(&mut scope, result_val).map_err(|e| e.to_string())?;
         Ok(Some(deser))
     }
+
+    async fn hook_defined(&self, kind: BodyHookKind) -> Result<bool, BoxError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DenoCommand::HasHook(kind, tx))
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        rx.await.map_err(|e| Box::new(e) as BoxError)
+    }
+
+    /// Run a body hook without moving the live stream onto the isolate thread.
+    ///
+    /// The script sees a bounded in-memory copy. The returned body is what the proxy
+    /// should forward: the script's replacement, or the original bytes (including any
+    /// tail past the budget) if the hook passes through or fails.
+    async fn dispatch_body_hook(
+        &self,
+        kind: BodyHookKind,
+        flow: &mut Flow,
+        body: HttpBody,
+    ) -> Result<HttpBody, BoxError> {
+        if !self.hook_defined(kind).await? {
+            return Ok(body);
+        }
+
+        let prepared = streams::prepare_script_body(body, SCRIPT_BODY_BUDGET).await?;
+        let (tx, rx) = oneshot::channel();
+        let command = match kind {
+            BodyHookKind::Request => {
+                DenoCommand::OnRequest(flow.clone(), prepared.visible, prepared.truncated, tx)
+            }
+            BodyHookKind::Response => {
+                DenoCommand::OnResponse(flow.clone(), prepared.visible, prepared.truncated, tx)
+            }
+        };
+        self.tx
+            .send(command)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+
+        let truncated = prepared.truncated;
+        let reply = rx.await.map_err(|e| Box::new(e) as BoxError)?;
+        let forward = match reply {
+            Ok((new_flow, replacement)) => {
+                if let Some(new_flow) = new_flow {
+                    *flow = new_flow;
+                }
+                match replacement {
+                    Some(bytes) => streams::full_body(bytes),
+                    None => prepared.forward,
+                }
+            }
+            Err(error) => {
+                tracing::error!("Script execution error ({kind:?}): {error}");
+                flow.tags.push("script-error".to_string());
+                if let Layer::Http(http) = &mut flow.layer {
+                    http.error = Some(format!("Script Error: {error}"));
+                }
+                prepared.forward
+            }
+        };
+        note_truncated(flow, truncated);
+        Ok(forward)
+    }
 }
 
 #[async_trait]
@@ -1384,21 +1301,10 @@ impl ScriptEngineTrait for DenoScriptEngine {
     }
 
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError> {
-        let (tx, rx) = oneshot::channel();
-        let flow_clone = flow.clone();
-        self.tx
-            .send(DenoCommand::OnRequest(flow_clone, body, tx))
-            .await
-            .map_err(|e| Box::new(e) as BoxError)?;
-        let (new_flow, action) = rx
-            .await
-            .map_err(|e| Box::new(e) as BoxError)?
-            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
-
-        if let Some(f) = new_flow {
-            *flow = f;
-        }
-        Ok(action)
+        let body = self
+            .dispatch_body_hook(BodyHookKind::Request, flow, body)
+            .await?;
+        Ok(RequestAction::Continue(body))
     }
 
     async fn on_response_headers(&self, flow: &mut Flow) -> Result<Option<Flow>, BoxError> {
@@ -1424,21 +1330,10 @@ impl ScriptEngineTrait for DenoScriptEngine {
         flow: &mut Flow,
         body: HttpBody,
     ) -> Result<ResponseAction, BoxError> {
-        let (tx, rx) = oneshot::channel();
-        let flow_clone = flow.clone();
-        self.tx
-            .send(DenoCommand::OnResponse(flow_clone, body, tx))
-            .await
-            .map_err(|e| Box::new(e) as BoxError)?;
-        let (new_flow, action) = rx
-            .await
-            .map_err(|e| Box::new(e) as BoxError)?
-            .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)?;
-
-        if let Some(f) = new_flow {
-            *flow = f;
-        }
-        Ok(action)
+        let body = self
+            .dispatch_body_hook(BodyHookKind::Response, flow, body)
+            .await?;
+        Ok(ResponseAction::Continue(body))
     }
 
     async fn on_websocket_message(
@@ -1558,5 +1453,108 @@ impl ScriptEngineTrait for DenoScriptEngine {
             *flow = new_flow;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hook_timeout_tests {
+    use super::{DenoScriptEngine, ScriptFetchConfig};
+    use crate::engine_trait::ScriptEngineTrait;
+    use bytes::Bytes;
+    use chrono::Utc;
+    use http_body_util::{BodyExt, Full};
+    use relay_core_api::flow::{
+        Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
+    };
+    use relay_core_lib::interceptor::{BoxError, ResponseAction};
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+    use url::Url;
+    use uuid::Uuid;
+
+    fn flow() -> Flow {
+        Flow {
+            id: Uuid::new_v4(),
+            start_time: Utc::now(),
+            end_time: None,
+            close_reason: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".to_string(),
+                client_port: 1,
+                server_ip: "127.0.0.1".to_string(),
+                server_port: 80,
+                server_host: None,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Http(HttpLayer {
+                request: HttpRequest {
+                    method: "GET".to_string(),
+                    url: Url::parse("http://example.com/").unwrap(),
+                    version: "HTTP/1.1".to_string(),
+                    headers: vec![],
+                    body: None,
+                    cookies: vec![],
+                    query: vec![],
+                },
+                response: None,
+                error: None,
+            }),
+            tags: vec![],
+            meta: HashMap::new(),
+            resilience_trace: None,
+            rule_variables: HashMap::new(),
+            matched_rules: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_outlives_the_deadline_releases_the_queue() {
+        let mut engine = DenoScriptEngine::with_hook_timeout(
+            HashSet::new(),
+            ScriptFetchConfig::default(),
+            Duration::from_millis(200),
+        );
+        engine
+            .load_script(
+                r#"
+                globalThis.onResponse = async () => {
+                    await Deno.core.ops.op_wait_ms(10000);
+                };
+                "#,
+            )
+            .await
+            .unwrap();
+
+        let mut flow = flow();
+        let body = Full::new(Bytes::from_static(b"kept"))
+            .map_err(|e| -> BoxError { e.into() })
+            .boxed();
+        let started = Instant::now();
+        let action = engine.on_response(&mut flow, body).await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "hook timeout took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            flow.tags.iter().any(|tag| tag == "script-error"),
+            "timed-out hook should be tagged, got {:?}",
+            flow.tags
+        );
+        match action {
+            ResponseAction::Continue(body) => {
+                let bytes = body.collect().await.unwrap().to_bytes();
+                assert_eq!(&bytes[..], b"kept");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+
+        engine
+            .load_script("globalThis.onResponse = (body, flow) => flow;")
+            .await
+            .expect("LoadScript must work after a timed-out hook");
     }
 }

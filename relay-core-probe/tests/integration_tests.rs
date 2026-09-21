@@ -176,6 +176,24 @@ async fn patch_policy_toggles_redaction() {
     assert_eq!(json["redaction"]["enabled"], true);
 }
 
+#[tokio::test]
+async fn patch_policy_rejects_unknown_fields_without_changing_policy() {
+    let ctx = new_ctx().await;
+    let before = structured(&tools::get_policy(&ctx).await.unwrap());
+    let err = tools::patch_policy(&ctx, json!({"patch": {"request_timeout_ms": 35000}}))
+        .await
+        .expect_err("unknown patch fields must fail");
+    let ToolError::Internal(message) = err else {
+        panic!("expected Internal, got {err:?}");
+    };
+    assert!(
+        message.contains("request_timeout_ms"),
+        "error should name the rejected field, got {message}"
+    );
+    let after = structured(&tools::get_policy(&ctx).await.unwrap());
+    assert_eq!(after["request_timeout_ms"], before["request_timeout_ms"]);
+}
+
 // ── rule CRUD ──
 
 #[tokio::test]

@@ -2198,6 +2198,9 @@ fn modification_field_names(
     if mods.request_headers.is_some() {
         fields.push("request_headers");
     }
+    if mods.request_header_upserts.is_some() {
+        fields.push("request_header_upserts");
+    }
     if mods.request_body.is_some() {
         fields.push("request_body");
     }
@@ -2206,6 +2209,9 @@ fn modification_field_names(
     }
     if mods.response_headers.is_some() {
         fields.push("response_headers");
+    }
+    if mods.response_header_upserts.is_some() {
+        fields.push("response_header_upserts");
     }
     if mods.response_body.is_some() {
         fields.push("response_body");
