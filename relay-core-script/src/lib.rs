@@ -693,6 +693,78 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_websocket_script_error_does_not_stick_to_the_next_flow() {
+        let interceptor = ScriptInterceptor::new().await.unwrap();
+        let throwing = r#"
+            globalThis.onWebSocketMessage = function(_context, _flow, message) {
+                if (message.content.content === "boom") throw new Error("ws explode");
+                return message;
+            };
+        "#;
+        interceptor
+            .load_script(throwing)
+            .await
+            .expect("throwing script should load");
+
+        let mut failed = create_test_flow();
+        interceptor
+            .on_websocket_message(&mut failed, ws_message("boom"))
+            .await
+            .expect("a thrown hook is contained");
+        assert!(
+            failed.tags.iter().any(|tag| tag == "script-error"),
+            "the flow whose hook threw is tagged"
+        );
+
+        let mut next = create_test_flow();
+        let forwarded = interceptor
+            .on_websocket_message(&mut next, ws_message("ok"))
+            .await
+            .expect("the isolate still accepts the next flow");
+        assert!(
+            next.tags.iter().all(|tag| tag != "script-error"),
+            "a later flow is not tagged for an earlier throw"
+        );
+        match forwarded {
+            WebSocketMessageAction::Continue(message) => {
+                assert_eq!(message.content.content, "ok");
+            }
+            other => panic!("expected the message to pass through, got {other:?}"),
+        }
+
+        interceptor
+            .load_script(
+                "globalThis.onWebSocketMessage = function(_context, _flow, message) { return message; };",
+            )
+            .await
+            .expect("a replacement script should load without restarting");
+        let mut reloaded = create_test_flow();
+        interceptor
+            .on_websocket_message(&mut reloaded, ws_message("boom"))
+            .await
+            .expect("the replacement hook runs");
+        assert!(
+            reloaded.tags.iter().all(|tag| tag != "script-error"),
+            "loading a new script clears the throwing hook"
+        );
+    }
+
+    fn ws_message(content: &str) -> WebSocketMessage {
+        WebSocketMessage {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            direction: Direction::ClientToServer,
+            content: BodyData {
+                encoding: "utf-8".to_string(),
+                content: content.to_string(),
+                size: content.len() as u64,
+                grpc: None,
+            },
+            opcode: "Text".to_string(),
+        }
+    }
+
     fn sample_connection_info() -> ConnectionInfo {
         ConnectionInfo {
             id: Uuid::new_v4(),

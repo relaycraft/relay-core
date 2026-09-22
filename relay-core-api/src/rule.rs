@@ -366,3 +366,85 @@ pub struct ScriptHelperEntry {
     pub description: Option<String>,
     pub arity: usize,
 }
+
+/// Parse one rule, naming the field that failed.
+///
+/// Serde's own message says "expected a sequence" without saying which field, so a caller that
+/// sent `actions` as one object cannot tell that the array was the part that was rejected.
+pub fn parse_rule(value: &serde_json::Value) -> Result<Rule, String> {
+    let text =
+        serde_json::to_string(value).map_err(|error| format!("Invalid rule JSON: {error}"))?;
+    let mut deserializer = serde_json::Deserializer::from_str(&text);
+    match serde_path_to_error::deserialize::<_, Rule>(&mut deserializer) {
+        Ok(rule) => Ok(rule),
+        Err(error) => Err(explain_rule_error(
+            &error.path().to_string(),
+            &error.inner().to_string(),
+        )),
+    }
+}
+
+fn explain_rule_error(path: &str, inner: &str) -> String {
+    let at = if path.is_empty() {
+        String::new()
+    } else {
+        format!(" at {path}")
+    };
+    let hint = if path == "actions" && inner.contains("expected a sequence") {
+        ". actions must be an array of {\"type\",\"config\"} objects"
+    } else if path.ends_with("config") && inner.contains("expected a sequence") {
+        ". this config must be an array"
+    } else {
+        ""
+    };
+    format!("Invalid rule JSON{at}: {inner}{hint}")
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::parse_rule;
+    use serde_json::json;
+
+    fn agent_rule() -> serde_json::Value {
+        json!({
+            "id": "probe-rule-mirror",
+            "name": "probe-rule-mirror",
+            "active": true,
+            "stage": "RequestHeaders",
+            "priority": 200,
+            "termination": "Stop",
+            "filter": {"type": "Url", "config": {"mode": "Regex", "value": "httpbin.org/get"}},
+            "actions": [{
+                "type": "MockResponse",
+                "config": {
+                    "status": 200,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {"type": "Text", "value": "{\"mirrored\":true}"}
+                }
+            }],
+            "constraints": null
+        })
+    }
+
+    #[test]
+    fn a_mirrored_mock_rule_parses() {
+        let rule = parse_rule(&agent_rule()).expect("the reported payload is a valid rule");
+        assert_eq!(rule.id, "probe-rule-mirror");
+        assert_eq!(rule.actions.len(), 1);
+    }
+
+    #[test]
+    fn an_actions_object_names_the_field() {
+        let mut rule = agent_rule();
+        rule["actions"] = rule["actions"][0].clone();
+        let error = parse_rule(&rule).expect_err("one action object is not an actions array");
+        assert!(
+            error.contains("at actions"),
+            "the field should be named, got: {error}"
+        );
+        assert!(
+            error.contains("array"),
+            "the hint should say an array is required, got: {error}"
+        );
+    }
+}

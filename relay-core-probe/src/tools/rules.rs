@@ -2,7 +2,6 @@ use super::ToolError;
 use super::{ToolOutcome, ToolSpec, ack_output_schema, ok_ack, ok_json, require_str, tool};
 use crate::server::ProbeContext;
 use relay_core_api::policy::{ProxyPolicy, ProxyPolicyPatch};
-use relay_core_api::rule::Rule;
 use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::MockResponseRuleConfig;
 use rmcp::model::Tool;
@@ -13,15 +12,56 @@ pub fn set_rule_schema() -> Tool {
     tool(
         ToolSpec::write(
         "set_rule",
-        "Add or replace a traffic rule. Accepts the full Rule JSON object. \
-         If a rule with the same ID already exists, it is replaced.",
+        "Add or replace one traffic rule. `actions` is an array of {type, config} objects; \
+         a single action object is rejected. Filters use the same {type, config} shape, and a \
+         string match is {mode, value}. A text body is {type: Text, value}. constraints may be null. \
+         A rule with the same id is replaced.",
         json!({
             "type": "object",
             "required": ["rule"],
             "properties": {
                 "rule": {
                     "type": "object",
-                    "description": "Full Rule object (id, name, active, stage, filter, actions, priority, termination)"
+                    "description": "One rule. actions is an array. Example: {\"id\":\"r1\",\"name\":\"r1\",\"active\":true,\"stage\":\"RequestHeaders\",\"priority\":200,\"termination\":\"Stop\",\"filter\":{\"type\":\"Url\",\"config\":{\"mode\":\"Contains\",\"value\":\"example\"}},\"actions\":[{\"type\":\"AddRequestHeader\",\"config\":{\"name\":\"X-Test\",\"value\":\"1\"}}],\"constraints\":null}",
+                    "required": ["id", "name", "active", "stage", "termination", "filter", "actions"],
+                    "properties": {
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "active": { "type": "boolean" },
+                        "stage": {
+                            "type": "string",
+                            "enum": ["Connect", "RequestHeaders", "RequestBody", "ResponseHeaders", "ResponseBody", "WebSocketMessage"]
+                        },
+                        "priority": { "type": "integer" },
+                        "termination": { "type": "string", "enum": ["Continue", "Stop"] },
+                        "filter": {
+                            "type": "object",
+                            "required": ["type"],
+                            "description": "Adjacent tag. Url/Host/Path config is {mode, value}. And/Or config is an array of filters. All has no config.",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "config": { "description": "Shape depends on type: object, array, string, or number." }
+                            }
+                        },
+                        "actions": {
+                            "type": "array",
+                            "description": "Each item is {type, config}. Unit actions such as Drop and Inspect omit config. MockResponse headers is an object, and its body is {type, value}.",
+                            "items": {
+                                "type": "object",
+                                "required": ["type"],
+                                "properties": {
+                                    "type": { "type": "string" },
+                                    "config": { "type": "object" }
+                                }
+                            }
+                        },
+                        "constraints": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                "timeout_ms": { "type": ["integer", "null"] }
+                            }
+                        }
+                    }
                 }
             }
         }),
@@ -167,8 +207,7 @@ pub async fn list_rules(ctx: &Arc<ProbeContext>) -> Result<ToolOutcome, ToolErro
 
 pub async fn set_rule(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let rule_val = args.get("rule").ok_or("Missing 'rule' parameter")?;
-    let rule: Rule = serde_json::from_value(rule_val.clone())
-        .map_err(|e| format!("Invalid rule JSON: {}", e))?;
+    let rule = relay_core_api::rule::parse_rule(rule_val)?;
 
     let rule_id = rule.id.clone();
     ctx.rules

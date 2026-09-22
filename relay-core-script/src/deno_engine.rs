@@ -985,7 +985,10 @@ impl DenoScriptEngine {
         let modified_message = match deser {
             Ok(m) => m,
             Err(e) => {
-                let err_str = format!("Failed to deserialize message: {}", e);
+                let err_str = format!(
+                    "onWebSocketMessage must return the message, \"DROP\", or nothing (got {e}). \
+                     Returning the flow is the HTTP header-hook shape and tags only this flow"
+                );
                 Self::try_call_on_error(runtime, &flow, &err_str, "onWebSocketMessage");
                 return Err(err_str);
             }

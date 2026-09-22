@@ -77,6 +77,20 @@ fn all_tool_schemas_registered() {
         assert!(names.contains(&expected), "missing tool: {expected}");
     }
 
+    let set_rule = schemas.iter().find(|tool| tool.name == "set_rule").unwrap();
+    let actions = set_rule
+        .input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("rule"))
+        .and_then(|rule| rule.get("properties"))
+        .and_then(|properties| properties.get("actions"))
+        .expect("set_rule schema names actions");
+    assert_eq!(
+        actions.get("type").and_then(Value::as_str),
+        Some("array"),
+        "actions must be declared as an array so a client does not send one object"
+    );
+
     // Lifecycle first: an agent that never learns whether a proxy is running reads every empty
     // result as "no traffic".
     assert_eq!(&names[..3], &["proxy_status", "proxy_start", "proxy_stop"]);
@@ -248,6 +262,28 @@ async fn set_and_delete_rule() {
         .await
         .unwrap();
     assert!(text_of(&result).contains("set successfully"));
+
+    let rejected = tools::set_rule(
+        &ctx,
+        json!({"rule": {
+            "id": "probe-test-rule",
+            "name": "Probe Test",
+            "active": true,
+            "stage": "RequestHeaders",
+            "priority": 10,
+            "termination": "Continue",
+            "filter": {"type": "All"},
+            "actions": {"type": "AddRequestHeader", "config": {"name": "x-test", "value": "1"}},
+            "constraints": null
+        }}),
+    )
+    .await
+    .expect_err("an actions object is not a rule");
+    let message = rejected.to_string();
+    assert!(
+        message.contains("at actions"),
+        "the rejection should name the field, got: {message}"
+    );
 
     let result = tools::delete_rule(&ctx, json!({"id": "probe-test-rule"}))
         .await

@@ -5,7 +5,6 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post, put},
 };
-use relay_core_api::rule::Rule;
 use relay_core_runtime::audit::AuditActor;
 use relay_core_runtime::rule::MockResponseRuleConfig;
 use serde::Deserialize;
@@ -33,8 +32,8 @@ async fn set_rule(
     State(ctx): State<Arc<HttpApiContext>>,
     Json(rule_val): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let rule: Rule = serde_json::from_value(rule_val)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid rule JSON: {}", e)))?;
+    let rule = relay_core_api::rule::parse_rule(&rule_val)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let rule_id = rule.id.clone();
     ctx.rules
         .upsert_rule_from(

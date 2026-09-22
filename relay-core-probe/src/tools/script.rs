@@ -31,9 +31,14 @@ pub fn set_script_schema() -> Tool {
         ToolSpec::write(
             "set_script",
             "Load a JavaScript (Deno) script for dynamic request/response modification. \
-         The script runs inside the Deno/V8 engine and can hook into onRequest, onResponse, \
-         onRequestHeaders, onResponseHeaders, and onWebSocketMessage events. \
+         Hooks: onRequestHeaders(context, flow), onResponseHeaders(context, flow), \
+         onRequest(body, flow), onResponse(body, flow), \
+         onWebSocketMessage(context, flow, message). \
          Return the flow from onResponseHeaders to keep streaming the upstream body. \
+         onWebSocketMessage returns the message, the string DROP, or nothing. Returning the \
+         flow, or throwing, tags only that flow with script-error; the next flow is unaffected \
+         and a later set_script replaces the hook. A WebSocket flow's layer type is WebSocket, \
+         not Http. \
          onRequest and onResponse may be async; body.text() and body.json() read a buffered \
          copy up to 1 MiB, and a hook that does not finish is aborted so the original body \
          is still forwarded.",
