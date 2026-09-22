@@ -34,6 +34,8 @@ pub struct DaemonSection {
     pub mcp_port: u16,
     /// Serve the MCP endpoint from the daemon.
     pub mcp: bool,
+    /// Serve the embedded Web UI on the control port. The proxy still starts only when asked.
+    pub webui: bool,
     /// Stop the proxy after this many seconds without captured traffic; `0` never stops it.
     pub idle_timeout: u64,
     /// Write every flow update to this file as JSONL. Empty means nothing is written.
@@ -67,6 +69,7 @@ impl Default for DaemonSection {
             api_port: crate::control::DEFAULT_API_PORT,
             mcp_port: crate::control::DEFAULT_MCP_PORT,
             mcp: true,
+            webui: true,
             idle_timeout: 0,
             save_stream: String::new(),
         }
@@ -189,6 +192,8 @@ api_port = 8082
 mcp_port = 18083
 # Serve the MCP endpoint from the daemon.
 mcp = true
+# Serve the embedded Web UI on the control port. The proxy still starts only when asked.
+webui = true
 # Stop the proxy after this many seconds without captured traffic. 0 = never.
 idle_timeout = 0
 # Write every flow update to this file as JSONL (empty = do not write).
@@ -219,6 +224,10 @@ mod tests {
         assert_eq!(config, RelayConfig::default());
         assert!(config.daemon.mcp, "MCP is on by default");
         assert!(
+            config.daemon.webui,
+            "the embedded page is served; the proxy still starts only when asked"
+        );
+        assert!(
             config.client.autostart_daemon,
             "the bridge auto-starts by default"
         );
@@ -226,6 +235,16 @@ mod tests {
             config.daemon.idle_timeout, 0,
             "the proxy is never stopped automatically unless asked"
         );
+    }
+
+    #[test]
+    fn webui_stays_on_unless_the_file_turns_it_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(config_path(dir.path()), "[daemon]\nwebui = false\n").expect("write");
+
+        let config = load(dir.path()).expect("config");
+        assert!(!config.daemon.webui);
+        assert!(config.daemon.mcp, "turning the page off leaves MCP alone");
     }
 
     #[test]

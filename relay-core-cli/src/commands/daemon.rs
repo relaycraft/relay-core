@@ -110,6 +110,18 @@ pub struct DaemonOptions {
     pub idle_timeout_secs: u64,
 }
 
+/// Whether this process serves the embedded page.
+///
+/// `--no-web` wins, then an explicit `--web`, then the config file. The page is already in the
+/// binary and the control API already requires the manifest token, so the default is to serve it.
+pub fn resolve_serve_webui(web: bool, no_web: bool, configured: bool) -> bool {
+    if no_web {
+        false
+    } else {
+        web || configured
+    }
+}
+
 impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
@@ -117,7 +129,7 @@ impl Default for DaemonOptions {
             api_bind: "127.0.0.1".to_string(),
             api_token: None,
             api_cors: None,
-            serve_webui: false,
+            serve_webui: true,
             proxy_port: DEFAULT_PROXY_PORT,
             udp_tproxy_port: None,
             transparent: false,
@@ -992,5 +1004,23 @@ mod tests {
         // depending on how fast the daemon booted.
         assert!(!DaemonOptions::default().start_proxy);
         assert_eq!(DaemonOptions::default().idle_timeout_secs, 0);
+        assert!(
+            DaemonOptions::default().serve_webui,
+            "the page is part of the daemon; starting a proxy is a separate command"
+        );
+    }
+
+    #[test]
+    fn the_page_follows_no_web_then_web_then_config() {
+        assert!(resolve_serve_webui(false, false, true));
+        assert!(
+            resolve_serve_webui(true, false, false),
+            "--web serves the page when the config file turned it off"
+        );
+        assert!(
+            !resolve_serve_webui(true, true, true),
+            "--no-web wins over --web and the config file"
+        );
+        assert!(!resolve_serve_webui(false, false, false));
     }
 }

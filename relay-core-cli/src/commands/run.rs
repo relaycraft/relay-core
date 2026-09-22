@@ -6,8 +6,8 @@
 //! engines and two flow histories.
 //!
 //! It is now the same daemon as `relay start`, in the foreground: it publishes a manifest, serves
-//! the control API and the MCP endpoint, and `--ui` renders a TUI that is a *client* of it — so the
-//! terminal sees exactly what every other client sees.
+//! the control API, the embedded Web UI and the MCP endpoint, and `--ui` renders a TUI that is a
+//! *client* of it — so the terminal sees exactly what every other client sees.
 
 use crate::commands::daemon::{self, DaemonLog, DaemonOptions};
 use crate::sse_client;
@@ -37,6 +37,7 @@ pub struct RunOptions {
     pub listen: String,
     pub ui: bool,
     pub web: bool,
+    pub no_web: bool,
     pub theme: Option<String>,
     pub rules: Option<PathBuf>,
     pub script: Option<PathBuf>,
@@ -60,11 +61,9 @@ pub struct RunOptions {
 }
 
 pub async fn execute(options: RunOptions) -> Result<()> {
-    if options.web && options.ui {
-        bail!(
-            "--web and --ui are mutually exclusive; use --web for the browser dashboard or --ui for the terminal UI"
-        );
-    }
+    let config = crate::commands::config::load_or_fail()?;
+    let serve_webui =
+        daemon::resolve_serve_webui(options.web, options.no_web, config.daemon.webui);
 
     let addr: std::net::SocketAddr = options
         .listen
@@ -82,7 +81,7 @@ pub async fn execute(options: RunOptions) -> Result<()> {
         api_bind: options.api_bind.clone(),
         api_token: options.api_token.clone(),
         api_cors: options.api_cors.clone(),
-        serve_webui: options.web,
+        serve_webui,
         proxy_port: addr.port(),
         udp_tproxy_port: options.udp_tproxy_port,
         transparent: options.transparent,

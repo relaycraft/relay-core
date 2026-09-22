@@ -14,12 +14,12 @@ use std::path::PathBuf;
     after_help = "\
 Examples:
   relay-core start                    Start the daemon and the proxy (idempotent)
-  relay-core status                   Show the daemon, the proxy and the MCP endpoint
+  relay-core status                   Show the daemon, the proxy, the MCP endpoint and the Web UI
   relay-core stop                     Stop the proxy, keep the daemon and its history
   relay-core shutdown                 Stop the proxy and the daemon
   relay-core run                      Run the daemon and the proxy in the foreground
   relay-core run --ui                 Foreground daemon with the interactive TUI attached
-  relay-core run --web                Foreground daemon serving the Web UI on the API port
+  relay-core run --web                Foreground daemon serving the Web UI on the control port
   relay-core config init              Write a commented config file and edit your defaults
   relay-core flows                    List captured flows (add --follow to watch live traffic)
   relay-core analyze --file flows.jsonl           Analyze captured flow data
@@ -29,6 +29,10 @@ Examples:
   relay-core ca generate              Generate CA certificate/key pair
   relay-core ca install               Install CA to system trust store (macOS)
   relay-core rules validate rules.json   Validate a rules file
+
+The daemon serves the embedded Web UI on its control port. `relay-core status` prints the URL
+(with the token in the fragment). Turn the page off with --no-web or [daemon] webui = false.
+The proxy still starts only when a command or tool asks for it.
 
 Environment:
   RELAY_LOG       Log filter (default: info, e.g. debug, trace)
@@ -64,6 +68,10 @@ pub enum Commands {
         /// Do not serve the MCP endpoint
         #[arg(long)]
         no_mcp: bool,
+
+        /// Do not serve the embedded Web UI
+        #[arg(long)]
+        no_web: bool,
 
         /// Ensure the daemon runs but do not start the proxy
         #[arg(long)]
@@ -169,6 +177,10 @@ pub enum Commands {
         #[arg(long)]
         no_mcp: bool,
 
+        /// Do not serve the embedded Web UI
+        #[arg(long)]
+        no_web: bool,
+
         /// Also start the proxy as the daemon comes up (clients normally ask for it explicitly)
         #[arg(long)]
         start_proxy: bool,
@@ -241,9 +253,13 @@ pub enum Commands {
         #[arg(long)]
         ui: bool,
 
-        /// Enable Web UI mode (implies --api-port 8082 if not explicitly set)
+        /// Serve the Web UI even when the config file turned it off
         #[arg(long)]
         web: bool,
+
+        /// Do not serve the embedded Web UI
+        #[arg(long)]
+        no_web: bool,
 
         /// Also serve the MCP endpoint from this process on this port (e.g. 18083).
         /// Agents that prefer a daemon they can share should use `relay-core start` instead.

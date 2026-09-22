@@ -35,6 +35,8 @@ pub struct StartOptions {
     pub api_port: Option<u16>,
     pub mcp_port: Option<u16>,
     pub no_mcp: bool,
+    /// Forwarded to a daemon this command spawns. The page stays on unless this or the config says so.
+    pub no_web: bool,
     /// Ensure the daemon exists but leave the proxy alone.
     pub no_proxy: bool,
     pub transparent: bool,
@@ -56,6 +58,7 @@ impl Default for StartOptions {
             api_port: None,
             mcp_port: None,
             no_mcp: false,
+            no_web: false,
             no_proxy: false,
             transparent: false,
             udp_tproxy_port: None,
@@ -411,6 +414,9 @@ fn daemon_args(options: &StartOptions) -> Vec<String> {
     }
     if options.no_mcp {
         args.push("--no-mcp".to_string());
+    }
+    if options.no_web {
+        args.push("--no-web".to_string());
     }
     if options.transparent {
         args.push("--transparent".to_string());
