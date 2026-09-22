@@ -39,7 +39,7 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -351,6 +351,20 @@ pub struct CoreState {
     audit_broadcast_tx: broadcast::Sender<AuditEvent>,
     audit_history: Arc<Mutex<VecDeque<AuditEvent>>>,
     lifecycle: LifecycleManager,
+    /// Port last written into `capture_exclude` because the proxy was listening there. `0` means
+    /// none. Kept so stopping or moving the proxy removes that port and no other entry.
+    proxy_exclude_port: AtomicU16,
+}
+
+/// Removes the proxy listen port from `capture_exclude` when `run_proxy` returns.
+struct ClearProxyExclude {
+    state: Arc<CoreState>,
+}
+
+impl Drop for ClearProxyExclude {
+    fn drop(&mut self) {
+        self.state.set_listening_proxy_port(None);
+    }
 }
 
 fn storage_retention(
@@ -434,6 +448,7 @@ impl CoreState {
             audit_broadcast_tx,
             audit_history: Arc::new(Mutex::new(VecDeque::with_capacity(AUDIT_HISTORY_LIMIT))),
             lifecycle: LifecycleManager::new(),
+            proxy_exclude_port: AtomicU16::new(0),
         };
         state.ensure_retention_task();
         state
@@ -1642,6 +1657,43 @@ impl CoreState {
         self.lifecycle.transition_to_running(port);
     }
 
+    /// Record the port the proxy just bound, or clear it when the proxy stops.
+    ///
+    /// Only the port this process installed is removed. The control API, MCP, and entries an
+    /// operator added stay in the list.
+    fn set_listening_proxy_port(&self, port: Option<u16>) {
+        let new = port.unwrap_or(0);
+        let old = self.proxy_exclude_port.swap(new, Ordering::AcqRel);
+        if old == new {
+            return;
+        }
+        let mut policy = self.policy_snapshot();
+        relay_core_api::policy::replace_proxy_capture_exclude(
+            &mut policy.capture_exclude,
+            (old != 0).then_some(old),
+            port,
+        );
+        self.update_policy_from(AuditActor::Runtime, "proxy.listen".to_string(), policy);
+    }
+
+    /// Flip transparent mode without replacing the rest of the policy.
+    ///
+    /// A fresh [`ProxyPolicy::default`] here used to wipe `capture_exclude` and body observation
+    /// at the moment the proxy started.
+    fn apply_transparent_flag(&self, enabled: bool) {
+        let mut policy = self.policy_snapshot();
+        if policy.transparent_enabled == enabled {
+            return;
+        }
+        policy.transparent_enabled = enabled;
+        let target = if enabled {
+            "proxy.transparent"
+        } else {
+            "proxy.standard"
+        };
+        self.update_policy_from(AuditActor::Runtime, target.to_string(), policy);
+    }
+
     fn transition_to_stopped(&self) {
         self.lifecycle.transition_to_stopped();
     }
@@ -1734,8 +1786,8 @@ impl CoreState {
         // Endpoints the host asked not to see in its own flow list. Applied here rather than at the
         // proxy's emit sites because this is the single point every update passes through: one check
         // covers all of them, including the incremental updates that carry only a flow id.
-        let capture_exclude = self.policy_tx.borrow().capture_exclude.clone();
-
+        // Read on each flow, not once at startup: the proxy port is written into the list only
+        // after this task is spawned, when the listen socket has bound.
         tokio::spawn(async move {
             // Flow ids that matched an exclusion, so their body/trailer/message updates are skipped
             // too. Bounded: a long run must not accumulate ids forever, and the incremental updates
@@ -1761,6 +1813,7 @@ impl CoreState {
                     // Matched on the parsed URL the flow already carries, rather than stringifying it
                     // so the matcher can parse it again — this runs for every update.
                     let excluded = target.is_some_and(|url| {
+                        let capture_exclude = state.policy_tx.borrow().capture_exclude.clone();
                         url.host_str().is_some_and(|host| {
                             relay_core_api::policy::is_capture_excluded_parts(
                                 host,
@@ -1863,14 +1916,16 @@ impl CoreState {
         };
 
         self.transition_to_running(config.port);
+        // The list follows the bound port. A later stop removes it, so a service on the old port
+        // is captured again once this proxy is no longer listening there.
+        self.set_listening_proxy_port(Some(config.port));
+        let _clear_proxy_exclude = ClearProxyExclude {
+            state: Arc::clone(self),
+        };
+        self.apply_transparent_flag(config.transparent);
         let shutdown_rx = Some(shutdown_rx);
 
         if config.transparent {
-            let policy = ProxyPolicy {
-                transparent_enabled: true,
-                ..Default::default()
-            };
-            self.update_policy_from(AuditActor::Runtime, "proxy.transparent".to_string(), policy);
             let policy_rx = self.policy_tx.subscribe();
 
             let provider: Arc<dyn OriginalDstProvider> = {
@@ -1937,8 +1992,6 @@ impl CoreState {
             result
         } else {
             let source = TcpCaptureSource::new(listener);
-            let policy = ProxyPolicy::default();
-            self.update_policy_from(AuditActor::Runtime, "proxy.standard".to_string(), policy);
             let policy_rx = self.policy_tx.subscribe();
 
             let result = relay_core_lib::start_proxy(
@@ -2302,6 +2355,27 @@ mod tests {
             pid, nanos, seq
         ));
         format!("sqlite://{}?mode=rwc", db_path.display())
+    }
+
+    #[tokio::test]
+    async fn the_capture_exclude_follows_the_listening_proxy_port() {
+        let state = CoreState::new(None).await;
+        state.policy_tx.send_modify(|policy| {
+            policy.capture_exclude =
+                vec!["127.0.0.1:8082".to_string(), "localhost:8082".to_string()];
+        });
+
+        state.set_listening_proxy_port(Some(18080));
+        let listening = state.policy_snapshot().capture_exclude;
+        assert!(listening.iter().any(|entry| entry == "127.0.0.1:18080"));
+        assert!(listening.iter().any(|entry| entry == "localhost:18080"));
+        assert!(listening.iter().all(|entry| entry != "127.0.0.1:8080"));
+        assert!(listening.iter().any(|entry| entry == "127.0.0.1:8082"));
+
+        state.set_listening_proxy_port(None);
+        let stopped = state.policy_snapshot().capture_exclude;
+        assert!(stopped.iter().all(|entry| !entry.ends_with(":18080")));
+        assert!(stopped.iter().any(|entry| entry == "127.0.0.1:8082"));
     }
 
     async fn wait_for_audit_rows(store: &relay_core_storage::store::Store) -> i64 {

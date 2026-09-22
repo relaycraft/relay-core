@@ -62,8 +62,7 @@ pub struct RunOptions {
 
 pub async fn execute(options: RunOptions) -> Result<()> {
     let config = crate::commands::config::load_or_fail()?;
-    let serve_webui =
-        daemon::resolve_serve_webui(options.web, options.no_web, config.daemon.webui);
+    let serve_webui = daemon::resolve_serve_webui(options.web, options.no_web, config.daemon.webui);
 
     let addr: std::net::SocketAddr = options
         .listen

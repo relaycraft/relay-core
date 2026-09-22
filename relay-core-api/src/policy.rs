@@ -788,6 +788,33 @@ pub fn is_capture_excluded(url: &str, patterns: &[String]) -> bool {
     is_capture_excluded_parts(host, parsed.port_or_known_default(), patterns)
 }
 
+/// Loopback names for a port this process itself is listening on.
+pub fn proxy_listen_endpoints(port: u16) -> [String; 2] {
+    [format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+}
+
+/// Point the capture-exclude list at the port the proxy is actually listening on.
+///
+/// `previous` is the port this process last installed, so stopping or moving the proxy drops that
+/// port and leaves the control API, MCP, and any entry the operator added themselves.
+pub fn replace_proxy_capture_exclude(
+    exclude: &mut Vec<String>,
+    previous: Option<u16>,
+    listening: Option<u16>,
+) {
+    if let Some(port) = previous {
+        let owned = proxy_listen_endpoints(port);
+        exclude.retain(|entry| !owned.iter().any(|endpoint| endpoint == entry));
+    }
+    if let Some(port) = listening {
+        for endpoint in proxy_listen_endpoints(port) {
+            if !exclude.iter().any(|entry| entry == &endpoint) {
+                exclude.push(endpoint);
+            }
+        }
+    }
+}
+
 /// The same rule, for a caller that already holds a parsed URL.
 ///
 /// The pump runs this for every flow update, and turning the URL back into a string so that it can be
@@ -815,7 +842,7 @@ pub fn is_capture_excluded_parts(host: &str, port: Option<u16>, patterns: &[Stri
 
 #[cfg(test)]
 mod capture_exclude_tests {
-    use super::is_capture_excluded;
+    use super::{is_capture_excluded, replace_proxy_capture_exclude};
 
     fn patterns(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|e| e.to_string()).collect()
@@ -864,6 +891,31 @@ mod capture_exclude_tests {
             "http://127.0.0.1:8082/x",
             &patterns(&["", "  "])
         ),);
+    }
+
+    #[test]
+    fn the_proxy_port_in_the_list_is_the_one_actually_listening() {
+        let mut exclude = vec![
+            "127.0.0.1:8082".to_string(),
+            "localhost:8082".to_string(),
+            "127.0.0.1:18083".to_string(),
+            "example.com:8080".to_string(),
+        ];
+
+        replace_proxy_capture_exclude(&mut exclude, None, Some(18080));
+        assert!(exclude.iter().any(|entry| entry == "127.0.0.1:18080"));
+        assert!(exclude.iter().any(|entry| entry == "localhost:18080"));
+        assert!(
+            exclude.iter().all(|entry| entry != "127.0.0.1:8080"),
+            "a port the proxy is not listening on stays capturable"
+        );
+        assert!(exclude.iter().any(|entry| entry == "127.0.0.1:8082"));
+        assert!(exclude.iter().any(|entry| entry == "example.com:8080"));
+
+        replace_proxy_capture_exclude(&mut exclude, Some(18080), None);
+        assert!(exclude.iter().all(|entry| !entry.ends_with(":18080")));
+        assert!(exclude.iter().any(|entry| entry == "127.0.0.1:8082"));
+        assert!(exclude.iter().any(|entry| entry == "example.com:8080"));
     }
 
     /// A filter must not swallow traffic just because it cannot be understood.

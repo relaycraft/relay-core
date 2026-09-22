@@ -115,11 +115,7 @@ pub struct DaemonOptions {
 /// `--no-web` wins, then an explicit `--web`, then the config file. The page is already in the
 /// binary and the control API already requires the manifest token, so the default is to serve it.
 pub fn resolve_serve_webui(web: bool, no_web: bool, configured: bool) -> bool {
-    if no_web {
-        false
-    } else {
-        web || configured
-    }
+    if no_web { false } else { web || configured }
 }
 
 impl Default for DaemonOptions {
@@ -303,12 +299,7 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
     )
     .await?;
 
-    exclude_own_endpoints(
-        &state,
-        api_addr.port(),
-        options.mcp_port,
-        options.proxy_port,
-    );
+    exclude_own_endpoints(&state, api_addr.port(), options.mcp_port);
 
     let mcp_port = serve_mcp_endpoint(&state, controller.clone(), options.mcp_port).await;
 
@@ -480,17 +471,12 @@ fn apply_startup_policy(state: &Arc<CoreState>, options: &DaemonOptions) -> Resu
 ///
 /// With the proxy configured system-wide, the control API and the Web UI would otherwise show up as
 /// user traffic — and an agent reading flows would see its own requests.
-fn exclude_own_endpoints(
-    state: &Arc<CoreState>,
-    api_port: u16,
-    mcp_port: Option<u16>,
-    proxy_port: u16,
-) {
+fn exclude_own_endpoints(state: &Arc<CoreState>, api_port: u16, mcp_port: Option<u16>) {
+    // The proxy port is added when the proxy actually binds, and removed when it stops. Writing
+    // the configured default here hid a real service on 8080 after the proxy moved to another port.
     let mut exclude = vec![
         format!("127.0.0.1:{api_port}"),
         format!("localhost:{api_port}"),
-        format!("127.0.0.1:{proxy_port}"),
-        format!("localhost:{proxy_port}"),
     ];
     if let Some(port) = mcp_port {
         exclude.push(format!("127.0.0.1:{port}"));
@@ -982,7 +968,7 @@ mod tests {
             "the engine default stays off until this host declares otherwise"
         );
 
-        exclude_own_endpoints(&state, 18082, Some(18083), 8080);
+        exclude_own_endpoints(&state, 18082, Some(18083));
 
         let policy = state.policy_snapshot();
         assert_eq!(
@@ -994,6 +980,13 @@ mod tests {
                 .capture_exclude
                 .iter()
                 .any(|host| host == "127.0.0.1:18082")
+        );
+        assert!(
+            policy
+                .capture_exclude
+                .iter()
+                .all(|host| host != "127.0.0.1:8080" && host != "localhost:8080"),
+            "the proxy port is excluded only while the proxy is listening on it"
         );
     }
 
