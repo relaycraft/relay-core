@@ -102,8 +102,8 @@ async fn resolve_bridge_options() -> Result<BridgeOptions, String> {
             let manifest = start_daemon(&data_dir).await?;
             bridge_options_for(&manifest, &data_dir)
         }
-        DaemonStatus::Unresponsive(manifest) => Err(format!(
-            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
+        DaemonStatus::Unresponsive { manifest, reason } => Err(format!(
+            "a RelayCore daemon (pid {}) failed the control handshake at {} ({reason}). See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
             manifest.pid,
             manifest.control_base_url(),
             data_dir.join("daemon.log").display(),

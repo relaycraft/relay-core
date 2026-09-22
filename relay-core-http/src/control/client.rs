@@ -5,7 +5,7 @@
 //! that can only report prose forces its own caller to guess.
 
 use crate::control::manifest::{
-    CONTROL_API_VERSION, DaemonManifest, Discovery, discover, remove_manifest,
+    CONTROL_API_VERSION, DaemonManifest, Discovery, discover, process_alive, remove_manifest,
 };
 use relay_core_runtime::RuntimeLifecycle;
 use relay_core_runtime::services::{ProxyStartOutcome, ProxyStartRequest, ProxyStopOutcome};
@@ -276,9 +276,13 @@ pub enum DaemonStatus {
     NotRunning,
     /// A manifest exists but speaks a different control protocol.
     Incompatible { found: String, expected: String },
-    /// A live pid owns the directory but the control API is not answering (starting up, hung, or
-    /// a port taken by something else).
-    Unresponsive(DaemonManifest),
+    /// A live pid owns the directory but `GET /api/v1/version` was not accepted (still starting,
+    /// hung, or another process holding the published port). `reason` is that request's failure,
+    /// so a 401 is not reported as an empty listener.
+    Unresponsive {
+        manifest: DaemonManifest,
+        reason: String,
+    },
     Running {
         manifest: Box<DaemonManifest>,
         client: ControlClient,
@@ -288,7 +292,7 @@ pub enum DaemonStatus {
 impl DaemonStatus {
     pub fn manifest(&self) -> Option<&DaemonManifest> {
         match self {
-            Self::Unresponsive(manifest) => Some(manifest),
+            Self::Unresponsive { manifest, .. } => Some(manifest),
             Self::Running { manifest, .. } => Some(manifest),
             _ => None,
         }
@@ -326,7 +330,19 @@ pub async fn connect(data_dir: &Path) -> DaemonStatus {
                         expected: CONTROL_API_VERSION.to_string(),
                     }
                 }
-                Err(_) => DaemonStatus::Unresponsive(manifest),
+                Err(error) => {
+                    // The process can die between the liveness check and this request. Leaving
+                    // the manifest in place would make the next client refuse to start a daemon.
+                    if !process_alive(manifest.pid) {
+                        remove_manifest(data_dir);
+                        DaemonStatus::NotRunning
+                    } else {
+                        DaemonStatus::Unresponsive {
+                            manifest,
+                            reason: error.to_string(),
+                        }
+                    }
+                }
             }
         }
     }

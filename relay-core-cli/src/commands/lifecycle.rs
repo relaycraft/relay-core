@@ -513,8 +513,8 @@ async fn print_started(
 
 fn describe_unusable(data_dir: &Path, status: DaemonStatus) -> String {
     match status {
-        DaemonStatus::Unresponsive(manifest) => format!(
-            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
+        DaemonStatus::Unresponsive { manifest, reason } => format!(
+            "a RelayCore daemon (pid {}) failed the control handshake at {} ({reason}). See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
             manifest.pid,
             manifest.control_base_url(),
             daemon::describe_log(data_dir),

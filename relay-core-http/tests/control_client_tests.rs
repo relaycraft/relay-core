@@ -260,9 +260,41 @@ async fn a_live_pid_with_a_dead_api_is_reported_as_unresponsive() {
     write_manifest(registry.path(), &manifest).expect("write manifest");
 
     match connect(registry.path()).await {
-        DaemonStatus::Unresponsive(found) => assert_eq!(found.api_port, manifest.api_port),
+        DaemonStatus::Unresponsive {
+            manifest: found,
+            reason,
+        } => {
+            assert_eq!(found.api_port, manifest.api_port);
+            assert!(
+                reason.contains(&manifest.control_base_url()),
+                "the failure must name the control URL, got {reason}"
+            );
+        }
         other => panic!("expected Unresponsive, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_manifest_for_a_dead_process_is_not_running() {
+    let registry = tempfile::tempdir().expect("temp dir");
+    let manifest = DaemonManifest {
+        pid: 999_999_999,
+        api_version: CONTROL_API_VERSION.to_string(),
+        engine_version: "0.0.0-test".to_string(),
+        api_port: free_port(),
+        proxy_port: None,
+        mcp_port: None,
+        serve_webui: false,
+        token: None,
+        started_at_ms: now_ms(),
+        data_dir: registry.path().to_path_buf(),
+    };
+    write_manifest(registry.path(), &manifest).expect("write manifest");
+
+    assert!(matches!(
+        connect(registry.path()).await,
+        DaemonStatus::NotRunning
+    ));
 }
 
 #[tokio::test]

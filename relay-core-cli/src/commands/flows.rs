@@ -76,8 +76,8 @@ async fn resolve_daemon(explicit: Option<&str>) -> Result<ResolvedDaemon> {
             "no RelayCore daemon is running in {}. Start one with `{CLI_COMMAND} start`, or pass --api-url.",
             data_dir.display()
         ),
-        DaemonStatus::Unresponsive(manifest) => bail!(
-            "the RelayCore daemon (pid {}) is not answering at {}",
+        DaemonStatus::Unresponsive { manifest, reason } => bail!(
+            "the RelayCore daemon (pid {}) failed the control handshake at {} ({reason})",
             manifest.pid,
             manifest.control_base_url()
         ),

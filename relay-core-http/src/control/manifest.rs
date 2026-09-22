@@ -178,10 +178,46 @@ pub fn process_alive(pid: u32) -> bool {
 
 /// Whether `pid` names a live process.
 ///
-/// Windows reports `true` unconditionally: the check would need process-handle APIs, and the
-/// cost of being wrong is bounded — discovery falls back to the control-API health check, which
-/// reclaims a stale manifest on the next `start`.
-#[cfg(not(unix))]
+/// A dead pid must not count as alive. Discovery treats a live pid as the owner of the data
+/// directory and will not start a replacement; on Windows that used to be every non-zero pid, so a
+/// leftover `daemon.json` made every later health check fail without ever launching a daemon.
+#[cfg(windows)]
+pub fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    unsafe extern "system" {
+        fn OpenProcess(
+            desired_access: u32,
+            inherit_handle: i32,
+            process_id: u32,
+        ) -> *mut core::ffi::c_void;
+        fn GetExitCodeProcess(process: *mut core::ffi::c_void, exit_code: *mut u32) -> i32;
+        fn CloseHandle(object: *mut core::ffi::c_void) -> i32;
+    }
+
+    // SAFETY: the handle is closed on every path that receives a non-null value, and the exit
+    // code is only read after `GetExitCodeProcess` reports success.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Access denied means the process exists but this user cannot inspect it.
+            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE
+    }
+}
+
+/// Whether `pid` names a live process. Platforms without a process query treat only pid 0 as dead.
+#[cfg(not(any(unix, windows)))]
 pub fn process_alive(pid: u32) -> bool {
     pid != 0
 }

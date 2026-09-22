@@ -102,6 +102,21 @@ fn env_absolute(key: &str) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
+/// `HOMEDRIVE` + `HOMEPATH` (`C:` + `\Users\name`). Some Windows processes set these and leave
+/// `USERPROFILE` unset.
+#[cfg(windows)]
+fn windows_home_drive() -> Option<PathBuf> {
+    let drive = std::env::var_os("HOMEDRIVE")?;
+    let path = std::env::var_os("HOMEPATH")?;
+    if drive.is_empty() || path.is_empty() {
+        return None;
+    }
+    let mut combined = std::ffi::OsString::from(drive);
+    combined.push(path);
+    let home = PathBuf::from(combined);
+    home.is_absolute().then_some(home)
+}
+
 fn user_home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -109,7 +124,9 @@ fn user_home_dir() -> Option<PathBuf> {
     }
     #[cfg(windows)]
     {
-        env_absolute("USERPROFILE").or_else(|| env_absolute("HOME"))
+        env_absolute("USERPROFILE")
+            .or_else(|| env_absolute("HOME"))
+            .or_else(windows_home_drive)
     }
     #[cfg(not(any(unix, windows)))]
     {
