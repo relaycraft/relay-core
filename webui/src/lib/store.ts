@@ -5,6 +5,9 @@ export type ViewId = 'flows' | 'workshop' | 'rules' | 'scripts' | 'settings';
 
 export const MAX_FLOWS = 5000;
 
+/** How long body events for the open flow wait before one detail refresh. */
+export const BODY_DETAIL_REFRESH_MS = 200;
+
 export interface AppState {
   activeView: ViewId;
   flows: Map<string, FlowSummary>;
@@ -82,10 +85,19 @@ export function createAppStore() {
     setState('selectedFlowId', id);
   }
 
+  let bodyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
   function notifyHttpBody(flowId: string) {
-    if (state.selectedFlowId === flowId) {
-      setState('flowDetailGeneration', (n) => n + 1);
-    }
+    if (state.selectedFlowId !== flowId) return;
+    // A live connection emits a body event per chunk. Refreshing on every one keeps the detail
+    // request in flight, so the pane never leaves "Loading...". One refresh per quiet gap is enough.
+    if (bodyRefreshTimer !== undefined) return;
+    bodyRefreshTimer = setTimeout(() => {
+      bodyRefreshTimer = undefined;
+      if (state.selectedFlowId === flowId) {
+        setState('flowDetailGeneration', (n) => n + 1);
+      }
+    }, BODY_DETAIL_REFRESH_MS);
   }
 
   function markBodyBudgetExceeded(flowId: string) {

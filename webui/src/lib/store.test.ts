@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { createAppStore, MAX_FLOWS } from './store';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BODY_DETAIL_REFRESH_MS, createAppStore, MAX_FLOWS } from './store';
 import type { FlowSummary } from '@/types/api';
 
 function makeSummary(id: string): FlowSummary {
@@ -40,6 +40,27 @@ describe('createAppStore', () => {
     expect(app.state.flows.has('pinned')).toBe(true);
   });
 
+  it('refreshes an open flow once per burst of body events', () => {
+    vi.useFakeTimers();
+    const app = createAppStore();
+    app.upsertFlow(makeSummary('a'));
+    app.selectFlow('a');
+    app.notifyHttpBody('a');
+    app.notifyHttpBody('a');
+    expect(app.state.flowDetailGeneration).toBe(0);
+    vi.advanceTimersByTime(BODY_DETAIL_REFRESH_MS);
+    expect(app.state.flowDetailGeneration).toBe(1);
+  });
+
+  it('does not refresh a flow that is not open', () => {
+    vi.useFakeTimers();
+    const app = createAppStore();
+    app.upsertFlow(makeSummary('a'));
+    app.notifyHttpBody('a');
+    vi.advanceTimersByTime(BODY_DETAIL_REFRESH_MS);
+    expect(app.state.flowDetailGeneration).toBe(0);
+  });
+
   it('clearFlows resets list state', () => {
     const app = createAppStore();
     app.upsertFlow(makeSummary('a'));
@@ -49,4 +70,8 @@ describe('createAppStore', () => {
     expect(app.state.flows.size).toBe(0);
     expect(app.state.selectedFlowId).toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

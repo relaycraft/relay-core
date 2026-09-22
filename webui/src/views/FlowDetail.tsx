@@ -1,5 +1,6 @@
 import { createSignal, createResource, Show, For, Switch, Match } from 'solid-js';
 import { getFlow, replayFlow, exportFlowHar } from '@/lib/api';
+import { bodyBytes, decodeBodyText } from '@/lib/bodyText';
 import { buildCurlCommand } from '@/lib/flowActions';
 import { store } from '@/lib/store';
 import type { Flow, HttpLayer, BodyData } from '@/types/api';
@@ -72,6 +73,13 @@ export default function FlowDetail(props: { flowId: string }) {
     () => ({ id: props.flowId, gen: store.state.flowDetailGeneration }),
     ({ id }) => getFlow(id),
   );
+
+  /** The flow for this selection. A refresh keeps the previous value, so an id check avoids
+   *  showing another connection while the new one is still loading. */
+  const loadedFlow = () => {
+    const current = flow();
+    return current && current.id === props.flowId ? current : undefined;
+  };
 
   // Which body this pane is about — the response when there is one, since that is what "Payload"
   // usually means to someone inspecting traffic.
@@ -166,26 +174,38 @@ export default function FlowDetail(props: { flowId: string }) {
 
       {/* Tab content */}
       <div class="flex-1 overflow-y-auto p-2">
-        <Show when={!flow.loading} fallback={<div class="text-text-dim text-xs p-2">Loading...</div>}>
-          <Show when={flow()}>
+        {/* `loading` is also true while a body event refreshes a flow that is already on screen.
+            Gating the pane on it replaced the detail with "Loading..." for the whole connection. */}
+        <Show
+          when={loadedFlow()}
+          fallback={
+            <Show
+              when={flow.error}
+              fallback={<div class="text-text-dim text-xs p-2">Loading...</div>}
+            >
+              <div class="text-warn text-xs p-2">Could not load this flow.</div>
+            </Show>
+          }
+        >
+          {(current) => (
             <Switch>
               <Match when={activeTab() === 'headers'}>
-                <HeadersView flow={flow()!} />
+                <HeadersView flow={current()} />
               </Match>
               <Match when={activeTab() === 'payload'}>
-                <PayloadView flow={flow()!} view={effectiveView()} />
+                <PayloadView flow={current()} view={effectiveView()} />
               </Match>
               <Match when={activeTab() === 'timing'}>
-                <TimingView flow={flow()!} />
+                <TimingView flow={current()} />
               </Match>
               <Match when={activeTab() === 'messages'}>
-                <MessagesView flow={flow()!} />
+                <MessagesView flow={current()} />
               </Match>
               <Match when={activeTab() === 'trace'}>
-                <TraceView flow={flow()!} />
+                <TraceView flow={current()} />
               </Match>
             </Switch>
-          </Show>
+          )}
         </Show>
       </div>
 
@@ -340,18 +360,6 @@ function PayloadView(props: { flow: Flow; view: 'json' | 'hex' | 'text' }) {
   );
 }
 
-function bodyBytes(data: BodyData): Uint8Array {
-  if (data.encoding === 'base64') {
-    try {
-      const bin = atob(data.content);
-      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    } catch {
-      return new TextEncoder().encode(data.content);
-    }
-  }
-  return new TextEncoder().encode(data.content);
-}
-
 /** Bytes the hex view will lay out; beyond this it is noise rather than information. */
 const HEX_PREVIEW_BYTES = 4096;
 
@@ -367,7 +375,7 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text'; con
   const kind = () => mediaKind(props.contentType);
   const renderable = () => RENDERABLE.has(kind());
 
-  const textContent = () => new TextDecoder().decode(bodyBytes(props.body));
+  const textContent = () => decodeBodyText(props.body, props.contentType);
 
   /** The body as a data URL, for the tags that render it. Binary arrives base64 already. */
   const dataUrl = () =>
