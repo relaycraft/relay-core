@@ -19,19 +19,23 @@ pub fn router(ctx: Arc<HttpApiContext>) -> Router {
 
 /// GET /api/v1/policy
 async fn get_policy(State(ctx): State<Arc<HttpApiContext>>) -> Json<Value> {
+    Json(policy_json(&ctx))
+}
+
+/// The policy the control API hands to clients. Upstream passwords stay masked.
+fn policy_json(ctx: &HttpApiContext) -> Value {
     let policy = ctx.policy.policy_snapshot();
     let mut val = serde_json::to_value(&policy).unwrap_or_default();
-    // Mask upstream auth password in response
     if let Some(obj) = val.as_object_mut()
         && let Some(upstream) = obj.get_mut("upstream")
         && let Some(auth) = upstream.get_mut("auth")
     {
         auth["password"] = serde_json::Value::String("***".to_string());
     }
-    Json(val)
+    val
 }
 
-/// PATCH /api/v1/policy  — body: ProxyPolicyPatch JSON
+/// PATCH /api/v1/policy — body: ProxyPolicyPatch JSON. Response is the updated policy.
 async fn patch_policy(
     State(ctx): State<Arc<HttpApiContext>>,
     Json(body): Json<Value>,
@@ -59,5 +63,52 @@ async fn patch_policy(
     ctx.policy
         .patch_policy_from(AuditActor::Http, "/api/v1/policy PATCH".to_string(), patch);
 
-    Ok(Json(serde_json::json!({ "status": "ok" })))
+    // Callers, including the Web UI, replace their local policy with this body.
+    // A status acknowledgement has no `redaction` or runtime fields, so the next
+    // render reads `undefined.enabled` and the runtime panel goes blank.
+    Ok(Json(policy_json(&ctx)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::router;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Method, Request, StatusCode},
+    };
+    use relay_core_runtime::CoreState;
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn patch_returns_the_updated_policy() {
+        let state = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(crate::server::HttpApiContext::new(state));
+        let app = router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/api/v1/policy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"redaction":{"enabled":false}}"#))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: Value = serde_json::from_slice(&body).expect("body should be valid json");
+        assert_eq!(json["redaction"]["enabled"], false);
+        assert!(json["max_body_size"].is_number());
+        assert!(json["rule_body_inspect_budget"].is_number());
+        assert!(json["request_timeout_ms"].is_number());
+        assert!(json["transparent_enabled"].is_boolean());
+        assert!(json.get("status").is_none());
+    }
 }
