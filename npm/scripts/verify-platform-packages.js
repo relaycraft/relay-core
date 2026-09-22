@@ -13,7 +13,11 @@
  *
  * Usage: node npm/scripts/verify-platform-packages.js 0.3.9
  *        node npm/scripts/verify-platform-packages.js v0.3.9
+ *        node npm/scripts/verify-platform-packages.js 0.3.9 linux-arm64
  *        VERIFY_TIMEOUT_MS=30000 node npm/scripts/verify-platform-packages.js 0.3.9
+ *
+ * A platform argument waits for that one package. The publish matrix uses it so a job stays
+ * incomplete until the abbreviated packument lists the version it just uploaded.
  */
 
 
@@ -25,8 +29,13 @@ const PLATFORMS = [
   "win32-x64",
 ];
 
-/** How long to keep waiting for the registry to catch up. Override with VERIFY_TIMEOUT_MS. */
-const TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS || 180_000);
+/**
+ * How long to keep waiting for the registry to catch up. Override with VERIFY_TIMEOUT_MS.
+ *
+ * 15 minutes. On v0.13.1 the linux-arm64 tarball (about 47MB) was accepted at once and stayed
+ * off this abbreviated document for about 10 minutes, past the previous 180s budget.
+ */
+const TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS || 15 * 60 * 1000);
 /** Gap between attempts. */
 const INTERVAL_MS = Number(process.env.VERIFY_INTERVAL_MS || 5_000);
 
@@ -37,6 +46,12 @@ if (!raw) {
 }
 
 const version = raw.replace(/^v/, "");
+const onlyPlatform = process.argv[3];
+if (onlyPlatform && !PLATFORMS.includes(onlyPlatform)) {
+  console.error(`Unknown platform "${onlyPlatform}". Expected one of: ${PLATFORMS.join(", ")}`);
+  process.exit(1);
+}
+const platforms = onlyPlatform ? [onlyPlatform] : PLATFORMS;
 
 /**
  * Is this exact version published?
@@ -71,7 +86,7 @@ function sleep(ms) {
 
 async function allPublished() {
   const missing = [];
-  for (const platform of PLATFORMS) {
+  for (const platform of platforms) {
     const { ok, published } = await isPublished(platform);
     if (ok) {
       console.log(`  ok @relay-core/binaries-${platform}@${version}`);
@@ -86,7 +101,7 @@ async function allPublished() {
   return missing;
 }
 
-console.log(`Verifying ${PLATFORMS.length} platform packages @ ${version} on npm registry...`);
+console.log(`Verifying ${platforms.length} platform package(s) @ ${version} on npm registry...`);
 
 const deadline = Date.now() + TIMEOUT_MS;
 let missing = await allPublished();

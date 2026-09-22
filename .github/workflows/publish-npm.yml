@@ -114,19 +114,21 @@ jobs:
           Copy-Item $probe $pkg
 
       - name: Publish @relay-core/binaries-${{ matrix.npm_platform }}
-        # Idempotent on purpose. npm accepts a publish and then processes a large package for
-        # minutes, so a job can go green while the version is not yet readable — the wrapper job
-        # then refuses to continue, and the only way forward is to re-run this one. A re-run that
-        # died on "cannot publish over the previously published versions" would leave the release
-        # half-published with no way to finish it.
+        # Idempotent on purpose. npm accepts a large tarball and processes it for minutes, so
+        # `npm publish` returning is not the same as the version being readable. This step stays
+        # incomplete until the abbreviated packument lists the version (15 minutes). The wrapper
+        # job reads that same document, and it does not start until every matrix leg has exited.
+        # A re-run that finds the version already published skips the upload and still waits.
         run: |
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
+          platform="${{ matrix.npm_platform }}"
           if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version is already published; nothing to do."
-            exit 0
+            echo "$name@$version is already published."
+          elif ! npm publish --access public; then
+            echo "npm publish did not succeed; waiting in case the registry already accepted $name@$version."
           fi
-          npm publish --access public
+          node ../../scripts/verify-platform-packages.js "$version" "$platform"
         # The check is POSIX shell; a Windows runner would otherwise run it under PowerShell.
         shell: bash
         working-directory: npm/packages/binaries-${{ matrix.npm_platform }}
