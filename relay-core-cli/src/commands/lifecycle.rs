@@ -87,7 +87,7 @@ pub async fn start(options: StartOptions) -> Result<()> {
     let request = proxy_request(&options)?;
     match client
         .clone()
-        .identifying_as(&cli_actor("start"))
+        .identifying_as(cli_actor("start"))
         .proxy_start(&request)
         .await
     {
