@@ -52,18 +52,112 @@ impl CaPaths {
     }
 }
 
+/// Data directory for this process.
+///
+/// `RELAY_DATA_DIR` wins when it is non-empty. A relative value is anchored to
+/// the working directory once, so the daemon and every later client agree on
+/// one absolute path. Otherwise the directory is the per-user
+/// [`default_data_dir`], never a `.relay-core` folder in whatever directory
+/// the process was started from.
 pub fn resolve_data_dir() -> PathBuf {
-    std::env::var(RELAY_DATA_DIR_ENV)
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(default_data_dir)
+    if let Some(configured) = std::env::var_os(RELAY_DATA_DIR_ENV).filter(|value| !value.is_empty())
+    {
+        return make_absolute(PathBuf::from(configured));
+    }
+    default_data_dir()
 }
 
+/// `$HOME/.relay-core` (decision 0007): one directory per user, shared across
+/// projects and working directories.
+///
+/// A missing, empty, or relative `HOME` is not a reason to fall back to the
+/// process working directory. On Unix the account database supplies the home
+/// directory instead. Launching the daemon from another folder must not create
+/// a fresh `.relay-core` there.
 pub fn default_data_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(DEFAULT_DATA_DIR_NAME)
+    let home = user_home_dir().unwrap_or_else(|| {
+        panic!(
+            "could not find a home directory for {DEFAULT_DATA_DIR_NAME}; set {RELAY_DATA_DIR_ENV} to an absolute path"
+        )
+    });
+    home.join(DEFAULT_DATA_DIR_NAME)
+}
+
+fn make_absolute(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path,
+    }
+}
+
+fn env_absolute(key: &str) -> Option<PathBuf> {
+    let raw = std::env::var_os(key)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    path.is_absolute().then_some(path)
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        return env_absolute("HOME").or_else(passwd_home);
+    }
+    #[cfg(windows)]
+    {
+        return env_absolute("USERPROFILE").or_else(|| env_absolute("HOME"));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        env_absolute("HOME")
+    }
+}
+
+/// Home directory from the passwd database, ignoring `HOME`.
+///
+/// `HOME` is often unset or empty for a process started outside a login shell
+/// (a service manager, `sudo` without preserving the environment, an IDE run
+/// configuration). The working directory is not a substitute.
+#[cfg(unix)]
+fn passwd_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut capacity = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    if capacity < 1024 {
+        capacity = 16 * 1024;
+    }
+    let mut buf = vec![0u8; capacity as usize];
+    // SAFETY: `pwd` is only read after `getpwuid_r` succeeds, and `pw_dir`
+    // points into `buf`, which outlives that read.
+    let dir = unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            buf.len(),
+            &mut result,
+        );
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        let dir_ptr = (*result).pw_dir;
+        if dir_ptr.is_null() {
+            return None;
+        }
+        std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr(dir_ptr).to_bytes()).to_os_string()
+    };
+    let path = PathBuf::from(dir);
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +248,131 @@ mod tests {
         assert!(err.contains(RELAY_CA_CERT_ENV));
         unsafe {
             std::env::remove_var(RELAY_CA_CERT_ENV);
+        }
+    }
+
+    /// Restores `HOME` and `RELAY_DATA_DIR` even when an assertion panics.
+    struct HomeEnv {
+        home: Option<std::ffi::OsString>,
+        data_dir: Option<std::ffi::OsString>,
+    }
+
+    impl HomeEnv {
+        fn capture() -> Self {
+            Self {
+                home: std::env::var_os("HOME"),
+                data_dir: std::env::var_os(RELAY_DATA_DIR_ENV),
+            }
+        }
+
+        fn set_home(&self, value: Option<&str>) {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+
+        fn set_data_dir(&self, value: Option<&str>) {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(RELAY_DATA_DIR_ENV, value),
+                    None => std::env::remove_var(RELAY_DATA_DIR_ENV),
+                }
+            }
+        }
+    }
+
+    impl Drop for HomeEnv {
+        fn drop(&mut self) {
+            unsafe {
+                match self.home.clone() {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+                match self.data_dir.clone() {
+                    Some(value) => std::env::set_var(RELAY_DATA_DIR_ENV, value),
+                    None => std::env::remove_var(RELAY_DATA_DIR_ENV),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_data_dir_is_home_dot_relay_core() {
+        let _guard = env_lock().lock().expect("lock");
+        let env = HomeEnv::capture();
+        env.set_data_dir(None);
+        env.set_home(Some("/tmp/relay-home-fixed"));
+
+        assert_eq!(
+            default_data_dir(),
+            PathBuf::from("/tmp/relay-home-fixed/.relay-core")
+        );
+        assert_eq!(
+            resolve_data_dir(),
+            PathBuf::from("/tmp/relay-home-fixed/.relay-core")
+        );
+    }
+
+    #[test]
+    fn empty_data_dir_env_falls_back_to_home() {
+        let _guard = env_lock().lock().expect("lock");
+        let env = HomeEnv::capture();
+        env.set_home(Some("/tmp/relay-home-fixed"));
+        env.set_data_dir(Some(""));
+
+        assert_eq!(
+            resolve_data_dir(),
+            PathBuf::from("/tmp/relay-home-fixed/.relay-core")
+        );
+    }
+
+    #[test]
+    fn relative_data_dir_env_is_anchored_once() {
+        let _guard = env_lock().lock().expect("lock");
+        let env = HomeEnv::capture();
+        env.set_data_dir(Some("custom-relay-data"));
+
+        let resolved = resolve_data_dir();
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+        assert_eq!(
+            resolved,
+            std::env::current_dir()
+                .expect("cwd")
+                .join("custom-relay-data")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unusable_home_does_not_follow_the_working_directory() {
+        let _guard = env_lock().lock().expect("lock");
+        let env = HomeEnv::capture();
+        env.set_data_dir(None);
+        let cwd_data_dir = std::env::current_dir()
+            .expect("cwd")
+            .join(DEFAULT_DATA_DIR_NAME);
+
+        for home in [None, Some(""), Some("."), Some("relative/home")] {
+            env.set_home(home);
+            let resolved = resolve_data_dir();
+            assert!(
+                resolved.is_absolute(),
+                "HOME={home:?} produced {}",
+                resolved.display()
+            );
+            assert_eq!(
+                resolved.file_name().and_then(|name| name.to_str()),
+                Some(DEFAULT_DATA_DIR_NAME)
+            );
+            assert_ne!(
+                resolved, cwd_data_dir,
+                "HOME={home:?} followed the working directory"
+            );
+            assert_ne!(resolved, PathBuf::from("./.relay-core"));
+            assert_ne!(resolved, PathBuf::from(".relay-core"));
         }
     }
 }
