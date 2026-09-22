@@ -1,5 +1,6 @@
 use crate::sse_client;
 use anyhow::{Context, Result, bail};
+use relay_core_api::CLI_COMMAND;
 use relay_core_api::modification::{FlowQuery, FlowSummary, parse_flow_filter};
 use relay_core_http::control::{DaemonStatus, connect};
 use relay_core_runtime::paths;
@@ -72,7 +73,7 @@ async fn resolve_daemon(explicit: Option<&str>) -> Result<ResolvedDaemon> {
             token: manifest.token.clone(),
         }),
         DaemonStatus::NotRunning => bail!(
-            "no RelayCore daemon is running in {}. Start one with `relay start`, or pass --api-url.",
+            "no RelayCore daemon is running in {}. Start one with `{CLI_COMMAND} start`, or pass --api-url.",
             data_dir.display()
         ),
         DaemonStatus::Unresponsive(manifest) => bail!(

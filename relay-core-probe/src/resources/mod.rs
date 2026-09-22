@@ -140,7 +140,7 @@ To intercept HTTPS traffic, your system must trust the RelayCore CA.
 Generate the CA first:
 
 ```bash
-relay-core-cli ca generate
+{cmd} ca generate
 ```
 
 Default path:
@@ -179,7 +179,8 @@ After installation, visit https://example.com — the flow should appear in sear
         ca.cert.display(),
         ca.cert.display(),
         ca.cert.display(),
-        ca.cert.display()
+        ca.cert.display(),
+        cmd = relay_core_api::CLI_COMMAND,
     );
     Ok(vec![ResourceContents::text(guide, "ca://install")])
 }

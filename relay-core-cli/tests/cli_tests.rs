@@ -18,7 +18,29 @@ fn test_cli_help() {
         ))
         .stdout(predicate::str::contains(
             "Run the daemon and the proxy in the foreground",
-        ));
+        ))
+        .stdout(predicate::str::contains("Usage: relay-core"))
+        .stdout(predicate::str::contains("relay-core start"))
+        .stdout(predicate::str::contains("relay-core-cli").not())
+        .stdout(predicate::function(|output: &str| {
+            !mentions_bare_relay_command(output)
+        }));
+}
+
+/// `relay start` is not a command. `relay-core start` is.
+fn mentions_bare_relay_command(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("relay") {
+        let at = i + rel;
+        let before = at == 0 || (!bytes[at - 1].is_ascii_alphanumeric() && bytes[at - 1] != b'-');
+        let next = bytes.get(at + "relay".len()).copied();
+        if before && matches!(next, Some(b' ' | b'\n' | b'\t') | None) {
+            return true;
+        }
+        i = at + "relay".len();
+    }
+    false
 }
 
 #[test]

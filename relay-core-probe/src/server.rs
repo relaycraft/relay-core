@@ -296,8 +296,8 @@ impl ServerHandler for ProbeServer {
             client. \
             \
             Start with proxy_status: if no proxy is running, nothing is being captured, and traffic \
-            tools will tell you so instead of returning an empty list — call proxy_start first (or \
-            run `relay start` on the host). proxy_stop stops the proxy and keeps the history. \
+            tools will tell you so instead of returning an empty list —             call proxy_start first (or \
+            run `{cmd} start` on the host). proxy_stop stops the proxy and keeps the history. \
             \
             Tool results carry structuredContent, and the text block is the same JSON. \
             \
@@ -308,6 +308,7 @@ impl ServerHandler for ProbeServer {
             The tool contract is versioned; new optional parameters and tools may appear without a \
             bump, so ignore unknown fields.",
             crate::TOOL_CONTRACT_VERSION,
+            cmd = relay_core_api::CLI_COMMAND,
         ))
     }
 

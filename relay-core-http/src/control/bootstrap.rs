@@ -23,8 +23,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error(
-        "cannot find the `{HOST_BINARY_NAME}` binary to start a daemon: looked next to this \
-         executable and on PATH (install @relay-core/cli or put relay-core-cli on PATH)"
+        "cannot find the RelayCore CLI binary to start a daemon: looked next to this \
+         executable and on PATH (install @relay-core/cli and run `relay-core`)"
     )]
     HostBinaryNotFound,
 

@@ -8,6 +8,7 @@ use ratatui::{
 
 use super::super::app::TuiApp;
 use super::super::theme::Theme;
+use relay_core_api::CLI_COMMAND;
 
 pub(in crate::ui) fn render_help_overlay(_app: &TuiApp, f: &mut Frame) {
     let mut lines: Vec<Line> = vec![
@@ -23,7 +24,7 @@ pub(in crate::ui) fn render_help_overlay(_app: &TuiApp, f: &mut Frame) {
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("  This TUI is a client — ", Theme::muted()),
-        Span::styled("relay status", Theme::accent_dim()),
+        Span::styled(format!("{CLI_COMMAND} status"), Theme::accent_dim()),
         Span::styled(
             " shows the same flows, rules and history every other client sees.",
             Theme::muted(),
@@ -32,7 +33,7 @@ pub(in crate::ui) fn render_help_overlay(_app: &TuiApp, f: &mut Frame) {
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled("  Stop the proxy with ", Theme::muted()),
-        Span::styled("relay stop", Theme::accent_dim()),
+        Span::styled(format!("{CLI_COMMAND} stop"), Theme::accent_dim()),
         Span::styled(
             "; quitting this UI ends the daemon it started.",
             Theme::muted(),

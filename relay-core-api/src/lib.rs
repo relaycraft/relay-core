@@ -15,6 +15,13 @@ pub mod policy;
 pub mod rule;
 pub mod sse;
 
+/// Command users type.
+///
+/// `@relay-core/cli` installs this name. The native file inside the platform
+/// package is `relay-core-cli`; help text, errors and audit labels must use
+/// this command, not the file name and not `relay`.
+pub const CLI_COMMAND: &str = "relay-core";
+
 // Placeholder
 pub fn version() -> &'static str {
     "0.1.0"

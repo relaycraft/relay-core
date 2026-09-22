@@ -12,5 +12,10 @@ try {
   process.exit(1);
 }
 
-const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+// argv[0] would otherwise be the native file name (`relay-core-cli.exe`), which
+// is not the command users type.
+const result = spawnSync(binary, process.argv.slice(2), {
+  stdio: "inherit",
+  argv0: "relay-core",
+});
 process.exit(result.status ?? 1);

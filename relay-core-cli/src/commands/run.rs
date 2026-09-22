@@ -20,6 +20,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use relay_core_api::CLI_COMMAND;
 use relay_core_api::flow::FlowUpdate;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,7 +115,7 @@ pub async fn execute(options: RunOptions) -> Result<()> {
     if !daemon.is_owner() {
         bail!(
             "another RelayCore daemon already owns this data directory; \
-             run `relay status` to inspect it, or set RELAY_DATA_DIR to use a separate one"
+             run `{CLI_COMMAND} status` to inspect it, or set RELAY_DATA_DIR to use a separate one"
         );
     }
 
@@ -192,7 +193,7 @@ fn log_startup_endpoints(daemon: &daemon::RunningDaemon, addr: std::net::SocketA
         "{}",
         row(
             "Stop",
-            "`relay stop` keeps the daemon; `relay shutdown` ends it".to_string()
+            format!("`{CLI_COMMAND} stop` keeps the daemon; `{CLI_COMMAND} shutdown` ends it")
         )
     );
     info!("──────────────────────────────────────────────");

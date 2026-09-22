@@ -10,18 +10,18 @@ queue. This package is a **bridge** to that daemon, not a second engine.
 ```
 MCP client ──stdio──▶ @relay-core/mcp (bridge) ──HTTP──▶ daemon ──▶ proxy ──▶ traffic
                                                           ▲
-relay start / relay stop ─────────────────────────────────┘
+relay-core start / relay-core stop ───────────────────────┘
 ```
 
 Consequences worth knowing:
 
 - Connecting an MCP client **never starts a proxy** and never starts a second flow history. Every
   client (CLI, bridge, Web UI, editor) reads and writes the same state.
-- The proxy is started and stopped by an explicit command: `relay start` / `relay stop`, or the
+- The proxy is started and stopped by an explicit command: `relay-core start` / `relay-core stop`, or the
   `proxy_start` / `proxy_stop` tools. It is **not** stopped automatically — there is no idle timeout
   unless the daemon was started with `--idle-timeout`.
 - When no daemon is running, the bridge starts one (detached, so it outlives the editor window) and
-  attaches. Set `RELAY_MCP_NO_AUTOSTART=1` to require an explicit `relay start` instead.
+  attaches. Set `RELAY_MCP_NO_AUTOSTART=1` to require an explicit `relay-core start` instead.
 
 ## Setup
 
@@ -48,13 +48,13 @@ Whether the daemon is already running is irrelevant — the bridge attaches to i
 ### Clients that speak HTTP MCP
 
 The daemon serves the same MCP endpoint over streamable HTTP, so an HTTP-capable client can skip the
-bridge entirely. `relay status` prints the URL:
+bridge entirely. `relay-core status` prints the URL:
 
 ```jsonc
 "mcp": {
   "relay-core": {
     "type": "remote",
-    "url": "http://127.0.0.1:18083/mcp",   // port from `relay status`
+    "url": "http://127.0.0.1:18083/mcp",   // port from `relay-core status`
     "enabled": true
   }
 }
@@ -94,7 +94,7 @@ with `--mcp-url`) and it will always show you the same traffic the CLI and the W
 ## Requirements
 
 Requires **Node** ≥ 18. Binaries install via `@relay-core/binaries-*` (same as the CLI package). The
-bridge looks for the `relay-core-cli` binary next to itself, then on `PATH`.
+bridge locates the packaged CLI binary next to itself, then on `PATH`.
 
 ## License
 

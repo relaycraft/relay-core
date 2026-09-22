@@ -1,5 +1,6 @@
 use crate::args::CaAction;
 use anyhow::Result;
+use relay_core_api::CLI_COMMAND;
 use relay_core_lib::tls::CertificateAuthority;
 use relay_core_runtime::CaPaths;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -82,7 +83,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                 let cer = ca.cert.with_extension("cer");
                 if !cer.exists() {
                     anyhow::bail!(
-                        "DER certificate not found at {:?}. Run `relay-core-cli ca generate` first.",
+                        "DER certificate not found at {:?}. Run `{CLI_COMMAND} ca generate` first.",
                         cer
                     );
                 }
@@ -172,7 +173,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                     let cer = ca.cert.with_extension("cer");
                     if !cer.exists() {
                         eprintln!(
-                            "DER certificate not found at {:?}. Run `relay-core-cli ca generate` first.",
+                            "DER certificate not found at {:?}. Run `{CLI_COMMAND} ca generate` first.",
                             cer
                         );
                         std::process::exit(1);
@@ -233,7 +234,7 @@ pub fn execute(action: CaAction) -> Result<()> {
                 println!("CA Status: Not generated");
                 println!("  cert: {}", ca.cert.display());
                 println!("  key:  {}", ca.key.display());
-                println!("  next: relay-core-cli ca generate");
+                println!("  next: {CLI_COMMAND} ca generate");
                 return Ok(());
             }
 
@@ -256,7 +257,9 @@ pub fn execute(action: CaAction) -> Result<()> {
             #[cfg(target_os = "windows")]
             {
                 if !cer.exists() {
-                    println!("  trust: DER certificate not found, run `ca generate` first");
+                    println!(
+                        "  trust: DER certificate not found, run `{CLI_COMMAND} ca generate` first"
+                    );
                 } else {
                     match windows_trust_status(&cer) {
                         Ok(true) => println!("  trust: installed in Trusted Root store"),
@@ -284,7 +287,7 @@ fn ca_files_exist(ca: &CaPaths) -> bool {
 
 fn missing_ca_guidance(ca: &CaPaths) -> String {
     format!(
-        "CA files are missing.\n  cert: {}\n  key:  {}\nRun `relay-core-cli ca generate` first.",
+        "CA files are missing.\n  cert: {}\n  key:  {}\nRun `{CLI_COMMAND} ca generate` first.",
         ca.cert.display(),
         ca.key.display()
     )
@@ -294,7 +297,7 @@ fn missing_ca_guidance(ca: &CaPaths) -> String {
 fn print_proxy_setup_hint() {
     println!();
     println!("Next:");
-    println!("  1. relay run -l {DEFAULT_PROXY_LISTEN}");
+    println!("  1. {CLI_COMMAND} run -l {DEFAULT_PROXY_LISTEN}");
     println!("  2. Point your browser or OS HTTP/HTTPS proxy at the same host:port");
     println!("     (change -l / --listen if you use a custom address)");
 }

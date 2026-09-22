@@ -11,7 +11,7 @@ pub mod script;
 
 // Re-export all public tool functions for external testing
 pub use intercept::{get_pending_intercepts, resume_flow, set_intercept};
-pub use lifecycle::{PROXY_CONTROL_HINT, lifecycle_tool_schemas};
+pub use lifecycle::{lifecycle_tool_schemas, proxy_control_hint};
 pub use query::{clear_flows, export_har, get_flow, get_metrics, replay_flow, search_flows};
 pub use rules::{
     delete_rule, get_policy, list_rules, mock_url, patch_policy, set_rule, update_policy,
@@ -88,7 +88,8 @@ impl ToolError {
             "proxy_not_running",
             format!(
                 "{context} No proxy is running, so nothing is being captured and no history \
-                 exists. Call proxy_start (or run `relay start`), then retry."
+                 exists. Call proxy_start (or run `{} start`), then retry.",
+                relay_core_api::CLI_COMMAND
             ),
         )
     }

@@ -264,8 +264,8 @@ impl CertificateAuthority {
         if ca_cert_path.exists() && ca_key_path.exists() {
             if !meta_path.exists() {
                 return Err(crate::error::RelayError::Config(format!(
-                    "CA metadata file is missing: {:?}. This relay-core version requires metadata to load persistent CA. Run `relay-core-cli ca generate --force` to regenerate.",
-                    meta_path
+                    "CA metadata file is missing: {meta_path:?}. This relay-core version requires metadata to load persistent CA. Run `{cmd} ca generate --force` to regenerate.",
+                    cmd = relay_core_api::CLI_COMMAND,
                 )));
             }
 

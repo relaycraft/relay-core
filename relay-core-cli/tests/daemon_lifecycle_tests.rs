@@ -638,20 +638,23 @@ fn lifecycle_changes_are_attributed_in_status() {
         status["last_change"]["change"], "started",
         "status: {status}"
     );
-    assert_eq!(status["last_change"]["requested_by"], "cli:relay start");
+    assert_eq!(
+        status["last_change"]["requested_by"],
+        "cli:relay-core start"
+    );
     assert_eq!(status["last_change"]["actor"], "http");
     assert_eq!(status["last_change"]["outcome"], "success");
 
     harness.relay_json(&["stop", "--json"]);
     let status = harness.relay_json(&["status", "--json"]);
     assert_eq!(status["last_change"]["change"], "stopped");
-    assert_eq!(status["last_change"]["requested_by"], "cli:relay stop");
+    assert_eq!(status["last_change"]["requested_by"], "cli:relay-core stop");
 
     // The human output names who did it, too — that is the question a user actually asks.
     let human = harness.relay(&["status"]);
     let text = String::from_utf8_lossy(&human.stdout).to_string();
     assert!(
-        text.contains("stopped by cli:relay stop"),
+        text.contains("stopped by cli:relay-core stop"),
         "status should say who stopped the proxy: {text}"
     );
 }

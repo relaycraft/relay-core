@@ -4,6 +4,7 @@ use anyhow::Result;
 use base64::Engine as _;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
+use relay_core_api::CLI_COMMAND;
 use relay_core_api::flow::{Flow, Layer};
 use relay_core_lib::intercept::types::{BoxError, HttpBody, RequestAction};
 use relay_core_script::deno_engine::DenoScriptEngine;
@@ -252,8 +253,8 @@ pub async fn execute(action: ScriptsAction) -> Result<()> {
                 println!("Next steps:");
                 println!("  1. npm install --save-dev esbuild typescript");
                 println!("  2. Add hooks to src/index.ts");
-                println!("  3. relay-core scripts build     (one-shot bundle)");
-                println!("  4. relay run --script dist/bundle.js --ui");
+                println!("  3. {CLI_COMMAND} scripts build     (one-shot bundle)");
+                println!("  4. {CLI_COMMAND} run --script dist/bundle.js --ui");
             } else {
                 println!("Project already initialized in {:?}", dir);
             }
@@ -262,7 +263,10 @@ pub async fn execute(action: ScriptsAction) -> Result<()> {
             println!("Bundling {} -> {} ...", entry.display(), out.display());
             run_esbuild(&entry, &out, false)?;
             println!("Bundle written to {}", out.display());
-            println!("Use with: relay run --script {} --ui", out.display());
+            println!(
+                "Use with: {CLI_COMMAND} run --script {} --ui",
+                out.display()
+            );
         }
         ScriptsAction::Dev { entry, out } => {
             println!(

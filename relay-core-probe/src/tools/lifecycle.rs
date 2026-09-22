@@ -144,7 +144,7 @@ pub async fn dispatch(
     let proxy = ctx
         .proxy
         .clone()
-        .ok_or_else(|| ToolError::unavailable("proxy_control_unavailable", PROXY_CONTROL_HINT))?;
+        .ok_or_else(|| ToolError::unavailable("proxy_control_unavailable", proxy_control_hint()))?;
 
     match name {
         "proxy_status" => {
@@ -226,9 +226,14 @@ pub async fn dispatch(
 
 /// Message used when the host serves the tools but exposes no proxy lifecycle — a host that
 /// embedded the probe without passing a controller.
-pub const PROXY_CONTROL_HINT: &str = "this MCP server does not own a proxy lifecycle, so it cannot \
-     start or stop one. Connect through the daemon (`relay start`), which owns the proxy, and the \
-     lifecycle tools become available.";
+pub fn proxy_control_hint() -> String {
+    format!(
+        "this MCP server does not own a proxy lifecycle, so it cannot \
+         start or stop one. Connect through the daemon (`{} start`), which owns the proxy, and the \
+         lifecycle tools become available.",
+        relay_core_api::CLI_COMMAND
+    )
+}
 
 /// Turn a control-plane failure into a tool error an agent can branch on.
 fn control_error_to_tool_error(error: ProxyControlError) -> ToolError {

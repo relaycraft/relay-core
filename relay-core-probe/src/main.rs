@@ -12,6 +12,7 @@
 //!   over HTTP, because stdio carries the same JSON-RPC.
 //! * A bridge that is killed takes nothing with it — the proxy and its history outlive it.
 
+use relay_core_api::CLI_COMMAND;
 use relay_core_http::control::config as relay_config;
 use relay_core_http::control::{
     BootstrapError, DaemonManifest, DaemonStatus, SpawnRequest, connect, find_host_binary,
@@ -63,7 +64,7 @@ async fn main() {
     };
 
     eprintln!(
-        "relay-core MCP bridge -> {} (the daemon owns the proxy; see `relay status`)",
+        "relay-core MCP bridge -> {} (the daemon owns the proxy; see `{CLI_COMMAND} status`)",
         options.mcp_url
     );
 
@@ -92,7 +93,7 @@ async fn resolve_bridge_options() -> Result<BridgeOptions, String> {
             if !may_autostart(&data_dir)? {
                 return Err(format!(
                     "no RelayCore daemon is running in {} and auto-start is disabled.\n\
-                     Start one with `relay start`, or enable [client] autostart_daemon in {} / unset \
+                     Start one with `{CLI_COMMAND} start`, or enable [client] autostart_daemon in {} / unset \
                      RELAY_MCP_NO_AUTOSTART.",
                     data_dir.display(),
                     relay_config::config_path(&data_dir).display()
@@ -102,7 +103,7 @@ async fn resolve_bridge_options() -> Result<BridgeOptions, String> {
             bridge_options_for(&manifest, &data_dir)
         }
         DaemonStatus::Unresponsive(manifest) => Err(format!(
-            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `relay shutdown`, or kill pid {}.",
+            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
             manifest.pid,
             manifest.control_base_url(),
             data_dir.join("daemon.log").display(),
@@ -110,7 +111,7 @@ async fn resolve_bridge_options() -> Result<BridgeOptions, String> {
         )),
         DaemonStatus::Incompatible { found, expected } => Err(format!(
             "the running RelayCore daemon speaks control protocol {found}, but this build speaks {expected}. \
-             Stop it with `relay shutdown`, or upgrade @relay-core/mcp."
+             Stop it with `{CLI_COMMAND} shutdown`, or upgrade @relay-core/mcp."
         )),
     }
 }
@@ -119,7 +120,7 @@ fn bridge_options_for(manifest: &DaemonManifest, data_dir: &Path) -> Result<Brid
     let Some(port) = manifest.mcp_port else {
         return Err(format!(
             "the RelayCore daemon in {} has its MCP endpoint disabled (started with --no-mcp).\n\
-             Restart it with `relay shutdown && relay start`, or point this bridge at an endpoint \
+             Restart it with `{CLI_COMMAND} shutdown && {CLI_COMMAND} start`, or point this bridge at an endpoint \
              with --mcp-url.",
             data_dir.display()
         ));

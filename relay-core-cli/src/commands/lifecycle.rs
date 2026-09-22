@@ -6,6 +6,7 @@
 
 use crate::commands::daemon;
 use anyhow::{Context, Result, bail};
+use relay_core_api::CLI_COMMAND;
 use relay_core_http::control::{
     BootstrapError, ControlClient, DaemonStatus, SpawnRequest, connect, find_host_binary,
     spawn_detached, wait_until_ready,
@@ -21,6 +22,11 @@ const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long `shutdown` waits for the daemon to stop answering.
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Audit label shown by `status`, e.g. `cli:relay-core stop`.
+fn cli_actor(action: &str) -> String {
+    format!("cli:{CLI_COMMAND} {action}")
+}
 
 #[derive(Debug, Clone)]
 pub struct StartOptions {
@@ -81,7 +87,7 @@ pub async fn start(options: StartOptions) -> Result<()> {
     let request = proxy_request(&options)?;
     match client
         .clone()
-        .identifying_as("cli:relay start")
+        .identifying_as(&cli_actor("start"))
         .proxy_start(&request)
         .await
     {
@@ -114,7 +120,7 @@ pub async fn stop(json: bool) -> Result<()> {
         other => bail!("{}", describe_unusable(&data_dir, other)),
     };
 
-    match stop_proxy(&client, "cli:relay stop").await {
+    match stop_proxy(&client, &cli_actor("stop")).await {
         Ok(ProxyStopOutcome::Stopped) => {
             if json {
                 println!(
@@ -125,7 +131,7 @@ pub async fn stop(json: bool) -> Result<()> {
                 println!(
                     "Proxy stopped. The daemon is still running — history and rules are kept."
                 );
-                println!("Run `relay shutdown` to stop the daemon as well.");
+                println!("Run `{CLI_COMMAND} shutdown` to stop the daemon as well.");
             }
         }
         Ok(ProxyStopOutcome::AlreadyStopped) => {
@@ -148,7 +154,7 @@ pub async fn restart(options: StartOptions) -> Result<()> {
     let data_dir = paths::resolve_data_dir();
 
     if let DaemonStatus::Running { client, .. } = connect(&data_dir).await {
-        match stop_proxy(&client, "cli:relay restart").await {
+        match stop_proxy(&client, &cli_actor("restart")).await {
             Ok(_) => {}
             Err(error) => bail!("{error}"),
         }
@@ -262,7 +268,7 @@ pub async fn status(options: StatusOptions) -> Result<()> {
             Ok(())
         }
         DaemonStatus::NotRunning => bail!(
-            "RelayCore daemon is not running ({} has no manifest). Start one with `relay start`.",
+            "RelayCore daemon is not running ({} has no manifest). Start one with `{CLI_COMMAND} start`.",
             data_dir.display()
         ),
         other => bail!("{}", describe_unusable(&data_dir, other)),
@@ -288,7 +294,7 @@ pub async fn shutdown(json: bool) -> Result<()> {
 
     // Stop the proxy first so in-flight connections are drained while the control plane is still
     // there to report progress; the daemon also stops it on the way out.
-    let _ = stop_proxy(&client, "cli:relay shutdown").await;
+    let _ = stop_proxy(&client, &cli_actor("shutdown")).await;
 
     client.shutdown().await?;
 
@@ -491,7 +497,9 @@ async fn print_started(
             println!("  proxy:   started on 127.0.0.1:{port}");
             println!();
             println!("Configure your client to use http://127.0.0.1:{port} as its HTTP proxy.");
-            println!("Stop the proxy with `relay stop`; stop the daemon with `relay shutdown`.");
+            println!(
+                "Stop the proxy with `{CLI_COMMAND} stop`; stop the daemon with `{CLI_COMMAND} shutdown`."
+            );
         }
         Some(ProxyStartOutcome::AlreadyRunning { port }) => {
             println!("  proxy:   already running on 127.0.0.1:{port}");
@@ -506,7 +514,7 @@ async fn print_started(
 fn describe_unusable(data_dir: &Path, status: DaemonStatus) -> String {
     match status {
         DaemonStatus::Unresponsive(manifest) => format!(
-            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `relay shutdown`, or kill pid {}.",
+            "a RelayCore daemon (pid {}) is not answering at {}. See {} — stop it with `{CLI_COMMAND} shutdown`, or kill pid {}.",
             manifest.pid,
             manifest.control_base_url(),
             daemon::describe_log(data_dir),
@@ -514,7 +522,7 @@ fn describe_unusable(data_dir: &Path, status: DaemonStatus) -> String {
         ),
         DaemonStatus::Incompatible { found, expected } => format!(
             "a RelayCore daemon speaks control protocol {found}, but this build speaks {expected}. \
-             Stop the running daemon (`relay shutdown`) or upgrade this client."
+             Stop the running daemon (`{CLI_COMMAND} shutdown`) or upgrade this client."
         ),
         DaemonStatus::NotRunning | DaemonStatus::Running { .. } => {
             "the daemon state changed while this command was running; retry".to_string()
