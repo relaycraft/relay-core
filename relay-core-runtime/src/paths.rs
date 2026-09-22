@@ -105,11 +105,11 @@ fn env_absolute(key: &str) -> Option<PathBuf> {
 fn user_home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        return env_absolute("HOME").or_else(passwd_home);
+        env_absolute("HOME").or_else(passwd_home)
     }
     #[cfg(windows)]
     {
-        return env_absolute("USERPROFILE").or_else(|| env_absolute("HOME"));
+        env_absolute("USERPROFILE").or_else(|| env_absolute("HOME"))
     }
     #[cfg(not(any(unix, windows)))]
     {
