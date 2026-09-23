@@ -305,6 +305,9 @@ impl ServerHandler for ProbeServer {
             (I cannot do this — it requires sudo). Read the ca://install resource for \
             platform-specific one-liner commands. \
             \
+            Before set_rule, read the api://rules resource. Before set_script, read the api://script \
+            resource. rules:// is the live rule list, not the API. \
+            \
             The tool contract is versioned; new optional parameters and tools may appear without a \
             bump, so ignore unknown fields.",
             crate::TOOL_CONTRACT_VERSION,
@@ -466,7 +469,14 @@ mod subscription_tests {
     /// tells the client to wait for something that will not arrive.
     #[test]
     fn an_unknown_uri_is_refused() {
-        for uri in ["ca://install", "flows:", "http://example.com", ""] {
+        for uri in [
+            "ca://install",
+            "api://rules",
+            "api://script",
+            "flows:",
+            "http://example.com",
+            "",
+        ] {
             assert!(
                 !subscribable_uri(uri),
                 "{uri} is not pushed and must not be accepted"

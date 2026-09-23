@@ -1,3 +1,5 @@
+mod script_guide;
+
 use crate::server::ProbeContext;
 use crate::tools::ToolError;
 use relay_core_api::modification::FlowQuery;
@@ -8,6 +10,14 @@ use std::sync::Arc;
 /// 返回静态资源列表（非模板化的固定 URI）
 pub fn static_resource_list() -> Vec<Resource> {
     vec![
+        RawResource::new("api://rules", "Rule API")
+            .with_description("Read this before set_rule. Every filter and action, with the JSON config the engine accepts.")
+            .with_mime_type("text/markdown")
+            .no_annotation(),
+        RawResource::new("api://script", "Script API")
+            .with_description("Read this before set_script. Hook signatures, return values, and the flow and body shape.")
+            .with_mime_type("text/markdown")
+            .no_annotation(),
         RawResource::new("flows://", "Recent Flows")
             .with_description("List of recent HTTP/WebSocket flows (latest 50)")
             .with_mime_type("text/markdown")
@@ -48,6 +58,16 @@ pub async fn read_resource(
         recent_audit(ctx).await
     } else if uri == "ca://install" {
         ca_install_guide(ctx).await
+    } else if uri == "api://rules" {
+        Ok(vec![ResourceContents::text(
+            relay_core_lib::rule::rule_api_guide(),
+            "api://rules",
+        )])
+    } else if uri == "api://script" {
+        Ok(vec![ResourceContents::text(
+            script_guide::script_api_guide(),
+            "api://script",
+        )])
     } else {
         Err(ToolError::not_found(format!("Unknown resource URI: {uri}")))
     }
@@ -229,5 +249,32 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&text).expect("audit resource should be valid json");
         assert!(json["events"].is_array());
+    }
+
+    async fn resource_text(uri: &str) -> String {
+        let state = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(ProbeContext::new(state));
+        let contents = read_resource(&ctx, uri)
+            .await
+            .expect("resource should load");
+        match &contents[0] {
+            rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+            other => panic!("unexpected resource contents: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_rule_and_script_resources_are_the_write_contracts() {
+        let rules = resource_text("api://rules").await;
+        assert!(rules.contains("### MockResponse"));
+        assert!(rules.contains("\"type\":\"AddRequestHeader\""));
+        assert!(rules.contains("actions` is an array"));
+
+        let script = resource_text("api://script").await;
+        assert!(script.contains("onRequest(body, flow)"));
+        assert!(script.contains("onResponseHeaders(context, flow)"));
+        assert!(script.contains("btoa(\"hi\") === \"aGk=\""));
+        assert!(script.contains("host not in allowlist"));
+        assert!(script.contains("encoding` is `\"base64\""));
     }
 }

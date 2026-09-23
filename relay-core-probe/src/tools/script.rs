@@ -30,7 +30,8 @@ pub fn set_script_schema() -> Tool {
     tool(
         ToolSpec::write(
             "set_script",
-            "Load a JavaScript (Deno) script for dynamic request/response modification. \
+            "Read the api://script resource before writing a script. It is the hook and flow contract. \
+         Load a JavaScript (Deno) script for dynamic request/response modification. \
          Hooks: onRequestHeaders(context, flow), onResponseHeaders(context, flow), \
          onRequest(body, flow), onResponse(body, flow), \
          onWebSocketMessage(context, flow, message). \

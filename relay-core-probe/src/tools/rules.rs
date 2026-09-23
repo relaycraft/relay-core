@@ -12,7 +12,8 @@ pub fn set_rule_schema() -> Tool {
     tool(
         ToolSpec::write(
         "set_rule",
-        "Add or replace one traffic rule. `actions` is an array of {type, config} objects; \
+        "Read the api://rules resource before writing a rule. It lists every filter and action. \
+         Add or replace one traffic rule. `actions` is an array of {type, config} objects; \
          a single action object is rejected. Filters use the same {type, config} shape, and a \
          string match is {mode, value}. A text body is {type: Text, value}. constraints may be null. \
          A rule with the same id is replaced.",
