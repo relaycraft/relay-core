@@ -1091,3 +1091,110 @@ async fn an_excluded_endpoint_is_forwarded_but_not_recorded() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A loopback target that is not on the exclude list must be recorded.
+///
+/// The daemon excludes its own API, MCP, and proxy ports. A local service on any other port is
+/// the only upstream available in a restricted environment, so dropping it would make an
+/// end-to-end check impossible. This is a different rule from `capture_exclude`: that list names
+/// endpoints, and a loopback address by itself is not one.
+#[tokio::test]
+async fn a_loopback_target_outside_the_exclude_list_is_recorded() {
+    init_crypto();
+
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = upstream.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                if stream.read(&mut buf).await.is_ok() {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                }
+            });
+        }
+    });
+
+    let state = Arc::new(CoreState::new(None).await);
+    // The shape `exclude_own_endpoints` writes: loopback, but not this upstream's port.
+    state.update_policy(ProxyPolicy {
+        capture_exclude: vec![
+            "127.0.0.1:8082".to_string(),
+            "localhost:8082".to_string(),
+            "127.0.0.1:18083".to_string(),
+            "localhost:18083".to_string(),
+        ],
+        ..Default::default()
+    });
+
+    let dir = std::env::temp_dir().join(format!("relay-core-loopback-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve port");
+    let port = reserved.local_addr().expect("port").port();
+    drop(reserved);
+
+    let config = relay_core_runtime::ProxyConfig::new(port, dir.join("ca.pem"), dir.join("ca.key"));
+    let (sink, mut sink_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    state
+        .spawn_proxy(config, sink, None)
+        .expect("the proxy should start");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for target in [
+        format!("127.0.0.1:{}", upstream_addr.port()),
+        format!("localhost:{}", upstream_addr.port()),
+    ] {
+        let mut client = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .expect("connect proxy");
+        client
+            .write_all(
+                format!("GET http://{target}/health HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .expect("write request");
+        let mut response = vec![0u8; 4096];
+        let read = tokio::time::timeout(Duration::from_secs(5), client.read(&mut response))
+            .await
+            .expect("the request must be answered")
+            .expect("read");
+        let response = String::from_utf8_lossy(&response[..read]).to_string();
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "a loopback target must still be proxied, got {response:?}"
+        );
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut urls = Vec::new();
+    while tokio::time::Instant::now() < deadline && urls.len() < 2 {
+        if let Ok(Some(FlowUpdate::Full(flow))) =
+            tokio::time::timeout(Duration::from_millis(200), sink_rx.recv()).await
+            && let Layer::Http(http) = &flow.layer
+        {
+            let url = http.request.url.to_string();
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+    }
+    assert!(
+        urls.iter().any(|url| url.contains("127.0.0.1")),
+        "127.0.0.1 must be recorded, got {urls:?}"
+    );
+    assert!(
+        urls.iter().any(|url| url.contains("localhost")),
+        "localhost must be recorded, got {urls:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

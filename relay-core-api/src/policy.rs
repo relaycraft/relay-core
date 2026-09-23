@@ -876,6 +876,23 @@ mod capture_exclude_tests {
         ));
     }
 
+    /// The daemon excludes its own loopback endpoints. A different port on the same address is a
+    /// local service, and hiding it would make that service unusable as a test upstream.
+    #[test]
+    fn another_loopback_port_is_not_excluded_with_the_daemons_own_endpoints() {
+        let list = patterns(&[
+            "127.0.0.1:8082",
+            "localhost:8082",
+            "127.0.0.1:18083",
+            "localhost:18083",
+            "127.0.0.1:8080",
+            "localhost:8080",
+        ]);
+        assert!(!is_capture_excluded("http://127.0.0.1:3000/health", &list));
+        assert!(!is_capture_excluded("http://localhost:3000/health", &list));
+        assert!(!is_capture_excluded("http://[::1]:3000/health", &list));
+    }
+
     /// Hosts are not aliased: excluding the loopback address must not silently exclude `localhost`
     /// traffic, or a filter would hide more than it says.
     #[test]
