@@ -146,7 +146,9 @@ pub fn mock_url_schema() -> Tool {
 pub fn get_policy_schema() -> Tool {
     tool(ToolSpec::read_only(
         "get_policy",
-        "Get current proxy policy (including redaction settings).",
+        "Get current proxy policy, including redaction, retention, and upstream. \
+         `upstream.bypass_hosts` is present when set. Forwarding does not consult it. \
+         `proxy_url`, auth, and `fail_open` match the live connector only when they were already set at proxy start.",
         json!({
             "type": "object",
             "properties": {}
@@ -158,7 +160,11 @@ pub fn update_policy_schema() -> Tool {
     tool(
         ToolSpec::write(
         "update_policy",
-        "Replace the current proxy policy with a full ProxyPolicy object.",
+        "Replace the current proxy policy with a full ProxyPolicy object. \
+         `policy.upstream` uses `proxy_url`, optional `auth`, `bypass_hosts`, and `fail_open`. \
+         A bypass entry is an IP, a `cidr:` network, or a hostname glob. \
+         `get_policy` shows the write immediately. A new proxy URL, auth, or `fail_open` is unused until `proxy_stop` and then `proxy_start`. \
+         `bypass_hosts` is stored only and is not consulted when forwarding.",
         json!({
             "type": "object",
             "required": ["policy"],
@@ -184,7 +190,11 @@ pub fn patch_policy_schema() -> Tool {
          `retention`. A retention field you omit stays as it is; `null` removes that bound. \
          The default keeps 5000 flows and drops anything older than 7 days. Any other field is \
          rejected and the current policy is left unchanged. To change fields such as \
-         request_timeout_ms, send a full policy via update_policy.",
+         request_timeout_ms, send a full policy via update_policy. \
+         `upstream` is `proxy_url`, optional `auth` (`username`, `password`), `bypass_hosts`, and `fail_open`. \
+         A bypass entry is an IP, a `cidr:` network, or a hostname glob. \
+         `get_policy` shows the write immediately. The outbound connector is fixed at proxy start, so a new proxy URL, auth, or `fail_open` is unused until `proxy_stop` and then `proxy_start`. \
+         `bypass_hosts` is stored only: forwarding does not consult it, including after that restart.",
         json!({
             "type": "object",
             "required": ["patch"],
