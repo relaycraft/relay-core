@@ -119,7 +119,10 @@ pub fn mock_url_schema() -> Tool {
         ToolSpec::write(
         "mock_url",
         "Quickly mock all requests matching a URL pattern to return a fixed response. \
-         Creates a MockResponse rule with the given status, headers, and body.",
+         Creates a MockResponse rule with the given status, headers, and body. \
+         The rule ends the exchange at the request-header stage and does not connect upstream, \
+         so response-stage rules and onResponseHeaders / onResponse do not run. \
+         Put any further changes in the mock body and headers.",
         json!({
             "type": "object",
             "required": ["url_pattern", "status"],
