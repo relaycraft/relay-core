@@ -73,45 +73,43 @@ where
         Arc::new(client)
     };
 
-    // Initialize OutboundConnector based on ProxyPolicy.upstream
-    let connector: Arc<dyn OutboundConnector> = match &startup_policy.upstream {
-        Some(upstream) => {
-            let scheme = Url::parse(&upstream.proxy_url)
-                .map(|u| u.scheme().to_string())
-                .unwrap_or_else(|_| "http".to_string());
-            let result = if scheme == "https" {
-                HttpsUpstreamConnector::new(upstream)
-                    .await
-                    .map(|c| Arc::new(c) as Arc<dyn OutboundConnector>)
-            } else {
-                HttpUpstreamConnector::new(upstream)
-                    .await
-                    .map(|c| Arc::new(c) as Arc<dyn OutboundConnector>)
-            };
-            match result {
-                Ok(c) => c,
-                Err(e) => {
-                    if upstream.fail_open {
-                        tracing::warn!(
-                            "Failed to create upstream connector: {:?}, falling back to direct (fail_open=true)",
-                            e
-                        );
-                        Arc::new(DirectConnector::new(client.clone()))
-                    } else {
+    // Initialize OutboundConnector based on ProxyPolicy.upstream.
+    // Later changes to `upstream` replace it; each accepted connection reads the current one.
+    let connector = match build_outbound(startup_policy.upstream.as_ref(), client.clone()).await {
+        Ok(connector) => connector,
+        Err(error) => {
+            tracing::error!("{error}, aborting startup (fail_open=false)");
+            return Err(crate::error::RelayError::Proxy(error));
+        }
+    };
+    let (connector_tx, connector_rx) = watch::channel(connector);
+    {
+        let mut policy_updates = policy.clone();
+        let client = client.clone();
+        tokio::spawn(async move {
+            let mut applied = policy_updates.borrow().upstream.clone();
+            loop {
+                if policy_updates.changed().await.is_err() {
+                    break;
+                }
+                let next = policy_updates.borrow().upstream.clone();
+                if !upstream_config_changed(&applied, &next) {
+                    continue;
+                }
+                match build_outbound(next.as_ref(), client.clone()).await {
+                    Ok(connector) => {
+                        applied = next;
+                        let _ = connector_tx.send(connector);
+                    }
+                    Err(error) => {
                         tracing::error!(
-                            "Failed to create upstream connector: {:?}, aborting startup (fail_open=false)",
-                            e
+                            "upstream proxy was not replaced ({error}); the previous connector stays in use"
                         );
-                        return Err(crate::error::RelayError::Proxy(format!(
-                            "upstream proxy configuration failed: {}",
-                            e
-                        )));
                     }
                 }
             }
-        }
-        None => Arc::new(DirectConnector::new(client.clone())),
-    };
+        });
+    }
 
     // Initialize Loop Detector
     let listen_addrs = source.listen_addrs().into_iter().collect();
@@ -265,7 +263,7 @@ where
         let io = TokioIo::new(stream);
         let on_flow = on_flow.clone();
         let ca = ca.clone();
-        let connector = connector.clone();
+        let connector_rx = connector_rx.clone();
         let interceptor = interceptor.clone();
         let policy = policy.clone();
         let loop_detector = loop_detector.clone();
@@ -297,12 +295,13 @@ where
                 .serve_connection_with_upgrades(
                     io,
                     service_fn(move |req| {
+                        let connector = connector_rx.borrow().clone();
                         handle_request(
                             req,
                             client_addr,
                             on_flow.clone(),
                             ca.clone(),
-                            connector.clone(),
+                            connector,
                             interceptor.clone(),
                             target_addr,
                             policy.clone(),
@@ -355,6 +354,69 @@ pub(crate) fn resolve_forward_port_target(
     };
 
     ip.or(original_ip).map(|ip| SocketAddr::new(ip, port))
+}
+
+fn upstream_config_changed(
+    left: &Option<relay_core_api::policy::UpstreamProxyConfig>,
+    right: &Option<relay_core_api::policy::UpstreamProxyConfig>,
+) -> bool {
+    match (left, right) {
+        (None, None) => false,
+        (Some(left), Some(right)) => {
+            left.proxy_url != right.proxy_url
+                || left.bypass_hosts != right.bypass_hosts
+                || left.fail_open != right.fail_open
+                || upstream_auth_changed(left.auth.as_ref(), right.auth.as_ref())
+        }
+        _ => true,
+    }
+}
+
+fn upstream_auth_changed(
+    left: Option<&relay_core_api::policy::UpstreamAuth>,
+    right: Option<&relay_core_api::policy::UpstreamAuth>,
+) -> bool {
+    match (left, right) {
+        (None, None) => false,
+        (Some(left), Some(right)) => {
+            left.username != right.username
+                || secrecy::ExposeSecret::expose_secret(&left.password)
+                    != secrecy::ExposeSecret::expose_secret(&right.password)
+        }
+        _ => true,
+    }
+}
+
+async fn build_outbound(
+    upstream: Option<&relay_core_api::policy::UpstreamProxyConfig>,
+    client: Arc<HttpsClient>,
+) -> Result<Arc<dyn OutboundConnector>, String> {
+    let Some(upstream) = upstream else {
+        return Ok(Arc::new(DirectConnector::new(client)));
+    };
+    let scheme = Url::parse(&upstream.proxy_url)
+        .map(|url| url.scheme().to_string())
+        .unwrap_or_else(|_| "http".to_string());
+    let built = if scheme == "https" {
+        HttpsUpstreamConnector::new(upstream, client.clone())
+            .await
+            .map(|connector| Arc::new(connector) as Arc<dyn OutboundConnector>)
+    } else {
+        HttpUpstreamConnector::new(upstream, client.clone())
+            .await
+            .map(|connector| Arc::new(connector) as Arc<dyn OutboundConnector>)
+    };
+    match built {
+        Ok(connector) => Ok(connector),
+        Err(error) if upstream.fail_open => {
+            tracing::warn!(
+                "Failed to create upstream connector: {:?}, falling back to direct (fail_open=true)",
+                error
+            );
+            Ok(Arc::new(DirectConnector::new(client)))
+        }
+        Err(error) => Err(format!("upstream proxy configuration failed: {error}")),
+    }
 }
 
 #[cfg(test)]

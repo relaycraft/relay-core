@@ -148,8 +148,8 @@ pub fn get_policy_schema() -> Tool {
     tool(ToolSpec::read_only(
         "get_policy",
         "Get current proxy policy, including redaction, retention, and upstream. \
-         `upstream.bypass_hosts` is present when set. Forwarding does not consult it. \
-         `proxy_url`, auth, and `fail_open` match the live connector only when they were already set at proxy start.",
+         `upstream.bypass_hosts` is present when set. A matching host is dialled directly. \
+         `proxy_url`, auth, `fail_open`, and `bypass_hosts` are what later requests use after the last successful upstream change.",
         json!({
             "type": "object",
             "properties": {}
@@ -163,9 +163,9 @@ pub fn update_policy_schema() -> Tool {
         "update_policy",
         "Replace the current proxy policy with a full ProxyPolicy object. \
          `policy.upstream` uses `proxy_url`, optional `auth`, `bypass_hosts`, and `fail_open`. \
-         A bypass entry is an IP, a `cidr:` network, or a hostname glob. \
-         `get_policy` shows the write immediately. A new proxy URL, auth, or `fail_open` is unused until `proxy_stop` and then `proxy_start`. \
-         `bypass_hosts` is stored only and is not consulted when forwarding.",
+         A bypass entry is an IP, a `cidr:` network, or a hostname glob, and a matching host is dialled directly. \
+         `get_policy` shows the write immediately. A new proxy URL, auth, `fail_open`, or `bypass_hosts` applies to later requests. \
+         If the new proxy URL cannot be resolved and `fail_open` is false, the previous connector stays in use.",
         json!({
             "type": "object",
             "required": ["policy"],
@@ -193,9 +193,9 @@ pub fn patch_policy_schema() -> Tool {
          rejected and the current policy is left unchanged. To change fields such as \
          request_timeout_ms, send a full policy via update_policy. \
          `upstream` is `proxy_url`, optional `auth` (`username`, `password`), `bypass_hosts`, and `fail_open`. \
-         A bypass entry is an IP, a `cidr:` network, or a hostname glob. \
-         `get_policy` shows the write immediately. The outbound connector is fixed at proxy start, so a new proxy URL, auth, or `fail_open` is unused until `proxy_stop` and then `proxy_start`. \
-         `bypass_hosts` is stored only: forwarding does not consult it, including after that restart.",
+         A bypass entry is an IP, a `cidr:` network, or a hostname glob, and a matching host is dialled directly. \
+         `get_policy` shows the write immediately. A new proxy URL, auth, `fail_open`, or `bypass_hosts` applies to later requests. \
+         If the new proxy URL cannot be resolved and `fail_open` is false, the previous connector stays in use.",
         json!({
             "type": "object",
             "required": ["patch"],

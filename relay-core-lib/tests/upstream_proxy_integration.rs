@@ -161,6 +161,50 @@ fn dummy_flow() -> Flow {
 
 // ── Tests ───────────────────────────────────────────────
 
+fn test_client() -> Arc<relay_core_lib::proxy::http_utils::HttpsClient> {
+    init_crypto();
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .unwrap()
+        .https_or_http()
+        .enable_http1()
+        .build();
+    Arc::new(
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build(https),
+    )
+}
+
+/// An upstream that answers every request itself and records the first line it saw.
+async fn start_fixed_upstream(body: &'static str) -> (SocketAddr, Arc<std::sync::Mutex<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(String::new()));
+    let record = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let record = record.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                if let Ok(mut slot) = record.lock() {
+                    *slot = String::from_utf8_lossy(&buf[..n]).into();
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(resp.as_bytes()).await.ok();
+            });
+        }
+    });
+    (addr, seen)
+}
+
 fn init_crypto() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -221,7 +265,9 @@ async fn test_upstream_http_proxy_absolute_uri() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config).await.unwrap();
+    let connector = HttpUpstreamConnector::new(&config, test_client())
+        .await
+        .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -262,7 +308,9 @@ async fn test_upstream_proxy_connect_refused() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config).await.unwrap();
+    let connector = HttpUpstreamConnector::new(&config, test_client())
+        .await
+        .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -298,7 +346,9 @@ async fn test_upstream_proxy_unreachable() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config).await.unwrap();
+    let connector = HttpUpstreamConnector::new(&config, test_client())
+        .await
+        .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -340,4 +390,105 @@ async fn test_upstream_proxy_authorization_header() {
     )
     .unwrap();
     assert_eq!(decoded, "user:pass");
+}
+
+#[tokio::test]
+async fn a_bypassed_host_is_dialled_directly() {
+    let target = start_target_server().await;
+    let (upstream_addr, seen) = start_fixed_upstream("via-upstream").await;
+    let config = relay_core_api::policy::UpstreamProxyConfig {
+        proxy_url: format!("http://{upstream_addr}"),
+        auth: None,
+        bypass_hosts: vec![target.ip().to_string()],
+        fail_open: false,
+    };
+    let connector = HttpUpstreamConnector::new(&config, test_client())
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("http://{target}/"))
+        .body(HttpBody::default())
+        .unwrap();
+    let mut flow = dummy_flow();
+    let resp = connector
+        .send_request(req, &target.ip().to_string(), target.port(), &mut flow)
+        .await
+        .unwrap();
+    let body = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(&body[..], b"hello");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "bypassed host still reached the upstream"
+    );
+}
+
+#[tokio::test]
+async fn upstream_applied_after_start_is_used_for_the_next_request() {
+    init_crypto();
+    let (upstream_addr, seen) = start_fixed_upstream("via-upstream").await;
+    let closed = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    let source = relay_core_lib::engine::TcpCaptureSource::new(listener);
+    let (policy_tx, policy_rx) =
+        tokio::sync::watch::channel(relay_core_api::policy::ProxyPolicy::default());
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
+    tokio::spawn(async move {
+        let _ = relay_core_lib::start_proxy(
+            source,
+            flow_tx,
+            Arc::new(relay_core_lib::interceptor::NoOpInterceptor {}),
+            Arc::new(relay_core_lib::tls::CertificateAuthority::new().unwrap()),
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut policy = relay_core_api::policy::ProxyPolicy::default();
+    policy.upstream = Some(relay_core_api::policy::UpstreamProxyConfig {
+        proxy_url: format!("http://{upstream_addr}"),
+        auth: None,
+        bypass_hosts: vec![],
+        fail_open: false,
+    });
+    policy_tx.send(policy).unwrap();
+
+    let mut response = String::new();
+    for _ in 0..20 {
+        let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+        let req =
+            format!("GET http://{closed}/ HTTP/1.1\r\nHost: {closed}\r\nConnection: close\r\n\r\n");
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        response = String::from_utf8_lossy(&buf).into();
+        if response.contains("via-upstream") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        response.contains("via-upstream"),
+        "expected the recording upstream, got {response}"
+    );
+    assert!(
+        seen.lock().unwrap().contains(&format!("http://{closed}/")),
+        "upstream did not see the absolute URL"
+    );
 }

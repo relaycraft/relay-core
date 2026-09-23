@@ -303,10 +303,36 @@ pub struct HttpUpstreamConnector {
     proxy_addr: SocketAddr,
     proxy_authorization: Option<String>,
     tls_client_config: Arc<rustls::ClientConfig>,
+    bypass: Vec<BypassRule>,
+    direct: DirectConnector,
+}
+
+fn parsed_bypass(hosts: &[String]) -> Vec<BypassRule> {
+    hosts
+        .iter()
+        .filter_map(|raw| match BypassRule::parse(raw) {
+            Ok(rule) => Some(rule),
+            Err(e) => {
+                tracing::warn!("invalid upstream bypass entry '{}': {}", raw, e);
+                None
+            }
+        })
+        .collect()
+}
+
+fn host_is_bypassed(rules: &[BypassRule], host: &str) -> bool {
+    if rules.iter().any(|rule| rule.matches_host(host)) {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .is_ok_and(|ip| rules.iter().any(|rule| rule.matches_ip(&ip)))
 }
 
 impl HttpUpstreamConnector {
-    pub async fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamError> {
+    pub async fn new(
+        config: &UpstreamProxyConfig,
+        direct_client: Arc<crate::proxy::http_utils::HttpsClient>,
+    ) -> Result<Self, UpstreamError> {
         let url = Url::parse(&config.proxy_url)
             .map_err(|e| UpstreamError::Unreachable(format!("invalid proxy URL: {}", e)))?;
         let host = url
@@ -334,6 +360,8 @@ impl HttpUpstreamConnector {
             proxy_addr: addr,
             proxy_authorization: proxy_auth,
             tls_client_config: tls_config,
+            bypass: parsed_bypass(&config.bypass_hosts),
+            direct: DirectConnector::new(direct_client),
         })
     }
 
@@ -438,8 +466,15 @@ impl OutboundConnector for HttpUpstreamConnector {
         req: Request<HttpBody>,
         target_host: &str,
         target_port: u16,
-        _flow: &mut Flow,
+        flow: &mut Flow,
     ) -> Result<Response<Incoming>, UpstreamError> {
+        if host_is_bypassed(&self.bypass, target_host) {
+            return self
+                .direct
+                .send_request(req, target_host, target_port, flow)
+                .await;
+        }
+
         let uri_scheme = req.uri().scheme_str().unwrap_or("http");
 
         if uri_scheme == "https" {
@@ -563,10 +598,15 @@ pub struct HttpsUpstreamConnector {
     proxy_host: String,
     proxy_authorization: Option<String>,
     tls_client_config: Arc<rustls::ClientConfig>,
+    bypass: Vec<BypassRule>,
+    direct: DirectConnector,
 }
 
 impl HttpsUpstreamConnector {
-    pub async fn new(config: &UpstreamProxyConfig) -> Result<Self, UpstreamError> {
+    pub async fn new(
+        config: &UpstreamProxyConfig,
+        direct_client: Arc<crate::proxy::http_utils::HttpsClient>,
+    ) -> Result<Self, UpstreamError> {
         let url = Url::parse(&config.proxy_url)
             .map_err(|e| UpstreamError::Unreachable(format!("invalid proxy URL: {}", e)))?;
         let host = url
@@ -596,6 +636,8 @@ impl HttpsUpstreamConnector {
             proxy_host: host,
             proxy_authorization: proxy_auth,
             tls_client_config: tls_config,
+            bypass: parsed_bypass(&config.bypass_hosts),
+            direct: DirectConnector::new(direct_client),
         })
     }
 }
@@ -607,8 +649,15 @@ impl OutboundConnector for HttpsUpstreamConnector {
         req: Request<HttpBody>,
         target_host: &str,
         target_port: u16,
-        _flow: &mut Flow,
+        flow: &mut Flow,
     ) -> Result<Response<Incoming>, UpstreamError> {
+        if host_is_bypassed(&self.bypass, target_host) {
+            return self
+                .direct
+                .send_request(req, target_host, target_port, flow)
+                .await;
+        }
+
         let connector = tokio_rustls::TlsConnector::from(self.tls_client_config.clone());
         let proxy_server_name = rustls::pki_types::ServerName::try_from(self.proxy_host.clone())
             .map_err(|e| UpstreamError::Tls(format!("invalid proxy server name: {}", e)))?;

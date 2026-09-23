@@ -81,6 +81,9 @@ fn push_entry(out: &mut String, stages: &str, json: &str) {
     out.push_str(&format!(
         "### {ty}\n\nStages: {stages}\n\n```json\n{json}\n```\n\n"
     ));
+    if ty == "SetTtl" {
+        out.push_str("The engine accepts this action and does not change the TTL.\n\n");
+    }
 }
 
 fn envelope() -> Rule {
@@ -343,5 +346,18 @@ mod tests {
         assert!(stages.contains("RequestHeaders"));
         assert!(!stages.contains("ResponseHeaders"));
         assert!(!stages.contains("ResponseBody"));
+    }
+
+    #[test]
+    fn set_ttl_is_described_as_not_changing_the_ttl() {
+        let guide = rule_api_guide();
+        let section = guide
+            .split("### SetTtl")
+            .nth(1)
+            .expect("SetTtl section")
+            .split("### ")
+            .next()
+            .expect("section body");
+        assert!(section.contains("does not change the TTL"));
     }
 }
