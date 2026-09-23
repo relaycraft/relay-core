@@ -243,6 +243,29 @@ async fn test_deno_script_invalid_source_rejected() {
     assert!(result.is_err(), "invalid script source should fail to load");
 }
 
+/// The scripting guide decodes bodies with the Web globals `atob` / `btoa`.
+#[tokio::test]
+async fn atob_and_btoa_round_trip_like_the_scripting_guide() {
+    let interceptor = ScriptInterceptor::new().await.unwrap();
+    let script = r#"
+        globalThis.onRequestHeaders = (_ctx, flow) => {
+            const encoded = btoa("hi");
+            if (encoded === "aGk=" && atob(encoded) === "hi") {
+                flow.tags.push("b64-ok");
+            }
+            return flow;
+        };
+    "#;
+    interceptor.load_script(script).await.unwrap();
+    let mut flow = create_dummy_flow();
+    interceptor.on_request_headers(&mut flow).await;
+    assert!(
+        flow.tags.contains(&"b64-ok".to_string()),
+        "atob/btoa must be defined and round-trip, tags={:?}",
+        flow.tags
+    );
+}
+
 // ── S5: relay.env whitelist tests ────────────────────────────────
 
 #[tokio::test]

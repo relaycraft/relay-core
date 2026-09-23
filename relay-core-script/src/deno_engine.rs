@@ -489,6 +489,46 @@ fn build_js_runtime(env_allow: HashSet<String>, fetch_config: ScriptFetchConfig)
     }
     globalThis.RelayBody = RelayBody;
 
+    // Web globals the scripting guide uses. Each character is one byte (0–255),
+    // the same contract as a browser: btoa("hi") === "aGk=".
+    const _b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    globalThis.btoa = function (input) {
+        const s = String(input);
+        let out = "";
+        for (let i = 0; i < s.length; i += 3) {
+            const c0 = s.charCodeAt(i);
+            const c1 = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+            const c2 = i + 2 < s.length ? s.charCodeAt(i + 2) : 0;
+            if (c0 > 255 || (i + 1 < s.length && c1 > 255) || (i + 2 < s.length && c2 > 255)) {
+                throw new TypeError("btoa failed: character out of range");
+            }
+            const n = (c0 << 16) | (c1 << 8) | c2;
+            out += _b64[(n >> 18) & 63] + _b64[(n >> 12) & 63]
+                + (i + 1 < s.length ? _b64[(n >> 6) & 63] : "=")
+                + (i + 2 < s.length ? _b64[n & 63] : "=");
+        }
+        return out;
+    };
+    globalThis.atob = function (input) {
+        const s = String(input).replace(/[\t\n\f\r ]/g, "");
+        if (s.length % 4 !== 0) {
+            throw new TypeError("atob failed: length is not a multiple of 4");
+        }
+        let out = "";
+        for (let i = 0; i < s.length; i += 4) {
+            const chars = [s[i], s[i + 1], s[i + 2], s[i + 3]];
+            const vals = chars.map((ch) => (ch === "=" ? 0 : _b64.indexOf(ch)));
+            if (vals[0] < 0 || vals[1] < 0 || (chars[2] !== "=" && vals[2] < 0) || (chars[3] !== "=" && vals[3] < 0)) {
+                throw new TypeError("atob failed: invalid character");
+            }
+            const n = (vals[0] << 18) | (vals[1] << 12) | (vals[2] << 6) | vals[3];
+            out += String.fromCharCode((n >> 16) & 255);
+            if (chars[2] !== "=") out += String.fromCharCode((n >> 8) & 255);
+            if (chars[3] !== "=") out += String.fromCharCode(n & 255);
+        }
+        return out;
+    };
+
     globalThis.relay = {
         log: globalThis.console.log,
         env: function(name) {
