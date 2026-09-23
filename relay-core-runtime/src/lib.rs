@@ -354,6 +354,9 @@ pub struct CoreState {
     /// Port last written into `capture_exclude` because the proxy was listening there. `0` means
     /// none. Kept so stopping or moving the proxy removes that port and no other entry.
     proxy_exclude_port: AtomicU16,
+    /// CA certificate the running proxy is signing with. Replay trusts this file so an HTTPS
+    /// replay can complete the MITM handshake. Cleared when the proxy task ends.
+    ca_cert_path: std::sync::Mutex<Option<std::path::PathBuf>>,
 }
 
 /// Removes the proxy listen port from `capture_exclude` when `run_proxy` returns.
@@ -364,6 +367,7 @@ struct ClearProxyExclude {
 impl Drop for ClearProxyExclude {
     fn drop(&mut self) {
         self.state.set_listening_proxy_port(None);
+        self.state.clear_ca_cert();
     }
 }
 
@@ -449,6 +453,7 @@ impl CoreState {
             audit_history: Arc::new(Mutex::new(VecDeque::with_capacity(AUDIT_HISTORY_LIMIT))),
             lifecycle: LifecycleManager::new(),
             proxy_exclude_port: AtomicU16::new(0),
+            ca_cert_path: std::sync::Mutex::new(None),
         };
         state.ensure_retention_task();
         state
@@ -1661,6 +1666,24 @@ impl CoreState {
     ///
     /// Only the port this process installed is removed. The control API, MCP, and entries an
     /// operator added stay in the list.
+    fn remember_ca_cert(&self, path: std::path::PathBuf) {
+        if let Ok(mut slot) = self.ca_cert_path.lock() {
+            *slot = Some(path);
+        }
+    }
+
+    fn clear_ca_cert(&self) {
+        if let Ok(mut slot) = self.ca_cert_path.lock() {
+            *slot = None;
+        }
+    }
+
+    /// PEM of the CA the running proxy is using, when that file can be read.
+    pub fn ca_cert_pem(&self) -> Option<String> {
+        let path = self.ca_cert_path.lock().ok()?.clone()?;
+        std::fs::read_to_string(path).ok()
+    }
+
     fn set_listening_proxy_port(&self, port: Option<u16>) {
         let new = port.unwrap_or(0);
         let old = self.proxy_exclude_port.swap(new, Ordering::AcqRel);
@@ -1919,6 +1942,7 @@ impl CoreState {
         // The list follows the bound port. A later stop removes it, so a service on the old port
         // is captured again once this proxy is no longer listening there.
         self.set_listening_proxy_port(Some(config.port));
+        self.remember_ca_cert(config.ca_cert_path.clone());
         let _clear_proxy_exclude = ClearProxyExclude {
             state: Arc::clone(self),
         };

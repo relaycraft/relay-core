@@ -9,6 +9,8 @@ pub trait RuntimeStatusService: Send + Sync {
     async fn get_metrics(&self) -> CoreMetrics;
     async fn get_metrics_prometheus_text(&self) -> String;
     fn subscribe_lifecycle(&self) -> watch::Receiver<RuntimeLifecycle>;
+    /// PEM of the CA the running proxy is signing with, when the certificate file can be read.
+    fn ca_cert_pem(&self) -> Option<String>;
 }
 
 #[async_trait]
@@ -31,5 +33,9 @@ impl RuntimeStatusService for CoreState {
 
     fn subscribe_lifecycle(&self) -> watch::Receiver<RuntimeLifecycle> {
         CoreState::subscribe_lifecycle(self)
+    }
+
+    fn ca_cert_pem(&self) -> Option<String> {
+        CoreState::ca_cert_pem(self)
     }
 }

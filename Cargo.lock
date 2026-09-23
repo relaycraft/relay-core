@@ -4684,6 +4684,7 @@ name = "relay-core-http"
 version = "0.13.3"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "libc",
  "regex",
  "relay-core-api",

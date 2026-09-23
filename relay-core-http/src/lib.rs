@@ -23,6 +23,7 @@
 //! | GET    | /api/v1/events                    | SSE stream of live flow events     |
 
 pub mod control;
+pub mod replay;
 mod routes;
 pub mod server;
 #[cfg(feature = "webui")]

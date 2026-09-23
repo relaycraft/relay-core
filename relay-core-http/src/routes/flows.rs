@@ -89,11 +89,11 @@ pub struct ReplayParams {
 
 /// POST /api/v1/flows/{id}/replay
 ///
-/// Re-sends the original HTTP request from a captured flow and returns the new response.
-/// Only works for HTTP flows (not WebSocket, TCP, UDP).
+/// Re-sends the captured HTTP request through the running proxy and returns the new response.
+/// The replay is captured as a new flow. Only HTTP flows are accepted.
 ///
 /// Query parameters:
-/// - `accept_invalid_certs` (bool, default false): skip TLS verification (insecure, dev only)
+/// - `accept_invalid_certs` (bool, default false): skip TLS verification on the replay client
 async fn replay_flow(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
@@ -106,21 +106,12 @@ async fn replay_flow(
         .ok_or((StatusCode::NOT_FOUND, format!("Flow {} not found", id)))?;
 
     let (method, url, headers, body) = match &flow.layer {
-        Layer::Http(http) => {
-            let method = http.request.method.clone();
-            let url = http.request.url.to_string();
-            let headers: Vec<(String, String)> = http
-                .request
-                .headers
-                .iter()
-                .filter(|(k, _)| {
-                    !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection")
-                })
-                .cloned()
-                .collect();
-            let body = http.request.body.clone();
-            (method, url, headers, body)
-        }
+        Layer::Http(http) => (
+            http.request.method.clone(),
+            http.request.url.to_string(),
+            http.request.headers.clone(),
+            http.request.body.clone(),
+        ),
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -129,52 +120,33 @@ async fn replay_flow(
         }
     };
 
-    let mut client_builder = reqwest::Client::builder();
-    if params.accept_invalid_certs {
-        client_builder = client_builder.danger_accept_invalid_certs(true);
-    }
-    let client = client_builder
-        .build()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let mut req = client.request(
-        method
-            .parse::<reqwest::Method>()
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid method: {}", e)))?,
+    let port = crate::replay::require_running_proxy(&ctx.status.status_snapshot())
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?;
+    let ca_pem = ctx.status.ca_cert_pem();
+    let response = crate::replay::send_captured_request(
+        &method,
         &url,
-    );
-
-    for (k, v) in &headers {
-        req = req.header(k, v);
-    }
-
-    if let Some(body_data) = &body {
-        req = req.body(body_data.content.clone());
-    }
-
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("Replay request failed: {}", e),
-        )
+        &headers,
+        body.as_ref(),
+        port,
+        params.accept_invalid_certs,
+        ca_pem.as_deref(),
+    )
+    .await
+    .map_err(|error| {
+        let status = if error.starts_with("Invalid method") || error.contains("not valid base64") {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        (status, error)
     })?;
 
-    let status = resp.status().as_u16();
-    let resp_headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
-        .collect();
-    let resp_body = resp
-        .text()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
     Ok(Json(serde_json::json!({
-        "status": status,
-        "url": url,
-        "headers": resp_headers,
-        "body": resp_body,
+        "status": response.status,
+        "url": response.url,
+        "headers": response.headers,
+        "body": response.body,
     })))
 }
 

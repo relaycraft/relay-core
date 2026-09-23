@@ -135,8 +135,9 @@ pub fn replay_flow_schema() -> Tool {
     tool(
         ToolSpec::write(
         "replay_flow",
-        "Re-send a captured HTTP request and return the new response. \
-         Only works for HTTP flows.",
+        "Re-send a captured HTTP request through the running proxy and return the new response. \
+         The replay is captured as a new flow, and the current rules and scripts apply. \
+         Fails when the proxy is not running. Only works for HTTP flows.",
         json!({
             "type": "object",
             "required": ["id"],
@@ -168,62 +169,34 @@ pub async fn replay_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOut
         .ok_or(format!("Flow not found: {}", id))?;
 
     let (method, url, headers, body) = match &flow.layer {
-        Layer::Http(http) => {
-            let headers: Vec<(String, String)> = http
-                .request
-                .headers
-                .iter()
-                .filter(|(k, _)| {
-                    !k.eq_ignore_ascii_case("host") && !k.eq_ignore_ascii_case("connection")
-                })
-                .cloned()
-                .collect();
-            (
-                http.request.method.clone(),
-                http.request.url.to_string(),
-                headers,
-                http.request.body.clone(),
-            )
-        }
+        Layer::Http(http) => (
+            http.request.method.clone(),
+            http.request.url.to_string(),
+            http.request.headers.clone(),
+            http.request.body.clone(),
+        ),
         _ => return Err("Replay only supports HTTP flows".to_string().into()),
     };
 
-    let mut client_builder = reqwest::Client::builder();
-    if accept_invalid_certs {
-        client_builder = client_builder.danger_accept_invalid_certs(true);
-    }
-    let client = client_builder.build().map_err(|e| e.to_string())?;
-
-    let mut req = client.request(
-        method
-            .parse::<reqwest::Method>()
-            .map_err(|e| format!("Invalid method: {}", e))?,
+    let port = relay_core_http::replay::require_running_proxy(&ctx.status.status_snapshot())
+        .map_err(|error| ToolError::unavailable("proxy_not_running", error))?;
+    let ca_pem = ctx.status.ca_cert_pem();
+    let response = relay_core_http::replay::send_captured_request(
+        &method,
         &url,
-    );
-    for (k, v) in &headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    if let Some(b) = &body {
-        req = req.body(b.content.clone());
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("Replay failed: {}", e))?;
-    let status = resp.status().as_u16();
-    let resp_headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    let resp_body = resp.text().await.map_err(|e| e.to_string())?;
+        &headers,
+        body.as_ref(),
+        port,
+        accept_invalid_certs,
+        ca_pem.as_deref(),
+    )
+    .await?;
 
     ok_json(&json!({
-        "status": status,
-        "url": url,
-        "headers": resp_headers,
-        "body": resp_body,
+        "status": response.status,
+        "url": response.url,
+        "headers": response.headers,
+        "body": response.body,
     }))
 }
 
