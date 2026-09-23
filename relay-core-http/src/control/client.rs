@@ -29,9 +29,10 @@ pub struct ApiVersionInfo {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlClientError {
-    /// Nothing is listening: no daemon, or it died.
-    #[error("no RelayCore daemon is answering at {url}")]
-    Unreachable { url: String },
+    /// Nothing is listening: no daemon, or it died. `detail` is the client error, so a proxy
+    /// redirect or a refused connection is not reported as an empty listener.
+    #[error("no RelayCore daemon is answering at {url} ({detail})")]
+    Unreachable { url: String, detail: String },
 
     /// The daemon answered and refused, with a machine-readable reason.
     #[error("{code}: {message}")]
@@ -73,6 +74,10 @@ impl ControlClient {
         let build = |timeout: Duration| {
             reqwest::Client::builder()
                 .timeout(timeout)
+                // The control API is on loopback. `HTTP_PROXY` and the Windows system proxy are
+                // how a machine is pointed at RelayCore; sending this call back through that
+                // proxy makes a live daemon look unreachable (`relay-core status`, MCP startup).
+                .no_proxy()
                 .build()
                 .unwrap_or_default()
         };
@@ -143,13 +148,12 @@ impl ControlClient {
         request: reqwest::RequestBuilder,
         path: &str,
     ) -> Result<T, ControlClientError> {
-        let response =
-            self.authorize(request)
-                .send()
-                .await
-                .map_err(|_| ControlClientError::Unreachable {
-                    url: self.url(path),
-                })?;
+        let response = self.authorize(request).send().await.map_err(|error| {
+            ControlClientError::Unreachable {
+                url: self.url(path),
+                detail: error.to_string(),
+            }
+        })?;
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();

@@ -25,6 +25,10 @@ pub struct BridgeOptions {
     pub mcp_url: String,
     /// Control-plane bearer token, when the daemon requires one.
     pub token: Option<String>,
+    /// Browser URL for the Web UI, token in the fragment, when this daemon serves one.
+    ///
+    /// Printed at startup. Not sent to the MCP endpoint.
+    pub webui_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -54,10 +58,16 @@ where
         http: reqwest::Client::builder()
             // Bounded so a hung daemon cannot hold a client's request forever.
             .timeout(Duration::from_secs(120))
+            // Same reason as the control client: the MCP endpoint is loopback, and a system
+            // proxy pointed at RelayCore must not carry this call.
+            .no_proxy()
             .build()
             .unwrap_or_default(),
         options,
         session: Mutex::new(None),
+        initialize: Mutex::new(None),
+        initialized: Mutex::new(None),
+        recover: Mutex::new(()),
         out: Mutex::new(writer),
     });
 
@@ -108,11 +118,126 @@ struct BridgeState<W> {
     options: BridgeOptions,
     /// Session id issued by the daemon; must be echoed on every later request.
     session: Mutex<Option<String>>,
+    /// The client's `initialize`, replayed when the daemon has dropped the session.
+    ///
+    /// The stdio client already completed its own handshake. A rebuilt one stays inside the
+    /// bridge: the daemon is the same process, so the new session sees the proxy that is still
+    /// running.
+    initialize: Mutex<Option<Value>>,
+    /// The client's `notifications/initialized`, replayed after the new session exists.
+    initialized: Mutex<Option<Value>>,
+    /// One rebuild at a time. Concurrent calls that hit a dead session share the new id.
+    recover: Mutex<()>,
     out: Mutex<W>,
+}
+
+enum Posted {
+    Done,
+    Unreachable(String),
+    Refused {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 }
 
 impl<W: tokio::io::AsyncWrite + Unpin + Send> BridgeState<W> {
     async fn forward(&self, message: Value) -> Result<(), BridgeError> {
+        self.remember_handshake(&message).await;
+        self.exchange(message, true).await
+    }
+
+    async fn remember_handshake(&self, message: &Value) {
+        match message.get("method").and_then(|method| method.as_str()) {
+            Some("initialize") => *self.initialize.lock().await = Some(message.clone()),
+            Some("notifications/initialized") => {
+                *self.initialized.lock().await = Some(message.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// Send `message`. On "Session not found", open a new session and send it once more.
+    async fn exchange(&self, message: Value, allow_recover: bool) -> Result<(), BridgeError> {
+        let id = message.get("id").cloned();
+        let used_session = self.session.lock().await.clone();
+        match self.post(&message, true).await? {
+            Posted::Done => Ok(()),
+            Posted::Unreachable(error) => {
+                self.reply_with_error(id, &format!("RelayCore daemon unreachable: {error}"))
+                    .await;
+                Ok(())
+            }
+            Posted::Refused { status, body }
+                if allow_recover
+                    && is_missing_session(status, &body)
+                    && message.get("method").and_then(|method| method.as_str())
+                        != Some("initialize")
+                    && self.rebuild_session(used_session).await =>
+            {
+                match self.post(&message, true).await? {
+                    Posted::Done => Ok(()),
+                    Posted::Unreachable(error) => {
+                        self.reply_with_error(
+                            id,
+                            &format!("RelayCore daemon unreachable: {error}"),
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Posted::Refused { status, body } => {
+                        self.reply_with_error(
+                            id,
+                            &format!("RelayCore daemon refused the request ({status}): {body}"),
+                        )
+                        .await;
+                        Ok(())
+                    }
+                }
+            }
+            Posted::Refused { status, body } => {
+                self.reply_with_error(
+                    id,
+                    &format!("RelayCore daemon refused the request ({status}): {body}"),
+                )
+                .await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Replace a session the daemon has already forgotten.
+    ///
+    /// Returns false when there is no handshake to replay, or the replay itself is refused. A
+    /// caller that already rebuilt (the stored id changed) is treated as success so the waiting
+    /// request uses that id.
+    async fn rebuild_session(&self, failed_session: Option<String>) -> bool {
+        let _guard = self.recover.lock().await;
+        let current = self.session.lock().await.clone();
+        if current.is_some() && current != failed_session {
+            return true;
+        }
+        let Some(initialize) = self.initialize.lock().await.clone() else {
+            return false;
+        };
+        *self.session.lock().await = None;
+        if !matches!(self.post(&initialize, false).await, Ok(Posted::Done)) {
+            return false;
+        }
+        if self.session.lock().await.is_none() {
+            return false;
+        }
+        let initialized = self
+            .initialized
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(default_initialized);
+        matches!(self.post(&initialized, false).await, Ok(Posted::Done))
+    }
+
+    /// POST one JSON-RPC message. `publish` is false for the rebuilt handshake: those responses
+    /// belong to a session the stdio client never asked to open.
+    async fn post(&self, message: &Value, publish: bool) -> Result<Posted, BridgeError> {
         let id = message.get("id").cloned();
         let session = self.session.lock().await.clone();
 
@@ -132,37 +257,28 @@ impl<W: tokio::io::AsyncWrite + Unpin + Send> BridgeState<W> {
 
         let response = match request.send().await {
             Ok(response) => response,
-            Err(error) => {
-                // Silence is the failure this design exists to remove: an unreachable daemon must
-                // answer the client so the agent can report it instead of waiting forever.
-                self.reply_with_error(id, &format!("RelayCore daemon unreachable: {error}"))
-                    .await;
-                return Ok(());
-            }
+            Err(error) => return Ok(Posted::Unreachable(error.to_string())),
         };
 
-        if let Some(session) = response
+        let issued_session = response
             .headers()
             .get("mcp-session-id")
             .and_then(|value| value.to_str().ok())
-        {
-            *self.session.lock().await = Some(session.to_string());
-        }
+            .map(str::to_string);
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            self.reply_with_error(
-                id,
-                &format!("RelayCore daemon refused the request ({status}): {body}"),
-            )
-            .await;
-            return Ok(());
+            return Ok(Posted::Refused { status, body });
+        }
+
+        if let Some(issued_session) = issued_session {
+            *self.session.lock().await = Some(issued_session);
         }
 
         // Notifications are answered with 202 and carry no body.
         if status == reqwest::StatusCode::ACCEPTED {
-            return Ok(());
+            return Ok(Posted::Done);
         }
 
         let is_sse = response
@@ -172,26 +288,29 @@ impl<W: tokio::io::AsyncWrite + Unpin + Send> BridgeState<W> {
             .is_some_and(|value| value.contains("text/event-stream"));
 
         if is_sse {
-            self.relay_event_stream(response, id.as_ref()).await?;
+            self.relay_event_stream(response, id.as_ref(), publish)
+                .await?;
         } else {
             let body = response.text().await.unwrap_or_default();
             let text = body.trim();
-            if !text.is_empty() {
+            if publish && !text.is_empty() {
                 self.write_message(text).await?;
             }
         }
 
-        Ok(())
+        Ok(Posted::Done)
     }
 
     /// Relay an SSE response until the answer to this request arrives.
     ///
     /// Returning early matters: the daemon keeps request streams open with keep-alive comments, so
-    /// waiting for end-of-stream would hang the bridge forever.
+    /// waiting for end-of-stream would hang the bridge forever. `publish` is false when the
+    /// message is a handshake the bridge opened for itself.
     async fn relay_event_stream(
         &self,
         mut response: reqwest::Response,
         request_id: Option<&Value>,
+        publish: bool,
     ) -> Result<(), BridgeError> {
         let mut buffer: Vec<u8> = Vec::new();
 
@@ -207,7 +326,9 @@ impl<W: tokio::io::AsyncWrite + Unpin + Send> BridgeState<W> {
             buffer.extend_from_slice(&chunk);
 
             for payload in take_sse_payloads(&mut buffer) {
-                self.write_message(&payload).await?;
+                if publish {
+                    self.write_message(&payload).await?;
+                }
                 if request_id.is_some_and(|id| is_response_for(&payload, id)) {
                     return Ok(());
                 }
@@ -240,6 +361,18 @@ impl<W: tokio::io::AsyncWrite + Unpin + Send> BridgeState<W> {
             eprintln!("relay-core mcp bridge: could not report {message}: {write_error}");
         }
     }
+}
+
+fn is_missing_session(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND
+        && body.to_ascii_lowercase().contains("session not found")
+}
+
+fn default_initialized() -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    })
 }
 
 /// Strip trailing `\r` and whitespace from a line read as bytes.

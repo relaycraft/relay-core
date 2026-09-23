@@ -306,6 +306,62 @@ async fn an_empty_registry_reports_not_running() {
     ));
 }
 
+/// A machine pointed at RelayCore has `HTTP_PROXY` (or the Windows system proxy) set.
+/// The control call is to the daemon itself, so it must not be sent back through that proxy:
+/// otherwise `relay-core status` reports a live pid as unreachable.
+#[tokio::test]
+async fn control_calls_reach_the_daemon_when_http_proxy_is_set() {
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("proxy port");
+    let proxy_addr = proxy.local_addr().expect("proxy addr");
+    std::thread::spawn(move || {
+        for _ in 0..16 {
+            let Ok((mut stream, _)) = proxy.accept() else {
+                break;
+            };
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+
+    let _guard = ProxyEnv::set(&format!("http://{proxy_addr}"));
+    let registry = tempfile::tempdir().expect("temp dir");
+    let _harness = start_daemon(Some("s3cret"), registry.path()).await;
+
+    match connect(registry.path()).await {
+        DaemonStatus::Running { client, .. } => {
+            assert!(
+                client.health().await,
+                "health must not go through HTTP_PROXY"
+            );
+        }
+        other => panic!("expected Running through a direct connection, got {other:?}"),
+    }
+}
+
+/// Sets the proxy variables reqwest consults, and removes them when the test ends.
+struct ProxyEnv;
+
+impl ProxyEnv {
+    fn set(url: &str) -> Self {
+        for key in ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            // SAFETY: the test process is the only one reading these, and Drop clears them.
+            unsafe { std::env::set_var(key, url) };
+        }
+        Self
+    }
+}
+
+impl Drop for ProxyEnv {
+    fn drop(&mut self) {
+        for key in ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            // SAFETY: paired with the set above; nothing else in this test binary reads them.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_foreign_control_protocol_is_reported_as_incompatible() {
     let registry = tempfile::tempdir().expect("temp dir");

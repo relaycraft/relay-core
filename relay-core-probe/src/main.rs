@@ -64,8 +64,8 @@ async fn main() {
     };
 
     eprintln!(
-        "relay-core MCP bridge -> {} (the daemon owns the proxy; see `{CLI_COMMAND} status`)",
-        options.mcp_url
+        "{}",
+        bridge_banner(&options.mcp_url, options.webui_url.as_deref())
     );
 
     if let Err(error) = run_stdio_bridge(options).await {
@@ -82,6 +82,8 @@ async fn resolve_bridge_options() -> Result<BridgeOptions, String> {
         return Ok(BridgeOptions {
             mcp_url: url,
             token: parse_arg_env("--token=", "RELAY_MCP_TOKEN"),
+            // An explicit endpoint is not this data directory's daemon, so the page URL is unknown.
+            webui_url: None,
         });
     }
 
@@ -129,7 +131,21 @@ fn bridge_options_for(manifest: &DaemonManifest, data_dir: &Path) -> Result<Brid
     Ok(BridgeOptions {
         mcp_url: format!("http://127.0.0.1:{port}/mcp"),
         token: manifest.token.clone(),
+        webui_url: manifest.webui_url(),
     })
+}
+
+/// What the bridge prints on stderr once it knows which daemon it is attached to.
+///
+/// Stdout is the MCP channel, so this is the only place a person sees the Web UI without running
+/// another command. The URL carries the token in the fragment; a browser does not send that.
+fn bridge_banner(mcp_url: &str, webui_url: Option<&str>) -> String {
+    match webui_url {
+        Some(webui) => format!("relay-core MCP bridge -> {mcp_url}\nweb ui: {webui}"),
+        None => format!(
+            "relay-core MCP bridge -> {mcp_url} (the daemon owns the proxy; see `{CLI_COMMAND} status`)"
+        ),
+    }
 }
 
 /// Whether this bridge may start a daemon.
@@ -180,5 +196,28 @@ async fn start_daemon(data_dir: &Path) -> Result<DaemonManifest, String> {
             _ => Err("the RelayCore daemon started but did not publish its manifest".to_string()),
         },
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bridge_banner;
+
+    #[test]
+    fn the_startup_banner_prints_the_web_ui_url() {
+        let banner = bridge_banner(
+            "http://127.0.0.1:18083/mcp",
+            Some("http://127.0.0.1:8082/#token=s3cret"),
+        );
+        assert!(
+            banner.contains("web ui: http://127.0.0.1:8082/#token=s3cret"),
+            "{banner}"
+        );
+    }
+
+    #[test]
+    fn the_startup_banner_omits_the_page_when_the_daemon_serves_none() {
+        let banner = bridge_banner("http://127.0.0.1:18083/mcp", None);
+        assert!(!banner.contains("web ui:"));
     }
 }

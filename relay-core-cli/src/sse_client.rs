@@ -18,7 +18,10 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base_url: String, token: Option<String>) -> Self {
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            // The daemon's control API is loopback. Do not follow HTTP_PROXY / the system proxy.
+            .no_proxy();
         if token.is_some() {
             builder = builder.danger_accept_invalid_certs(true);
         }

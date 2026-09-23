@@ -47,6 +47,96 @@ async fn start_mock_daemon(recording: Arc<Recording>, hold_stream_open: bool) ->
     format!("http://{addr}/mcp")
 }
 
+/// First session answers `initialize`, then rejects the next real request the way an idle
+/// `LocalSessionManager` does. The following `initialize` is a new session.
+async fn start_mock_daemon_that_forgets_its_first_session(recording: Arc<Recording>) -> String {
+    let state = ExpiringMock {
+        recording,
+        next_session: Arc::new(Mutex::new(0)),
+        forgotten: Arc::new(Mutex::new(false)),
+    };
+    let app = Router::new()
+        .route("/mcp", post(expiring_handler))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock daemon");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}/mcp")
+}
+
+#[derive(Clone)]
+struct ExpiringMock {
+    recording: Arc<Recording>,
+    next_session: Arc<Mutex<u32>>,
+    forgotten: Arc<Mutex<bool>>,
+}
+
+async fn expiring_handler(
+    State(state): State<ExpiringMock>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let message: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    let method = message
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let session = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    state
+        .recording
+        .session_headers
+        .lock()
+        .unwrap()
+        .push(session.clone());
+    state.recording.methods.lock().unwrap().push(method.clone());
+
+    let has_id = message.get("id").is_some();
+    if session.as_deref() == Some("sess-1") && has_id && !*state.forgotten.lock().unwrap() {
+        *state.forgotten.lock().unwrap() = true;
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Not Found: Session not found"))
+            .expect("response");
+    }
+
+    if !has_id {
+        return Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .body(Body::empty())
+            .expect("response");
+    }
+
+    let session_id = if method == "initialize" {
+        let mut next = state.next_session.lock().unwrap();
+        *next += 1;
+        format!("sess-{next}")
+    } else {
+        session.unwrap_or_else(|| "sess-1".to_string())
+    };
+
+    let id = message.get("id").cloned().unwrap_or(serde_json::json!(1));
+    let result = serde_json::json!({ "session": session_id });
+    let frame = format!(
+        "event: message\ndata: {}\n\n",
+        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header("mcp-session-id", session_id)
+        .body(Body::from(frame))
+        .expect("response")
+}
+
 #[derive(Clone)]
 struct MockState {
     recording: Arc<Recording>,
@@ -159,6 +249,7 @@ fn options(url: String) -> BridgeOptions {
     BridgeOptions {
         mcp_url: url,
         token: None,
+        webui_url: None,
     }
 }
 
@@ -251,6 +342,55 @@ async fn a_stream_the_daemon_keeps_open_does_not_hold_the_bridge() {
         .expect("bridge should run to EOF");
 
     assert_eq!(out.lines().len(), 1);
+}
+
+/// The daemon drops an idle MCP session (HTTP 404 "Session not found") while the process, and
+/// the proxy it owns, keep running. The bridge must open a new session and replay the call.
+/// The client already finished `initialize`, so the rebuilt handshake stays inside the bridge.
+#[tokio::test]
+async fn an_expired_session_is_rebuilt_and_the_call_is_replayed() {
+    let recording = Arc::new(Recording::default());
+    let url = start_mock_daemon_that_forgets_its_first_session(recording.clone()).await;
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"proxy_status"}}"#,
+        "\n",
+    );
+
+    let out = SharedWriter::default();
+    bridge_streams(input.as_bytes(), out.clone(), options(url))
+        .await
+        .expect("bridge should run to EOF");
+
+    let lines = out.lines();
+    assert_eq!(
+        lines.len(),
+        2,
+        "the client sees its own initialize and the replayed call, not the rebuilt handshake: {lines:?}"
+    );
+    assert!(
+        lines.iter().all(|line| line.get("error").is_none()),
+        "Session not found must not reach the client: {lines:?}"
+    );
+    assert_eq!(lines[1]["id"], 2);
+    assert_eq!(lines[1]["result"]["session"], "sess-2");
+
+    let methods = recording.methods.lock().unwrap().clone();
+    assert_eq!(
+        methods,
+        vec![
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ],
+        "the bridge replays the handshake, then the call, on a new session: {methods:?}"
+    );
 }
 
 #[tokio::test]
