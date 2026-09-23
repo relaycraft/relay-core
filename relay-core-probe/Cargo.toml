@@ -19,10 +19,10 @@ transport-sse = ["rmcp/transport-streamable-http-server", "dep:axum"]
 [dependencies]
 relay-core-api.workspace = true
 relay-core-lib.workspace = true
-relay-core-runtime = { path = "../relay-core-runtime", version = "0.13.3" }
+relay-core-runtime = { path = "../relay-core-runtime", version = "0.14.0" }
 # Daemon discovery, control client and bootstrap for the stdio bridge. `default-features = false`
 # keeps the script engine out of the MCP process — it belongs to the daemon that owns the rules.
-relay-core-http = { path = "../relay-core-http", version = "0.13.3", default-features = false }
+relay-core-http = { path = "../relay-core-http", version = "0.14.0", default-features = false }
 rmcp = { version = "1.2.0", features = ["server", "transport-io"] }
 axum = { version = "0.8", optional = true }
 tokio.workspace = true
