@@ -67,13 +67,14 @@ pub fn parse_request_meta<B>(req: &Request<B>, is_mitm: bool) -> RequestMeta {
     };
 
     let mut cookies = Vec::new();
-    if let Some(cookie_header) = req.headers().get(hyper::header::COOKIE)
-        && let Ok(cookie_str) = cookie_header.to_str()
-    {
-        for c in CookieCrate::split_parse(cookie_str).flatten() {
+    for cookie_header in req.headers().get_all(hyper::header::COOKIE) {
+        let Ok(cookie_str) = cookie_header.to_str() else {
+            continue;
+        };
+        for parsed in CookieCrate::split_parse(cookie_str).flatten() {
             cookies.push(Cookie {
-                name: c.name().to_string(),
-                value: c.value().to_string(),
+                name: parsed.name().to_string(),
+                value: parsed.value().to_string(),
                 path: None,
                 domain: None,
                 expires: None,
@@ -102,6 +103,38 @@ pub fn is_hop_by_hop(name: &str) -> bool {
         || name.eq_ignore_ascii_case("trailers")
         || name.eq_ignore_ascii_case("transfer-encoding")
         || name.eq_ignore_ascii_case("upgrade")
+}
+
+/// Join every `Cookie` field into one header, in the order they arrived.
+///
+/// HTTP/2 is allowed to send each cookie as its own field. Passing those through as separate
+/// `Cookie` lines makes an HTTP/1 upstream that reads only the first line drop the rest, which
+/// logs SSO sessions out. `Set-Cookie` is a different header and is left untouched.
+pub fn coalesce_cookie_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(headers.len());
+    let mut cookies: Vec<&str> = Vec::new();
+    let mut slot = None;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("cookie") {
+            if slot.is_none() {
+                slot = Some(out.len());
+                out.push(("Cookie".to_string(), String::new()));
+            }
+            if !value.is_empty() {
+                cookies.push(value.as_str());
+            }
+            continue;
+        }
+        out.push((name.clone(), value.clone()));
+    }
+    if let Some(index) = slot {
+        if cookies.is_empty() {
+            out.remove(index);
+        } else {
+            out[index].1 = cookies.join("; ");
+        }
+    }
+    out
 }
 
 pub fn create_initial_flow(
@@ -537,6 +570,9 @@ pub fn build_forward_request(
     } else {
         current_req.headers.clone()
     };
+    // HTTP/2 may split one Cookie into several fields. An upstream that reads only the
+    // first (common in SSO) then drops the session. RFC 6265 allows a single Cookie header.
+    let headers = coalesce_cookie_headers(&headers);
 
     for (k, v) in &headers {
         // Filter out hop-by-hop headers to allow connection pooling
@@ -734,17 +770,75 @@ pub fn build_client_response_from_flow(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_client_response_from_flow, mock_to_response, parse_request_meta};
+    use super::{
+        build_client_response_from_flow, build_forward_request, mock_to_response,
+        parse_request_meta,
+    };
+    use crate::capture::loop_detection::LoopDetector;
     use chrono::Utc;
-    use http_body_util::BodyExt;
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Bytes;
     use hyper::{Request, StatusCode, Version};
     use relay_core_api::flow::{
         BodyData, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
         TransportProtocol,
     };
-    use std::collections::HashMap;
+    use relay_core_api::policy::ProxyPolicy;
+    use std::collections::{BTreeSet, HashMap};
     use url::Url;
     use uuid::Uuid;
+
+    /// HTTP/2 delivers one logical Cookie header as several fields. Parsing must see every
+    /// field, and the upstream request must carry them as a single Cookie header (RFC 6265).
+    #[test]
+    fn every_cookie_field_is_parsed_and_forwarded_as_one_header() {
+        let req = Request::builder()
+            .uri("http://sso.example/login")
+            .header("cookie", "sid=aaa")
+            .header("cookie", "portal=bbb")
+            .header("host", "sso.example")
+            .body(())
+            .expect("request");
+        let meta = parse_request_meta(&req, false);
+        let names: Vec<_> = meta
+            .cookies
+            .iter()
+            .map(|cookie| cookie.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["sid", "portal"],
+            "both cookie fields are parsed"
+        );
+
+        let mut flow = sample_flow_with_response(200);
+        if let Layer::Http(http) = &mut flow.layer {
+            http.request.headers = meta.headers;
+        }
+        let body = Full::new(Bytes::new())
+            .map_err(|error| error.into())
+            .boxed();
+        let forward = build_forward_request(
+            &mut flow,
+            body,
+            None,
+            &ProxyPolicy::default(),
+            &LoopDetector::new(BTreeSet::new()),
+            false,
+        )
+        .expect("forward");
+        let cookies: Vec<_> = forward
+            .headers()
+            .get_all("cookie")
+            .iter()
+            .map(|value| value.to_str().expect("cookie text"))
+            .collect();
+        assert_eq!(
+            cookies,
+            vec!["sid=aaa; portal=bbb"],
+            "the upstream sees one Cookie header"
+        );
+    }
 
     fn sample_response_with(
         status: u16,

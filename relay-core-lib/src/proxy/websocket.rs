@@ -3,8 +3,8 @@ use crate::intercept::types::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, WebSocketMessageAction,
 };
 use crate::proxy::http_utils::{
-    create_error_response, create_initial_flow, mock_to_response, parse_request_meta,
-    update_flow_with_response_headers,
+    coalesce_cookie_headers, create_error_response, create_initial_flow, mock_to_response,
+    parse_request_meta, update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use chrono::Utc;
@@ -220,10 +220,10 @@ where
         .uri(target_url_str.as_str())
         .version(hyper::Version::HTTP_11);
 
-    for (k, v) in current_req.headers.iter() {
+    for (k, v) in coalesce_cookie_headers(&current_req.headers) {
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),
-            HeaderValue::from_str(v),
+            HeaderValue::from_str(&v),
         ) {
             forward_req_builder = forward_req_builder.header(name, val);
         }
