@@ -92,13 +92,9 @@ pub fn spawn_detached(request: &SpawnRequest) -> Result<u32, BootstrapError> {
     if let Some(parent) = request.log_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| BootstrapError::Spawn(e.to_string()))?;
     }
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&request.log_file)
-        .map_err(|e| {
-            BootstrapError::Spawn(format!("opening {}: {e}", request.log_file.display()))
-        })?;
+    let log = open_daemon_log(&request.log_file).map_err(|e| {
+        BootstrapError::Spawn(format!("opening {}: {e}", request.log_file.display()))
+    })?;
 
     let mut command = Command::new(&request.program);
     command.args(&request.args);
@@ -117,6 +113,25 @@ pub fn spawn_detached(request: &SpawnRequest) -> Result<u32, BootstrapError> {
 
 fn io_err(error: io::Error) -> BootstrapError {
     BootstrapError::Spawn(error.to_string())
+}
+
+/// Open the daemon log for append. The file can contain operational detail from stderr, so it is
+/// owner-only, the same way the manifest that holds the control token is.
+fn open_daemon_log(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 /// Detach the child from this process's terminal so it survives the shell that started it.
@@ -178,6 +193,21 @@ pub async fn wait_until_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_daemon_log_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("daemon.log");
+        let _file = open_daemon_log(&path).expect("create log");
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "found {mode:o}");
+    }
 
     #[test]
     fn the_host_binary_is_looked_for_next_to_this_executable_first() {

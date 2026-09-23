@@ -326,7 +326,11 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
         pid = std::process::id(),
         control = %format!("http://{api_addr}"),
         mcp = %mcp_port.map(|p| format!("http://127.0.0.1:{p}/mcp")).unwrap_or_else(|| "disabled".to_string()),
-        webui = %manifest.webui_url().unwrap_or_else(|| "disabled".to_string()),
+        webui = %if manifest.serve_webui {
+            manifest.control_base_url()
+        } else {
+            "disabled".to_string()
+        },
         data_dir = %data_dir.display(),
         stream = %controller.save_stream().map(|p| p.display().to_string()).unwrap_or_else(|| "off".to_string()),
         "daemon ready"

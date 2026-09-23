@@ -327,3 +327,108 @@ async fn a_response_hook_rewrites_a_gzip_body_under_prefixed_observation() {
         String::from_utf8_lossy(&decoded)
     );
 }
+
+/// A response hook must not hold an event stream until the upstream body ends.
+///
+/// Header and body hooks both ask for a buffered response. An event stream has no end, so
+/// waiting for that buffer means the client never sees the response headers.
+#[tokio::test]
+async fn an_event_stream_reaches_the_client_while_a_response_hook_is_loaded() {
+    init_crypto();
+    let interceptor = ScriptInterceptor::new().await.expect("script engine");
+    interceptor
+        .load_script(
+            r#"
+            globalThis.onResponseHeaders = (_ctx, flow) => {
+                flow.layer.data.response.headers.push(["x-sse", "1"]);
+                return flow;
+            };
+            globalThis.onResponse = (_body, _flow) => {};
+            "#,
+        )
+        .await
+        .expect("script should load");
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let upstream = listener.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut received = Vec::new();
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            received.extend_from_slice(&buf[..n]);
+            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(b": hello\n\n").await;
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+    let source = TcpCaptureSource::new(listener);
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
+    let policy = ProxyPolicy {
+        body_observation: relay_core_api::body_plan::BodyObservation::Prefixed,
+        ..ProxyPolicy::default()
+    };
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
+    let interceptor = Arc::new(interceptor) as Arc<dyn Interceptor>;
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("proxy handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://{upstream}/events"))
+        .header("host", upstream.to_string())
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .expect("request");
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(2), sender.send_request(req))
+        .await
+        .expect("event-stream headers must arrive before the upstream body ends")
+        .expect("send via proxy");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("x-sse")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+}

@@ -6,8 +6,13 @@
 
 use crate::interceptor::{BoxError, HttpBody};
 use crate::proxy::body_codec::process_body_with_framing;
+use bytes::Bytes;
 use http_body_util::BodyExt as _;
+use hyper::body::{Body, Frame};
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer};
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 /// Outcome of materializing a body under a budget.
 #[derive(Debug)]
@@ -39,61 +44,92 @@ impl BufferedBody {
 /// at the budget, so an oversized body is never fully materialized, and the returned body always
 /// carries every byte so nothing is lost in transit.
 pub async fn buffer_body_within_budget(
-    body: HttpBody,
+    mut body: HttpBody,
     budget: usize,
 ) -> Result<(BufferedBody, HttpBody), BoxError> {
-    let mut body = body;
-    let mut collected: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    let mut truncated = false;
-
-    // Pull frame by frame so the budget can stop the read instead of buffering everything first.
-    while let Some(frame) = body.frame().await {
-        let frame = frame?;
-        if let Some(data) = frame.data_ref() {
-            total += data.len() as u64;
-            if collected.len() < budget {
-                let take = (budget - collected.len()).min(data.len());
-                collected.extend_from_slice(&data[..take]);
-                if collected.len() >= budget {
-                    truncated = true;
-                }
-            }
-        }
-        // Trailers are not body bytes and are re-attached by the caller's framing.
-    }
-
-    if !truncated {
-        // Everything fit, so nothing needs to be re-attached.
-        let bytes = bytes::Bytes::from(collected);
-        let forwarded: HttpBody = http_body_util::Full::new(bytes.clone())
-            .map_err(|e| -> BoxError { e.into() })
-            .boxed();
+    if budget == 0 {
         return Ok((
             BufferedBody {
-                bytes,
-                total_bytes: total,
-                truncated: false,
+                bytes: Bytes::new(),
+                total_bytes: 0,
+                truncated: true,
             },
-            forwarded,
+            body,
         ));
     }
 
-    // Oversized: the caller gets a prefix for matching and must refuse to rewrite the body, but the
-    // returned body still has to carry the full payload. Re-reading is impossible here, so report
-    // truncation and let the caller drop the body rather than forward a prefix as if complete.
-    let bytes = bytes::Bytes::from(collected);
-    let forwarded: HttpBody = http_body_util::Full::new(bytes.clone())
-        .map_err(|e| -> BoxError { e.into() })
-        .boxed();
+    let mut visible: Vec<u8> = Vec::new();
+    let mut pulled: Vec<Bytes> = Vec::new();
+    let mut truncated = false;
+
+    // Stop at the budget. Bytes already pulled, including the tail of the frame that crossed the
+    // cap, stay on the forwarded body together with whatever has not been read yet.
+    while visible.len() < budget {
+        let Some(frame) = body.frame().await else {
+            break;
+        };
+        let frame = frame?;
+        let data = match frame.into_data() {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        if data.is_empty() {
+            continue;
+        }
+        let room = budget - visible.len();
+        if data.len() <= room {
+            visible.extend_from_slice(&data);
+            pulled.push(data);
+        } else {
+            visible.extend_from_slice(&data[..room]);
+            pulled.push(data);
+            truncated = true;
+            break;
+        }
+    }
+
+    let bytes = Bytes::from(visible);
+    let forwarded = if truncated {
+        ReplayThenRest {
+            prefix: VecDeque::from(pulled),
+            rest: body,
+        }
+        .boxed()
+    } else {
+        http_body_util::Full::new(bytes.clone())
+            .map_err(|e| -> BoxError { e.into() })
+            .boxed()
+    };
     Ok((
         BufferedBody {
+            total_bytes: bytes.len() as u64,
             bytes,
-            total_bytes: total,
-            truncated: true,
+            truncated,
         },
         forwarded,
     ))
+}
+
+/// Frames already pulled off the stream, followed by whatever was not read.
+struct ReplayThenRest {
+    prefix: VecDeque<Bytes>,
+    rest: HttpBody,
+}
+
+impl Body for ReplayThenRest {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(chunk) = this.prefix.pop_front() {
+            return Poll::Ready(Some(Ok(Frame::data(chunk))));
+        }
+        Pin::new(&mut this.rest).poll_frame(cx)
+    }
 }
 
 /// Wrap a body so the first `limit` bytes are retained while every frame still passes through.
@@ -298,10 +334,10 @@ pub fn headers_for_direction(flow: &Flow, direction: Direction) -> Vec<(String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{buffer_prefix, record_body_on_flow};
-    use crate::interceptor::HttpBody;
+    use super::{buffer_body_within_budget, buffer_prefix, record_body_on_flow};
+    use crate::interceptor::{BoxError, HttpBody};
     use http_body_util::{BodyExt, Full};
-    use hyper::body::Body as _;
+    use hyper::body::{Body, Frame};
     use relay_core_api::flow::{
         Direction, Flow, HttpLayer, HttpRequest, Layer, NetworkInfo, TransportProtocol,
     };
@@ -382,6 +418,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_budget_keeps_a_prefix_and_forwards_every_byte() {
+        let payload = vec![b'x'; 4096];
+        let (snapshot, forwarded) = buffer_body_within_budget(body_from_owned(payload.clone()), 64)
+            .await
+            .expect("buffer");
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.bytes.len(), 64);
+        let forwarded = http_body_util::BodyExt::collect(forwarded)
+            .await
+            .expect("collect")
+            .to_bytes();
+        assert_eq!(
+            forwarded.len(),
+            payload.len(),
+            "bytes past the budget must still reach the client"
+        );
+        assert_eq!(&forwarded[..], &payload[..]);
+    }
+
+    #[tokio::test]
+    async fn buffering_stops_when_the_budget_is_full() {
+        let body = PendingAfterPrefix {
+            prefix: bytes::Bytes::from_static(b"0123456789abcdef"),
+            sent: false,
+        }
+        .boxed();
+        let buffered = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            buffer_body_within_budget(body, 8),
+        )
+        .await
+        .expect("must not wait for a frame after the budget is full");
+        let (snapshot, _) = buffered.expect("buffer");
+        assert!(snapshot.truncated);
+        assert_eq!(&snapshot.bytes[..], b"01234567");
+    }
+
+    #[tokio::test]
     async fn oversized_body_is_truncated_but_fully_forwarded() {
         let payload = vec![b'x'; 4096];
         let wrapped = buffer_prefix(body_from_owned(payload.clone()), 64);
@@ -413,6 +487,28 @@ mod tests {
             wrapped.truncated(),
             "reaching the cap must be reported so a body rule can refuse to match a prefix"
         );
+    }
+
+    struct PendingAfterPrefix {
+        prefix: bytes::Bytes,
+        sent: bool,
+    }
+
+    impl Body for PendingAfterPrefix {
+        type Data = bytes::Bytes;
+        type Error = BoxError;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            if self.sent {
+                return std::task::Poll::Pending;
+            }
+            self.sent = true;
+            let prefix = self.prefix.clone();
+            std::task::Poll::Ready(Some(Ok(Frame::data(prefix))))
+        }
     }
 
     fn body_from_owned(bytes: Vec<u8>) -> HttpBody {

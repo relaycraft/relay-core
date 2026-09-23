@@ -689,6 +689,20 @@ fn a_daemon_log_is_written_where_status_says_it_is() {
         contents.contains("daemon ready"),
         "the log should record startup: {contents}"
     );
+    assert!(
+        !contents.contains("#token="),
+        "the daemon log must not carry the control token: {contents}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&log_path)
+            .expect("log metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "daemon log must be owner-only, found {mode:o}");
+    }
 
     // Appending rather than truncating: a daemon restart must not erase the previous crash.
     let mut file = std::fs::OpenOptions::new()

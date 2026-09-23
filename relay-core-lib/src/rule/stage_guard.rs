@@ -50,6 +50,24 @@ pub const RESPONSE_BODY_BUDGET_KEY: &str = "response_body_inspect_budget";
 /// request-header stage, when it can see which stages have rules.
 pub const NEEDS_RESPONSE_BODY_KEY: &str = "needs_response_body";
 
+/// `flow.meta` key marking a response that must keep streaming.
+///
+/// Set after response-header hooks return. Those hooks deserialize the flow and drop `meta`, so
+/// the mark has to be written again before a body hook can see it. A body hook that finds it
+/// forwards the stream instead of reading until the upstream ends.
+pub const RESPONSE_STREAMING_KEY: &str = "response_streaming";
+
+/// Remember that this response has no bounded body, so later stages must not wait for it to end.
+pub fn mark_response_streaming(flow: &mut Flow) {
+    flow.meta
+        .insert(RESPONSE_STREAMING_KEY.to_string(), "1".to_string());
+}
+
+/// Whether [`mark_response_streaming`] was set on this flow.
+pub fn response_is_streaming(flow: &Flow) -> bool {
+    flow.meta.contains_key(RESPONSE_STREAMING_KEY)
+}
+
 /// Declare that the response body must be retainable, with `budget` bytes.
 pub fn request_response_body(flow: &mut Flow, budget: usize) {
     flow.meta

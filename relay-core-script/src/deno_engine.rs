@@ -1272,6 +1272,11 @@ impl DenoScriptEngine {
         flow: &mut Flow,
         body: HttpBody,
     ) -> Result<HttpBody, BoxError> {
+        if matches!(kind, BodyHookKind::Response)
+            && relay_core_lib::rule::stage_guard::response_is_streaming(flow)
+        {
+            return Ok(body);
+        }
         if !self.hook_defined(kind).await? {
             return Ok(body);
         }

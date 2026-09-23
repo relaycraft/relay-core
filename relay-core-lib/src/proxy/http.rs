@@ -505,7 +505,19 @@ where
                 .unwrap_or(policy.rule_body_inspect_budget),
         });
 
-    if let relay_core_api::body_plan::BodyPlan::Buffer { limit: budget } = response_body_plan {
+    // An open response (no Content-Length, or an event stream) must not be read to completion
+    // before the client sees the headers. A rewrite that needs the whole body is skipped; the
+    // bytes keep streaming. The mark is applied again after header hooks, which drop `meta`.
+    let response_streams = response_must_stream(&res_parts.headers);
+    let buffer_for_rewrite = !response_streams
+        && matches!(
+            response_body_plan,
+            relay_core_api::body_plan::BodyPlan::Buffer { .. }
+        );
+
+    if let relay_core_api::body_plan::BodyPlan::Buffer { limit: budget } = response_body_plan
+        && buffer_for_rewrite
+    {
         let taken = std::mem::replace(
             &mut res_body,
             Full::new(Bytes::new())
@@ -582,6 +594,22 @@ where
             return Ok(mock_to_response(resp));
         }
         _ => {}
+    }
+
+    if response_streams {
+        // Header hooks replace the flow from JSON and drop this mark. Put it back before the
+        // body hook, which would otherwise read the stream until it ended.
+        crate::rule::stage_guard::mark_response_streaming(&mut flow);
+        if matches!(
+            response_body_plan,
+            relay_core_api::body_plan::BodyPlan::Buffer { .. }
+        ) && !flow
+            .tags
+            .iter()
+            .any(|tag| tag == "rule_skipped:streaming_body")
+        {
+            flow.tags.push("rule_skipped:streaming_body".to_string());
+        }
     }
 
     // Phase 4: Response Body Streaming & Interception (body boxed and retained in Phase 3)
@@ -735,6 +763,24 @@ where
     }
 
     Ok(Response::from_parts(res_parts, current_res_body))
+}
+
+/// A response whose body has no declared end, or that is an event stream.
+///
+/// Waiting for that body before the response headers leaves the client with nothing to read.
+fn response_must_stream(headers: &hyper::HeaderMap) -> bool {
+    let event_stream = headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        });
+    event_stream || !headers.contains_key(hyper::header::CONTENT_LENGTH)
 }
 
 pub(crate) fn apply_quic_downgrade(
