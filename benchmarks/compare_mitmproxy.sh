@@ -107,6 +107,9 @@ cleanup() {
   kill "$TARGET_PID" 2>/dev/null || true
   kill "$RELAY_PID" 2>/dev/null || true
   kill "$MITM_PID" 2>/dev/null || true
+  if [[ -n "${RELAY_DATA_DIR:-}" ]]; then
+    rm -rf "$RELAY_DATA_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -126,6 +129,10 @@ fi
 info "Running relay-core on port $RELAY_PORT — binary $RELAY_BIN"
 CA_CERT="$SCRIPT_DIR/.bench_ca_cert.pem"
 CA_KEY="$SCRIPT_DIR/.bench_ca_key.pem"
+# `run` refuses to start when another daemon owns the default data dir, and the
+# benchmark would then time a port with nothing behind it.
+RELAY_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/relay-bench.XXXXXX")"
+export RELAY_DATA_DIR
 
 "$RELAY_BIN" run \
   --listen "127.0.0.1:$RELAY_PORT" \
@@ -133,6 +140,11 @@ CA_KEY="$SCRIPT_DIR/.bench_ca_key.pem"
   >/tmp/vs_relay.log 2>&1 &
 RELAY_PID=$!
 sleep 1.5
+if ! kill -0 "$RELAY_PID" 2>/dev/null; then
+  fail "relay-core exited before the benchmark"
+  cat /tmp/vs_relay.log >&2
+  exit 1
+fi
 
 info "RelayCore benchmark (${DURATION}s, $CONNECTIONS conn)..."
 relay_raw=$(run_oha "$RELAY_PORT")
