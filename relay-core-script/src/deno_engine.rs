@@ -345,6 +345,7 @@ fn op_json_stringify_pretty(#[serde] value: serde_json::Value) -> String {
 #[derive(Debug, Clone, Copy)]
 enum BodyHookKind {
     Request,
+    ResponseHeaders,
     Response,
 }
 
@@ -710,6 +711,9 @@ impl DenoScriptEngine {
                                 BodyHookKind::Request => {
                                     "typeof globalThis.onRequest === 'function'"
                                 }
+                                BodyHookKind::ResponseHeaders => {
+                                    "typeof globalThis.onResponseHeaders === 'function'"
+                                }
                                 BodyHookKind::Response => {
                                     "typeof globalThis.onResponse === 'function'"
                                 }
@@ -899,6 +903,7 @@ impl DenoScriptEngine {
     ) -> Result<(Option<Flow>, Option<Bytes>), String> {
         let stage = match kind {
             BodyHookKind::Request => "onRequest",
+            BodyHookKind::ResponseHeaders => "onResponseHeaders",
             BodyHookKind::Response => "onResponse",
         };
         let resource = MemoryBodyResource::new(visible);
@@ -1280,6 +1285,8 @@ impl DenoScriptEngine {
             BodyHookKind::Response => {
                 DenoCommand::OnResponse(flow.clone(), prepared.visible, prepared.truncated, tx)
             }
+            // Header hooks are not body streams. Nothing calls this with that kind.
+            BodyHookKind::ResponseHeaders => return Ok(prepared.forward),
         };
         self.tx
             .send(command)
@@ -1323,6 +1330,11 @@ impl ScriptEngineTrait for DenoScriptEngine {
         rx.await
             .map_err(|e| Box::new(e) as BoxError)?
             .map_err(|e| Box::new(std::io::Error::other(e)) as BoxError)
+    }
+
+    async fn has_response_rewrite_hook(&self) -> Result<bool, BoxError> {
+        Ok(self.hook_defined(BodyHookKind::ResponseHeaders).await?
+            || self.hook_defined(BodyHookKind::Response).await?)
     }
 
     async fn on_request_headers(&self, flow: &mut Flow) -> Result<Option<Flow>, BoxError> {

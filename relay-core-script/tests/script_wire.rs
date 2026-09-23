@@ -194,3 +194,136 @@ async fn async_on_response_json_rewrite_reaches_the_client() {
     );
     assert_eq!(body, br#"{"n":2}"#);
 }
+
+/// A response hook must see a decoded body under the daemon's default `prefixed` observation.
+///
+/// `prefixed` keeps streaming when nobody rewrites. A script that reads
+/// `response.body.content` is a rewrite, so a gzip upstream has to be buffered and decoded
+/// before `onResponseHeaders` runs. Leaving that to `body_observation = full` makes response
+/// rewriting fail until someone changes policy.
+#[tokio::test]
+async fn a_response_hook_rewrites_a_gzip_body_under_prefixed_observation() {
+    init_crypto();
+    let plain = b"original-body";
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, plain).expect("gzip");
+    let gzipped = encoder.finish().expect("finish gzip");
+
+    let interceptor = ScriptInterceptor::new().await.expect("script engine");
+    interceptor
+        .load_script(
+            r#"
+            globalThis.onResponseHeaders = (_ctx, flow) => {
+                const body = flow.layer.data.response && flow.layer.data.response.body;
+                if (!body || body.content == null) return flow;
+                const next = "rewritten";
+                body.content = next;
+                body.encoding = "utf-8";
+                body.size = next.length;
+                return flow;
+            };
+            "#,
+        )
+        .await
+        .expect("script should load");
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind upstream");
+    let upstream = listener.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut received = Vec::new();
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            received.extend_from_slice(&buf[..n]);
+            if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            gzipped.len()
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        let _ = socket.write_all(&gzipped).await;
+    });
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind proxy");
+    let proxy_port = listener.local_addr().expect("proxy addr").port();
+    let source = TcpCaptureSource::new(listener);
+    let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
+    let (flow_tx, mut flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    tokio::spawn(async move { while flow_rx.recv().await.is_some() {} });
+    let policy = ProxyPolicy {
+        body_observation: relay_core_api::body_plan::BodyObservation::Prefixed,
+        ..ProxyPolicy::default()
+    };
+    let (_policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
+    let interceptor = Arc::new(interceptor) as Arc<dyn Interceptor>;
+    tokio::spawn(async move {
+        let _ = start_proxy(
+            source,
+            flow_tx,
+            interceptor,
+            ca,
+            policy_rx,
+            None,
+            None,
+            None,
+        )
+        .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+        .await
+        .expect("connect proxy");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("proxy handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://{upstream}/probe"))
+        .header("host", upstream.to_string())
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .expect("request");
+    let resp = sender.send_request(req).await.expect("send via proxy");
+    let encoding = resp
+        .headers()
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect response")
+        .to_bytes();
+    let decoded = if encoding.as_deref() == Some("gzip") {
+        let mut decoder = flate2::read::GzDecoder::new(bytes.as_ref());
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut out).expect("gunzip");
+        out
+    } else {
+        bytes.to_vec()
+    };
+    assert_eq!(
+        decoded,
+        b"rewritten",
+        "a response hook must rewrite the decoded gzip body under prefixed observation, got {}",
+        String::from_utf8_lossy(&decoded)
+    );
+}

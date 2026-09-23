@@ -297,6 +297,13 @@ impl Interceptor for ScriptInterceptor {
         self.metrics
             .on_request_headers_invocations
             .fetch_add(1, Ordering::Relaxed);
+
+        // After the script returns: a returned flow is deserialized and drops in-process meta.
+        // Declaring here is what makes the proxy buffer and decode the response before
+        // onResponseHeaders / onResponse, including under body_observation = prefixed.
+        if engine.has_response_rewrite_hook().await.unwrap_or(false) {
+            relay_core_lib::rule::stage_guard::request_response_body(flow, usize::MAX);
+        }
         result
     }
 

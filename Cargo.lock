@@ -4816,6 +4816,7 @@ dependencies = [
  "chrono",
  "data-encoding",
  "deno_core",
+ "flate2",
  "futures-util",
  "http",
  "http-body",

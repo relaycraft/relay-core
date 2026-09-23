@@ -25,6 +25,14 @@ pub trait ScriptEngineTrait: Send + Sync {
         Ok(None)
     }
 
+    /// Whether this script will read or rewrite the response (`onResponseHeaders` or `onResponse`).
+    ///
+    /// The proxy has to buffer and decode the response before those hooks run. A default of
+    /// `false` keeps streaming for an engine that has no such hooks.
+    async fn has_response_rewrite_hook(&self) -> Result<bool, BoxError> {
+        Ok(false)
+    }
+
     async fn on_request(&self, flow: &mut Flow, body: HttpBody) -> Result<RequestAction, BoxError>;
 
     async fn on_response_headers(&self, _flow: &mut Flow) -> Result<Option<Flow>, BoxError> {
