@@ -61,12 +61,7 @@ export default function SettingsView() {
       setPolicy(updated);
       setSaved(true);
     } catch (e: unknown) {
-      const msg = String(e);
-      if (msg.includes('409')) {
-        setError('Upstream proxy change requires restarting the relay process.');
-      } else {
-        setError(msg);
-      }
+      setError(String(e));
     }
   }
 

@@ -47,19 +47,6 @@ async fn patch_policy(
         )
     })?;
 
-    // R-N1: upstream connector is built once at startup; changing upstream
-    // at runtime has no effect on active connections. Return 409 to avoid
-    // the silent-failure UX.
-    if patch.upstream.is_some() {
-        let current = ctx.policy.policy_snapshot();
-        if current.upstream != patch.upstream {
-            return Err((
-                StatusCode::CONFLICT,
-                "upstream proxy config change requires proxy restart".to_string(),
-            ));
-        }
-    }
-
     ctx.policy
         .patch_policy_from(AuditActor::Http, "/api/v1/policy PATCH".to_string(), patch);
 
@@ -110,5 +97,38 @@ mod tests {
         assert!(json["request_timeout_ms"].is_number());
         assert!(json["transparent_enabled"].is_boolean());
         assert!(json.get("status").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_upstream_change_is_stored() {
+        let state = Arc::new(CoreState::new(None).await);
+        let ctx = Arc::new(crate::server::HttpApiContext::new(state));
+        let app = router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/api/v1/policy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"upstream":{"proxy_url":"http://127.0.0.1:18990","bypass_hosts":["127.0.0.1"],"fail_open":false}}"#,
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: Value = serde_json::from_slice(&body).expect("body should be valid json");
+        assert_eq!(json["upstream"]["proxy_url"], "http://127.0.0.1:18990");
+        assert_eq!(
+            json["upstream"]["bypass_hosts"],
+            serde_json::json!(["127.0.0.1"])
+        );
+        assert_eq!(json["upstream"]["fail_open"], false);
     }
 }
