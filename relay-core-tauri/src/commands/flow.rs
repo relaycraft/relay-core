@@ -97,6 +97,18 @@ impl<R: Runtime> TauriFlowSink<R> {
                         eprintln!("Failed to emit flow-response-trailers event: {}", e);
                     }
                 }
+                FlowUpdate::StreamReset { flow_id, detail } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct StreamResetEvent {
+                        flow_id: String,
+                        detail: String,
+                    }
+                    let event = StreamResetEvent { flow_id, detail };
+                    if let Err(e) = self.app_handle.emit("flow-stream-reset", event) {
+                        eprintln!("Failed to emit flow-stream-reset event: {}", e);
+                    }
+                }
                 FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]

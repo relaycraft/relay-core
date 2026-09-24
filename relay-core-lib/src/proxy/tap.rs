@@ -1,5 +1,5 @@
 use crate::interceptor::{BoxError, HttpBody};
-use crate::proxy::body_codec::process_body_with_framing;
+use crate::proxy::body_codec::{process_arrived_body, process_body_with_framing};
 use crate::proxy::body_plan::{PrefixBuffer, buffer_prefix};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
@@ -35,6 +35,8 @@ pub struct TapBody {
     /// the final `None`: hyper finishes a body as soon as `is_end_stream()` says so, so relying on the
     /// end-of-stream poll alone silently loses the body from the capture.
     reported: std::sync::atomic::AtomicBool,
+    /// Complete gRPC messages already pushed while the stream is still open.
+    grpc_noted: std::sync::atomic::AtomicU32,
 }
 
 impl TapBody {
@@ -55,6 +57,7 @@ impl TapBody {
             direction,
             headers,
             reported: std::sync::atomic::AtomicBool::new(false),
+            grpc_noted: std::sync::atomic::AtomicU32::new(0),
             observed: observed_tx,
         }
     }
@@ -109,6 +112,77 @@ impl TapBody {
     pub fn total_bytes(&self) -> u64 {
         self.inner.observed_bytes()
     }
+
+    /// Push complete gRPC messages as they arrive, without marking the body finished.
+    ///
+    /// The final report still happens once, from the end of the stream. Setting `reported` here would
+    /// drop that final body.
+    fn note_arrived_grpc(&self) {
+        use std::sync::atomic::Ordering;
+        if self.reported.load(Ordering::Relaxed) {
+            return;
+        }
+        let snapshot = self.inner.snapshot();
+        let (_, _, grpc) = process_arrived_body(&snapshot.bytes, &self.headers);
+        let Some(grpc) = grpc else {
+            return;
+        };
+        let count = grpc.messages.len() as u32;
+        if count == 0 || count <= self.grpc_noted.load(Ordering::Relaxed) {
+            return;
+        }
+        self.grpc_noted.store(count, Ordering::Relaxed);
+        let (encoding, content, grpc) = process_arrived_body(&snapshot.bytes, &self.headers);
+        let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
+            flow_id: self.flow_id.clone(),
+            direction: self.direction.clone(),
+            body: BodyData {
+                encoding,
+                content,
+                size: snapshot.total_bytes,
+                grpc,
+            },
+        });
+    }
+
+    /// A stream reset is not a body that ran out of bytes. Record what arrived, then the reset.
+    fn note_stream_reset(&self, detail: String) {
+        use std::sync::atomic::Ordering;
+        if !self.reported.swap(true, Ordering::Relaxed) {
+            let snapshot = self.inner.snapshot();
+            if snapshot.total_bytes > 0 {
+                let (encoding, content, grpc) =
+                    process_arrived_body(&snapshot.bytes, &self.headers);
+                let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
+                    flow_id: self.flow_id.clone(),
+                    direction: self.direction.clone(),
+                    body: BodyData {
+                        encoding,
+                        content,
+                        size: snapshot.total_bytes,
+                        grpc,
+                    },
+                });
+            }
+        }
+        let _ = self.on_flow.try_send(FlowUpdate::StreamReset {
+            flow_id: self.flow_id.clone(),
+            detail,
+        });
+    }
+}
+
+fn stream_reset_detail(err: &crate::interceptor::BoxError) -> Option<String> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
+    while let Some(err) = current {
+        if let Some(h2_err) = err.downcast_ref::<h2::Error>()
+            && (h2_err.is_reset() || h2_err.reason() == Some(h2::Reason::CANCEL))
+        {
+            return Some(h2_err.to_string());
+        }
+        current = err.source();
+    }
+    None
 }
 
 impl Drop for TapBody {
@@ -207,6 +281,12 @@ impl Body for TapBody {
                 // on handed the proxy a ten-slot flow channel that nobody read, and `send(..).await`
                 // blocked once it filled; the baseline sat just under the limit, so any change that
                 // added one update appeared to deadlock the proxy.
+                if let Some(data) = frame.data_ref()
+                    && !data.is_empty()
+                {
+                    self.note_arrived_grpc();
+                }
+
                 if self.inner.size_hint().exact() == Some(0) {
                     self.report_once();
                 }
@@ -216,6 +296,12 @@ impl Body for TapBody {
             Poll::Ready(None) => {
                 self.report_once();
                 Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(err))) => {
+                if let Some(detail) = stream_reset_detail(&err) {
+                    self.note_stream_reset(detail);
+                }
+                Poll::Ready(Some(Err(err)))
             }
             other => other,
         }
@@ -415,5 +501,130 @@ mod tests {
             Some(vec![("x-trailer".to_string(), "value".to_string())]),
             "trailers must be reported as an incremental update, not only forwarded"
         );
+    }
+
+    fn grpc_frame(payload: &[u8]) -> Bytes {
+        let mut out = vec![0u8];
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(payload);
+        Bytes::from(out)
+    }
+
+    #[tokio::test]
+    async fn grpc_messages_are_reported_as_they_arrive() {
+        struct TwoMessages {
+            n: u8,
+        }
+
+        impl hyper::body::Body for TwoMessages {
+            type Data = Bytes;
+            type Error = BoxError;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                let payload = match self.n {
+                    0 => "one",
+                    1 => "two",
+                    _ => return Poll::Ready(None),
+                };
+                self.n += 1;
+                Poll::Ready(Some(Ok(Frame::data(grpc_frame(payload.as_bytes())))))
+            }
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut body = TapBody::new(
+            TwoMessages { n: 0 }.boxed(),
+            "flow-stream".to_string(),
+            tx,
+            Direction::ServerToClient,
+            1024,
+            vec![("content-type".to_string(), "application/grpc".to_string())],
+            None,
+        );
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(Pin::new(&mut body).poll_frame(&mut cx).is_ready());
+        match rx.try_recv().expect("first message") {
+            FlowUpdate::HttpBody { body, .. } => {
+                assert_eq!(body.grpc.expect("framed").messages.len(), 1);
+            }
+            other => panic!("expected body, got {other:?}"),
+        }
+
+        assert!(Pin::new(&mut body).poll_frame(&mut cx).is_ready());
+        match rx.try_recv().expect("second message") {
+            FlowUpdate::HttpBody { body, .. } => {
+                let grpc = body.grpc.expect("framed");
+                assert_eq!(grpc.messages.len(), 2);
+                assert_eq!(grpc.messages[1].text.as_deref(), Some("two"));
+            }
+            other => panic!("expected body, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_reset_is_not_a_truncated_body() {
+        struct ResetAfterMessage {
+            sent: bool,
+        }
+
+        impl hyper::body::Body for ResetAfterMessage {
+            type Data = Bytes;
+            type Error = BoxError;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                if !self.sent {
+                    self.sent = true;
+                    return Poll::Ready(Some(Ok(Frame::data(grpc_frame(b"hi")))));
+                }
+                Poll::Ready(Some(Err(Box::new(h2::Error::from(h2::Reason::CANCEL)))))
+            }
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut body = TapBody::new(
+            ResetAfterMessage { sent: false }.boxed(),
+            "flow-reset".to_string(),
+            tx,
+            Direction::ServerToClient,
+            1024,
+            vec![("content-type".to_string(), "application/grpc".to_string())],
+            None,
+        );
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(Pin::new(&mut body).poll_frame(&mut cx).is_ready());
+        let _ = rx.try_recv();
+
+        let err = Pin::new(&mut body).poll_frame(&mut cx);
+        assert!(matches!(err, Poll::Ready(Some(Err(_)))));
+
+        let mut saw_reset = false;
+        let mut kept_message = false;
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                FlowUpdate::HttpBody { body, .. } => {
+                    let grpc = body.grpc.expect("reset keeps arrived messages");
+                    assert_eq!(grpc.messages.len(), 1);
+                    assert_eq!(grpc.messages[0].text.as_deref(), Some("hi"));
+                    kept_message = true;
+                }
+                FlowUpdate::StreamReset { detail, .. } => {
+                    assert!(!detail.is_empty(), "a reset records the HTTP/2 reason");
+                    saw_reset = true;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(
+            kept_message,
+            "the message that arrived before the reset is kept"
+        );
+        assert!(saw_reset, "the reset is recorded on its own");
     }
 }

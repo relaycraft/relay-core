@@ -31,6 +31,8 @@ pub mod event_name {
     pub const FLOW_EVENT: &str = "flow-event";
     /// Trailers that arrived after a response body.
     pub const RESPONSE_TRAILERS: &str = "response-trailers";
+    /// An HTTP/2 stream reset, distinct from a body that ended short.
+    pub const STREAM_RESET: &str = "stream-reset";
 }
 
 /// One SSE frame: the `event:` name plus its `data:` payload, already serialised.
@@ -93,6 +95,15 @@ pub struct ResponseTrailersFrame {
     pub trailers: Vec<(String, String)>,
 }
 
+/// Payload of `event: stream-reset`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamResetFrame {
+    /// Flow whose stream was reset.
+    pub flow_id: String,
+    /// The reset reason, as reported by the HTTP/2 stack.
+    pub detail: String,
+}
+
 /// Payload of `event: body-budget-exceeded`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BodyBudgetExceededFrame {
@@ -145,6 +156,13 @@ impl FlowUpdate {
                     trailers: trailers.clone(),
                 },
             ),
+            FlowUpdate::StreamReset { flow_id, detail } => encode(
+                event_name::STREAM_RESET,
+                &StreamResetFrame {
+                    flow_id: flow_id.clone(),
+                    detail: detail.clone(),
+                },
+            ),
             FlowUpdate::BodyBudgetExceeded { flow_id, direction } => encode(
                 event_name::BODY_BUDGET_EXCEEDED,
                 &BodyBudgetExceededFrame {
@@ -192,6 +210,13 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
             Some(FlowUpdate::ResponseTrailers {
                 flow_id: frame.flow_id,
                 trailers: frame.trailers,
+            })
+        }
+        event_name::STREAM_RESET => {
+            let frame: StreamResetFrame = serde_json::from_str(data).ok()?;
+            Some(FlowUpdate::StreamReset {
+                flow_id: frame.flow_id,
+                detail: frame.detail,
             })
         }
         event_name::BODY_BUDGET_EXCEEDED => {
@@ -291,6 +316,10 @@ mod tests {
                     ("grpc-status".to_string(), "0".to_string()),
                     ("grpc-message".to_string(), "OK".to_string()),
                 ],
+            },
+            FlowUpdate::StreamReset {
+                flow_id: "flow-reset".to_string(),
+                detail: "stream error: CANCEL".to_string(),
             },
         ]
     }

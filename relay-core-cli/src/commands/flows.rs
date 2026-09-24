@@ -299,8 +299,18 @@ fn print_update(update: &relay_core_api::flow::FlowUpdate) {
             info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
         }
         FlowUpdate::ResponseTrailers { flow_id, trailers } => {
-            // gRPC reports the outcome of a call here, so it is worth showing.
-            info!("[Trailers] [{}] {} trailer(s)", flow_id, trailers.len());
+            let status = trailers.iter().find_map(|(name, value)| {
+                name.eq_ignore_ascii_case("grpc-status")
+                    .then_some(value.as_str())
+            });
+            if let Some(status) = status {
+                info!("[Trailers] [{}] grpc-status={}", flow_id, status);
+            } else {
+                info!("[Trailers] [{}] {} trailer(s)", flow_id, trailers.len());
+            }
+        }
+        FlowUpdate::StreamReset { flow_id, detail } => {
+            info!("[Reset] [{}] {}", flow_id, detail);
         }
     }
 }

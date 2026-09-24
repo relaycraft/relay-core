@@ -59,14 +59,7 @@ pub fn process_body_with_framing(
         .map(|(_, v)| v.as_str())
         .unwrap_or_default();
 
-    let grpc = if relay_core_api::grpc::is_grpc_content_type(content_type) {
-        // A body that does not parse is reported as "no framing" rather than as a partial one: the
-        // messages that did fit are not a smaller call, they are a truncated capture, and the
-        // trailing-byte count would be mistaken for the whole picture.
-        relay_core_api::grpc::parse_messages(bytes).ok()
-    } else {
-        None
-    };
+    let grpc = grpc_framing(bytes, headers, content_type, false);
 
     // A gRPC body is a binary framing (a five-byte prefix in front of each message), so it is never
     // text even when its payloads are: `00 00 00 00 00` is an empty message *and* valid UTF-8, and a
@@ -77,6 +70,119 @@ pub fn process_body_with_framing(
     }
 
     (encoding, content, grpc)
+}
+
+/// Framing for a stream that is still open: complete messages are kept, a trailing partial frame is
+/// counted rather than failing the whole body.
+pub fn process_arrived_body(
+    bytes: &[u8],
+    headers: &[(String, String)],
+) -> (String, String, Option<relay_core_api::grpc::GrpcBody>) {
+    let (encoding, content) = process_body(bytes, headers);
+    let content_type = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default();
+    let grpc = grpc_framing(bytes, headers, content_type, true);
+    if grpc.is_some() {
+        return ("base64".to_string(), BASE64.encode(bytes), grpc);
+    }
+    (encoding, content, grpc)
+}
+
+fn grpc_framing(
+    bytes: &[u8],
+    headers: &[(String, String)],
+    content_type: &str,
+    arrived: bool,
+) -> Option<relay_core_api::grpc::GrpcBody> {
+    if !relay_core_api::grpc::is_grpc_content_type(content_type) {
+        return None;
+    }
+    // A finished body that does not parse is "no framing": the messages that did fit are not a
+    // smaller call. An open stream is the opposite — complete messages are already real.
+    let mut grpc = if arrived {
+        relay_core_api::grpc::parse_arrived_messages(bytes)
+    } else {
+        relay_core_api::grpc::parse_messages(bytes).ok()?
+    };
+    fill_gzip_previews(bytes, grpc_encoding(headers), &mut grpc);
+    Some(grpc)
+}
+
+fn grpc_encoding(headers: &[(String, String)]) -> Option<String> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("grpc-encoding"))
+        .map(|(_, value)| {
+            value
+                .split([',', ';'])
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// Fill `text` for gzip-compressed messages whose inflated payload is UTF-8 within the preview budget.
+///
+/// The frame length stays the compressed size. A payload that does not inflate, or is not text, keeps
+/// `text` empty so binary protobuf is not guessed at.
+fn fill_gzip_previews(
+    bytes: &[u8],
+    encoding: Option<String>,
+    grpc: &mut relay_core_api::grpc::GrpcBody,
+) {
+    if encoding.as_deref() != Some("gzip") {
+        return;
+    }
+    const PREFIX_LEN: usize = 5;
+    let mut offset = 0usize;
+    let mut index = 0usize;
+    while offset + PREFIX_LEN <= bytes.len() && index < grpc.messages.len() {
+        let compressed = bytes[offset] != 0;
+        let length = u32::from_be_bytes([
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+            bytes[offset + 4],
+        ]) as usize;
+        let payload_start = offset + PREFIX_LEN;
+        let payload_end = payload_start + length;
+        if payload_end > bytes.len() {
+            break;
+        }
+        if compressed && grpc.messages[index].text.is_none() {
+            grpc.messages[index].text = inflate_gzip_text(&bytes[payload_start..payload_end]);
+        }
+        offset = payload_end;
+        index += 1;
+    }
+}
+
+fn inflate_gzip_text(payload: &[u8]) -> Option<String> {
+    use std::io::Read;
+    let mut decoder = flate2::read::GzDecoder::new(payload);
+    let mut out = Vec::new();
+    let mut buf = [0u8; 1024];
+    let limit = relay_core_api::grpc::MAX_MESSAGE_TEXT_BYTES;
+    loop {
+        if out.len() > limit {
+            return None;
+        }
+        let read = decoder.read(&mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        let room = limit + 1 - out.len();
+        out.extend_from_slice(&buf[..read.min(room)]);
+    }
+    if out.len() > limit {
+        return None;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -150,5 +256,42 @@ mod framing_tests {
             grpc.is_none(),
             "a short frame is a truncated capture, not a one-message call"
         );
+    }
+
+    #[test]
+    fn a_gzip_message_is_previewed_as_text() {
+        use std::io::Write;
+        let json = br#"{"ok":true}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(json).expect("gzip");
+        let compressed = encoder.finish().expect("finish gzip");
+        let mut body = vec![1u8];
+        body.extend_from_slice(&(compressed.len() as u32).to_be_bytes());
+        body.extend_from_slice(&compressed);
+        let headers = vec![
+            (
+                "content-type".to_string(),
+                "application/grpc+json".to_string(),
+            ),
+            ("grpc-encoding".to_string(), "gzip".to_string()),
+        ];
+
+        let (_, _, grpc) = process_body_with_framing(&body, &headers);
+        let message = &grpc.expect("gzip body is still framed").messages[0];
+
+        assert!(message.compressed);
+        assert_eq!(message.length, compressed.len() as u32);
+        assert_eq!(message.text.as_deref(), Some(r#"{"ok":true}"#));
+    }
+
+    #[test]
+    fn a_compressed_message_without_gzip_stays_opaque() {
+        let mut body = vec![1u8];
+        body.extend_from_slice(&4u32.to_be_bytes());
+        body.extend_from_slice(b"nope");
+
+        let (_, _, grpc) = process_body_with_framing(&body, &headers("application/grpc"));
+
+        assert_eq!(grpc.expect("framed").messages[0].text, None);
     }
 }

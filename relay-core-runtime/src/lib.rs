@@ -1323,6 +1323,17 @@ impl CoreState {
     ///
     /// They arrive last, so they cannot be part of the original snapshot: a capture without them
     /// shows that a gRPC call happened but not whether it succeeded.
+    /// Record that the HTTP/2 stream was reset, apart from a body that ended short.
+    pub fn note_stream_reset(&self, flow_id: String, detail: String) {
+        if let Err(e) = self
+            .flow_store
+            .try_send(FlowStoreMessage::NoteStreamReset { flow_id, detail })
+        {
+            error!("FlowStore dropped stream reset: {}", e);
+            self.flows_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn set_response_trailers(&self, flow_id: String, trailers: Vec<(String, String)>) {
         if let Err(e) = self
             .flow_store
@@ -1862,7 +1873,8 @@ impl CoreState {
                     FlowUpdate::WebSocketMessage { flow_id, .. }
                     | FlowUpdate::HttpBody { flow_id, .. }
                     | FlowUpdate::BodyBudgetExceeded { flow_id, .. }
-                    | FlowUpdate::ResponseTrailers { flow_id, .. } => {
+                    | FlowUpdate::ResponseTrailers { flow_id, .. }
+                    | FlowUpdate::StreamReset { flow_id, .. } => {
                         uuid::Uuid::parse_str(flow_id).ok()
                     }
                 };
@@ -1898,6 +1910,9 @@ impl CoreState {
                     }
                     FlowUpdate::ResponseTrailers { flow_id, trailers } => {
                         state.set_response_trailers(flow_id, trailers);
+                    }
+                    FlowUpdate::StreamReset { flow_id, detail } => {
+                        state.note_stream_reset(flow_id, detail);
                     }
                 }
 
@@ -2064,6 +2079,7 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
         }
         // `grpc-message` and friends are server-authored free text and can echo request content, so
         // they go through the same name-based screening as headers.
+        FlowUpdate::StreamReset { flow_id, detail } => FlowUpdate::StreamReset { flow_id, detail },
         FlowUpdate::ResponseTrailers { flow_id, trailers } => FlowUpdate::ResponseTrailers {
             flow_id,
             trailers: trailers

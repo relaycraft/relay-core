@@ -59,4 +59,57 @@ describe('flowToSummary', () => {
     expect(summary.status).toBe(200);
     expect(summary.duration_ms).toBe(50);
   });
+
+  it('puts a non-zero grpc status on the summary as an error', () => {
+    const flow: Flow = {
+      id: 'flow-grpc',
+      start_time: '2024-01-01T12:00:00.000Z',
+      end_time: null,
+      network: {
+        client_ip: '127.0.0.1',
+        client_port: 1,
+        server_ip: '127.0.0.1',
+        server_port: 80,
+        protocol: 'TCP',
+        tls: false,
+      },
+      layer: {
+        type: 'Http',
+        data: {
+          request: {
+            method: 'POST',
+            url: 'http://example.com/pkg.Svc/Call',
+            version: 'HTTP/2',
+            headers: [],
+            cookies: [],
+            query: [],
+            body: null,
+          },
+          response: {
+            status: 200,
+            status_text: 'OK',
+            version: 'HTTP/2',
+            headers: [],
+            cookies: [],
+            body: null,
+            timing: { time_to_first_byte: null, time_to_last_byte: null },
+            trailers: [
+              ['grpc-status', '14'],
+              ['grpc-message', 'unavailable%20now'],
+            ],
+          },
+          error: null,
+        },
+      },
+      tags: [],
+      resilience_trace: null,
+      rule_variables: {},
+      matched_rules: [],
+    };
+
+    const summary = flowToSummary(flow);
+    expect(summary.grpc_status).toBe(14);
+    expect(summary.grpc_message).toBe('unavailable now');
+    expect(summary.has_error).toBe(true);
+  });
 });

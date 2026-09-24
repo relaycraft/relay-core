@@ -5,6 +5,8 @@ export type SseEvent =
   | { type: 'ws-message'; data: { flow_id: string; message: unknown } }
   | { type: 'http-body'; data: { flow_id: string } }
   | { type: 'body-budget-exceeded'; data: { flow_id: string } }
+  | { type: 'response-trailers'; data: { flow_id: string; trailers: [string, string][] } }
+  | { type: 'stream-reset'; data: { flow_id: string; detail: string } }
   | { type: 'audit'; data: AuditEvent }
   | { type: 'lifecycle'; data: CoreStatusSnapshot }
   | { type: 'lagged'; data: string }
@@ -44,6 +46,18 @@ export function connectSse(handler: SseEventHandler, options?: SseConnectOptions
     es.addEventListener('http-body', (e) => {
       try {
         handler({ type: 'http-body', data: JSON.parse(e.data) });
+      } catch {}
+    });
+
+    es.addEventListener('response-trailers', (e) => {
+      try {
+        handler({ type: 'response-trailers', data: JSON.parse(e.data) });
+      } catch {}
+    });
+
+    es.addEventListener('stream-reset', (e) => {
+      try {
+        handler({ type: 'stream-reset', data: JSON.parse(e.data) });
       } catch {}
     });
 

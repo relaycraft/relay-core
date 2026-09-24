@@ -43,6 +43,12 @@ pub struct FlowSummary {
     pub start_time_ms: i64,
     pub has_error: bool,
     pub is_websocket: bool,
+    /// gRPC status code from response trailers. `0` is success; absent when the call had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_status: Option<i32>,
+    /// Decoded `grpc-message` trailer, when the peer sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_message: Option<String>,
 }
 
 /// 对截获中的 Flow 的修改意图。

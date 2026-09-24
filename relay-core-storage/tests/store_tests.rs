@@ -374,6 +374,8 @@ async fn test_flow_summary_query_with_offset_and_filters() {
             start_time_ms: 1000,
             has_error: false,
             is_websocket: false,
+            grpc_status: None,
+            grpc_message: None,
         })
         .await
         .expect("upsert summary 1 failed");
@@ -390,6 +392,8 @@ async fn test_flow_summary_query_with_offset_and_filters() {
             start_time_ms: 2000,
             has_error: true,
             is_websocket: false,
+            grpc_status: None,
+            grpc_message: None,
         })
         .await
         .expect("upsert summary 2 failed");
@@ -406,6 +410,8 @@ async fn test_flow_summary_query_with_offset_and_filters() {
             start_time_ms: 3000,
             has_error: false,
             is_websocket: true,
+            grpc_status: None,
+            grpc_message: None,
         })
         .await
         .expect("upsert summary 3 failed");

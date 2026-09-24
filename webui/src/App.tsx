@@ -90,6 +90,14 @@ export default function App() {
           case 'http-body':
             store.notifyHttpBody(event.data.flow_id);
             break;
+          case 'response-trailers':
+            store.applyGrpcTrailers(event.data.flow_id, event.data.trailers);
+            store.notifyHttpBody(event.data.flow_id);
+            break;
+          case 'stream-reset':
+            store.markStreamReset(event.data.flow_id);
+            store.notifyHttpBody(event.data.flow_id);
+            break;
           case 'body-budget-exceeded':
             store.markBodyBudgetExceeded(event.data.flow_id);
             break;

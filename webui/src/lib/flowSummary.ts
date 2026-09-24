@@ -51,10 +51,15 @@ export function flowToSummary(flow: Flow): FlowSummary {
     ? Math.max(0, endMs - startMs)
     : null;
 
+  const http = flow.layer.type === 'Http' ? (flow.layer as HttpLayer).data : undefined;
+  const outcome = grpcOutcome(http?.response?.trailers);
+  const streamReset = (flow.tags ?? []).includes('stream-reset');
   const hasError =
     (status !== null && status >= 500) ||
     flow.tags.includes('error') ||
-    (flow.layer.type === 'Http' && !!(flow.layer as HttpLayer).data?.error);
+    !!http?.error ||
+    (outcome.status != null && outcome.status !== 0) ||
+    streamReset;
 
   return {
     id: flow.id,
@@ -68,5 +73,27 @@ export function flowToSummary(flow: Flow): FlowSummary {
     start_time_ms: Number.isFinite(startMs) ? startMs : Date.now(),
     has_error: hasError,
     is_websocket: isWebsocket || flow.layer.type === 'WebSocket',
+    grpc_status: outcome.status,
+    grpc_message: outcome.message,
   };
+}
+
+function grpcOutcome(trailers?: [string, string][]): {
+  status: number | null;
+  message: string | null;
+} {
+  if (!trailers) return { status: null, message: null };
+  const statusRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-status')?.[1];
+  const messageRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-message')?.[1];
+  const parsed = statusRaw != null ? Number.parseInt(statusRaw.trim(), 10) : NaN;
+  const status = Number.isFinite(parsed) ? parsed : null;
+  let message: string | null = null;
+  if (messageRaw && messageRaw.trim() !== '') {
+    try {
+      message = decodeURIComponent(messageRaw.trim());
+    } catch {
+      message = messageRaw.trim();
+    }
+  }
+  return { status, message };
 }

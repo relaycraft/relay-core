@@ -207,7 +207,21 @@ export default function FlowsView() {
                     <span class="w-[64px] shrink-0 whitespace-nowrap tabular-nums text-right text-text-dim/70">
                       {flow.duration_ms != null ? formatDurationMs(flow.duration_ms) : ''}
                     </span>
-                    {flow.has_error && <span class="ml-1 text-error text-[12px]">ERR</span>}
+                    {flow.grpc_status != null && (
+                      <span
+                        class={`ml-1 text-[12px] tabular-nums ${
+                          flow.grpc_status === 0 ? 'text-text-dim' : 'text-error'
+                        }`}
+                      >
+                        g{flow.grpc_status}
+                      </span>
+                    )}
+                    {flow.tags?.includes('stream-reset') && (
+                      <span class="ml-1 text-error text-[12px]">RST</span>
+                    )}
+                    {flow.has_error && flow.grpc_status == null && !flow.tags?.includes('stream-reset') && (
+                      <span class="ml-1 text-error text-[12px]">ERR</span>
+                    )}
                     {flow.is_websocket && <span class="ml-1 text-info text-[12px]">WS</span>}
                   </div>
                 );

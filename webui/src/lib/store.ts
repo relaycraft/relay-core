@@ -100,6 +100,41 @@ export function createAppStore() {
     }, BODY_DETAIL_REFRESH_MS);
   }
 
+  function applyGrpcTrailers(flowId: string, trailers: [string, string][]) {
+    const statusRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-status')?.[1];
+    const messageRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-message')?.[1];
+    const parsed = statusRaw != null ? Number.parseInt(statusRaw.trim(), 10) : NaN;
+    const grpcStatus = Number.isFinite(parsed) ? parsed : null;
+    let grpcMessage: string | null = null;
+    if (messageRaw && messageRaw.trim() !== '') {
+      try {
+        grpcMessage = decodeURIComponent(messageRaw.trim());
+      } catch {
+        grpcMessage = messageRaw.trim();
+      }
+    }
+    setState(
+      produce((s) => {
+        const summary = s.flows.get(flowId);
+        if (!summary) return;
+        summary.grpc_status = grpcStatus;
+        summary.grpc_message = grpcMessage;
+        if (grpcStatus != null && grpcStatus !== 0) summary.has_error = true;
+      }),
+    );
+  }
+
+  function markStreamReset(flowId: string) {
+    setState(
+      produce((s) => {
+        const summary = s.flows.get(flowId);
+        if (!summary) return;
+        summary.has_error = true;
+        if (!summary.tags.includes('stream-reset')) summary.tags.push('stream-reset');
+      }),
+    );
+  }
+
   function markBodyBudgetExceeded(flowId: string) {
     setState(
       produce((s) => {
@@ -116,6 +151,8 @@ export function createAppStore() {
     setActiveView,
     selectFlow,
     notifyHttpBody,
+    applyGrpcTrailers,
+    markStreamReset,
     markBodyBudgetExceeded,
   };
 }

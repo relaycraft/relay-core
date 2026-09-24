@@ -233,6 +233,22 @@ function HeadersView(props: { flow: Flow }) {
   const res = http?.response;
 
   /** The reason phrase, minus a status code it may already contain. */
+  const grpcStatus = () => {
+    const raw = res?.trailers?.find(([name]) => name.toLowerCase() === 'grpc-status')?.[1];
+    if (raw == null || raw.trim() === '') return null;
+    const code = Number.parseInt(raw.trim(), 10);
+    return Number.isFinite(code) ? code : null;
+  };
+  const grpcMessage = () => {
+    const raw = res?.trailers?.find(([name]) => name.toLowerCase() === 'grpc-message')?.[1];
+    if (!raw) return '';
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  };
+
   const reasonPhrase = () => {
     const text = res?.status_text ?? '';
     const code = res?.status != null ? String(res.status) : '';
@@ -273,8 +289,20 @@ function HeadersView(props: { flow: Flow }) {
             <span class="font-bold">{res?.status}</span>{' '}
             <span class="text-text-dim">{reasonPhrase()}</span>{' '}
             <span class="text-text-dim/60">{res?.version}</span>
+            <Show when={grpcStatus() != null}>
+              <span
+                class={`ml-2 font-mono ${grpcStatus() === 0 ? 'text-text-dim' : 'text-error'}`}
+              >
+                grpc-status {grpcStatus()}
+                <Show when={grpcMessage()}>{(msg) => <span> {msg()}</span>}</Show>
+              </span>
+            </Show>
           </div>
           <HeaderTable headers={res?.headers ?? []} />
+          <Show when={(res?.trailers?.length ?? 0) > 0}>
+            <div class="px-2 py-1 text-[12px] text-text-dim border-t border-border/60">Trailers</div>
+            <HeaderTable headers={res?.trailers ?? []} />
+          </Show>
         </section>
       </Show>
 
@@ -403,9 +431,24 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text'; con
           <span class="text-accent">
             gRPC · {props.body.grpc!.messages.length} message
             {props.body.grpc!.messages.length === 1 ? '' : 's'}
+            <Show when={props.body.grpc!.unparsed_bytes > 0}>
+              {' '}
+              · {props.body.grpc!.unparsed_bytes} bytes still open
+            </Show>
           </span>
         </Show>
       </div>
+      <Show when={props.body.grpc?.messages.some((message) => message.text)}>
+        <div class="space-y-1">
+          <For each={props.body.grpc!.messages.filter((message) => message.text != null)}>
+            {(message) => (
+              <pre class="rounded-md border border-border/60 bg-surface-alt p-2 text-[12px] whitespace-pre-wrap break-all">
+                <span class="text-text-dim">#{message.index}</span> {message.text}
+              </pre>
+            )}
+          </For>
+        </div>
+      </Show>
 
       {/* Rendered, not described: the browser can draw all of these. */}
       <Show when={renderable()}>

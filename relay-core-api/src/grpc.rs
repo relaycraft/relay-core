@@ -115,6 +115,37 @@ pub fn is_grpc_content_type(content_type: &str) -> bool {
 /// [`GrpcBody::unparsed_bytes`] rather than dropped, and a frame that declares more payload than the
 /// body holds is an error: an incomplete capture must not be presented as a complete call.
 pub fn parse_messages(body: &[u8]) -> Result<GrpcBody, GrpcParseError> {
+    split_messages(body, true)
+}
+
+/// Messages that have fully arrived, leaving a trailing partial frame unparsed.
+///
+/// A stream that is still open ends mid-message. That remainder is not a failed call yet: the
+/// messages before it are complete, and the leftover bytes are what has not arrived.
+pub fn parse_arrived_messages(body: &[u8]) -> GrpcBody {
+    split_messages(body, false).unwrap_or(GrpcBody {
+        messages: Vec::new(),
+        unparsed_bytes: body.len(),
+    })
+}
+
+/// `grpc-status` and `grpc-message` from response trailers.
+///
+/// Status `0` is success. `grpc-message` is percent-encoded UTF-8, so a space arrives as `%20`.
+pub fn outcome_from_trailers(trailers: &[(String, String)]) -> (Option<i32>, Option<String>) {
+    let status = trailers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("grpc-status"))
+        .and_then(|(_, value)| value.trim().parse::<i32>().ok());
+    let message = trailers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("grpc-message"))
+        .map(|(_, value)| decode_grpc_message(value.trim()))
+        .filter(|value| !value.is_empty());
+    (status, message)
+}
+
+fn split_messages(body: &[u8], strict: bool) -> Result<GrpcBody, GrpcParseError> {
     const PREFIX_LEN: usize = 5;
 
     let mut messages = Vec::new();
@@ -133,6 +164,12 @@ pub fn parse_messages(body: &[u8]) -> Result<GrpcBody, GrpcParseError> {
         let payload_end = payload_start + length as usize;
 
         if payload_end > body.len() {
+            if !strict {
+                return Ok(GrpcBody {
+                    messages,
+                    unparsed_bytes: body.len() - offset,
+                });
+            }
             return Err(GrpcParseError::Incomplete {
                 index,
                 declared: length,
@@ -165,9 +202,32 @@ pub fn parse_messages(body: &[u8]) -> Result<GrpcBody, GrpcParseError> {
     })
 }
 
+/// Percent-decode a `grpc-message` trailer. Invalid escapes are left as written.
+fn decode_grpc_message(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GrpcBody, GrpcMessage, GrpcParseError, is_grpc_content_type, parse_messages};
+    use super::{
+        GrpcBody, GrpcMessage, GrpcParseError, is_grpc_content_type, outcome_from_trailers,
+        parse_arrived_messages, parse_messages,
+    };
 
     fn frame(compressed: bool, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![u8::from(compressed)];
@@ -337,5 +397,41 @@ mod tests {
         assert_eq!(parsed.messages[0].length, 5);
         assert_eq!(parsed.unparsed_bytes, 0);
         let _ = GrpcBody::total_payload_bytes(&parsed);
+    }
+
+    #[test]
+    fn an_open_stream_keeps_complete_messages_and_counts_the_rest() {
+        let mut body = frame(false, b"one");
+        body.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x20, b'x']);
+
+        let arrived = parse_arrived_messages(&body);
+
+        assert_eq!(arrived.messages.len(), 1);
+        assert_eq!(arrived.messages[0].text.as_deref(), Some("one"));
+        assert_eq!(arrived.unparsed_bytes, 6);
+        assert!(parse_messages(&body).is_err());
+    }
+
+    #[test]
+    fn trailers_carry_the_call_outcome() {
+        let trailers = vec![
+            ("grpc-status".to_string(), "14".to_string()),
+            ("grpc-message".to_string(), "unavailable%20now".to_string()),
+        ];
+
+        let (status, message) = outcome_from_trailers(&trailers);
+
+        assert_eq!(status, Some(14));
+        assert_eq!(message.as_deref(), Some("unavailable now"));
+    }
+
+    #[test]
+    fn a_successful_call_is_status_zero() {
+        let trailers = vec![("grpc-status".to_string(), "0".to_string())];
+
+        let (status, message) = outcome_from_trailers(&trailers);
+
+        assert_eq!(status, Some(0));
+        assert_eq!(message, None);
     }
 }

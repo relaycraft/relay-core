@@ -5,6 +5,7 @@ use relay_core_api::flow::{
     BodyData, Direction, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse, Layer,
     NetworkInfo, ResponseTiming, TransportProtocol, WebSocketLayer, WebSocketMessage,
 };
+use relay_core_api::modification::FlowQuery;
 use relay_core_api::policy::ProxyPolicy;
 use relay_core_api::rule::WebSocketDirection;
 use relay_core_lib::InterceptionResult;
@@ -1197,4 +1198,41 @@ async fn a_loopback_target_outside_the_exclude_list_is_recorded() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_grpc_status_trailer_is_on_the_summary() {
+    let state = CoreState::new(None).await;
+    let mut flow = create_test_flow("http://example.com/pkg.Svc/Call", "POST");
+    if let Layer::Http(http) = &mut flow.layer {
+        http.response = Some(HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            version: "HTTP/2".to_string(),
+            headers: vec![],
+            cookies: vec![],
+            body: None,
+            trailers: vec![
+                ("grpc-status".to_string(), "14".to_string()),
+                ("grpc-message".to_string(), "unavailable%20now".to_string()),
+            ],
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+        });
+    }
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    let page = state.search_flows(FlowQuery::default()).await;
+    let summary = page
+        .iter()
+        .find(|item| item.path == "/pkg.Svc/Call")
+        .expect("the call is listed");
+    assert_eq!(summary.grpc_status, Some(14));
+    assert_eq!(summary.grpc_message.as_deref(), Some("unavailable now"));
+    assert!(summary.has_error);
 }

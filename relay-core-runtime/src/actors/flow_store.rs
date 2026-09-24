@@ -1,4 +1,5 @@
 use lru::LruCache;
+use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{BodyData, Direction, Flow, Layer, ResilienceTrace, WebSocketMessage};
 use relay_core_api::modification::{FlowQuery, FlowSummary, flow_matches_query};
 use relay_core_api::policy::RedactionPolicy;
@@ -28,6 +29,11 @@ pub enum FlowStoreMessage {
     TagBudgetExceeded {
         flow_id: String,
         direction: Direction,
+    },
+    /// The HTTP/2 stream was reset. Recorded apart from a body that simply ended short.
+    NoteStreamReset {
+        flow_id: String,
+        detail: String,
     },
     GetFlow {
         id: String,
@@ -197,6 +203,23 @@ impl FlowStoreActor {
                     };
                     let _ = respond_to.send(result);
                 }
+                FlowStoreMessage::NoteStreamReset { flow_id, detail } => {
+                    let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
+                        flow.close_reason = Some(CloseReason::Reset);
+                        if !flow.tags.iter().any(|tag| tag == "stream-reset") {
+                            flow.tags.push("stream-reset".to_string());
+                        }
+                        if let relay_core_api::flow::Layer::Http(http) = &mut flow.layer {
+                            http.error = Some(format!("stream reset: {detail}"));
+                        }
+                        Some(flow.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(flow) = updated {
+                        self.persist_flow(&flow).await;
+                    }
+                }
                 FlowStoreMessage::TagBudgetExceeded { flow_id, direction } => {
                     let direction_tag = match direction {
                         Direction::ClientToServer => "budget-exceeded:client-to-server",
@@ -262,7 +285,20 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
         .end_time
         .map(|e| (e - flow.start_time).num_milliseconds().max(0) as u64);
 
-    let has_error = status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error");
+    let (grpc_status, grpc_message) = match &flow.layer {
+        Layer::Http(http) => http
+            .response
+            .as_ref()
+            .map(|response| relay_core_api::grpc::outcome_from_trailers(&response.trailers))
+            .unwrap_or((None, None)),
+        _ => (None, None),
+    };
+    let stream_reset = matches!(flow.close_reason, Some(CloseReason::Reset))
+        || flow.tags.iter().any(|tag| tag == "stream-reset");
+    let has_error = status.is_some_and(|s| s >= 500)
+        || flow.tags.iter().any(|t| t == "error")
+        || grpc_status.is_some_and(|code| code != 0)
+        || stream_reset;
 
     FlowSummary {
         id: flow.id.to_string(),
@@ -276,5 +312,7 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
         start_time_ms: flow.start_time.timestamp_millis(),
         has_error,
         is_websocket: is_ws,
+        grpc_status,
+        grpc_message,
     }
 }

@@ -12,6 +12,10 @@ export interface FlowSummary {
   start_time_ms: number;
   has_error: boolean;
   is_websocket: boolean;
+  /** gRPC status from response trailers. `0` is success. */
+  grpc_status?: number | null;
+  /** Decoded `grpc-message` trailer. */
+  grpc_message?: string | null;
 }
 
 export interface NetworkInfo {
@@ -86,6 +90,7 @@ export interface HttpResponse {
   cookies: Cookie[];
   body: BodyData | null;
   timing: ResponseTiming;
+  trailers?: [string, string][];
 }
 
 export interface HttpLayer {

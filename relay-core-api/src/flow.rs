@@ -347,4 +347,13 @@ pub enum FlowUpdate {
         flow_id: String,
         trailers: Vec<(String, String)>,
     },
+    /// The HTTP/2 stream was reset.
+    ///
+    /// Distinct from a body that simply stopped: a reset is the peer cancelling the call, and the
+    /// bytes already captured are a prefix, not a finished message sequence.
+    StreamReset {
+        flow_id: String,
+        /// The reset reason, as reported by the HTTP/2 stack.
+        detail: String,
+    },
 }
