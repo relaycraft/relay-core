@@ -22,6 +22,9 @@ PROXY_PORT=18080
 API_PORT=18082
 UPSTREAM_PORT=18090
 GRPC_PORT=18091
+# Deliberately nothing listens here: a request through the proxy to a dead port is how the fixtures
+# produce an upstream error, which is a different rendering from an HTTP error status.
+DEAD_PORT=18099
 WORKDIR="$(mktemp -d)"
 PIDS=()
 
@@ -254,6 +257,27 @@ rm -rf "$WORKDIR/chrome"
   --headless --disable-gpu --no-sandbox --hide-scrollbars \
   --remote-debugging-port="$CDP_PORT" --user-data-dir="$WORKDIR/chrome" \
   --window-size=1600,1000 about:blank > "$WORKDIR/chrome.log" 2>&1 &
+PIDS+=($!)
+
+echo "==> keeping traffic arriving while the UI is open"
+# Without this the screenshot session is a *frozen* list: every row was loaded from `/api/v1/flows`,
+# so nothing exercises the path where the browser summarises a capture that just arrived over SSE.
+# Those two derivations disagree (that is the "the path changes when I refresh" report), and both must
+# be on screen at the same time for `ui-snapshot.mjs` to compare them. Slow enough to stay readable.
+(
+  for i in $(seq 1 200); do
+    curl -s -o /dev/null -x "$PROXY" --max-time 5 "$U/tick-$i?marker=$i" || true
+    # Vary the shape as well: a POST, a 404, and a target with nothing listening (an upstream error,
+    # which is a whole different rendering — no status, an error badge, an error in the detail pane).
+    # Comparing only successful GETs would leave those rows unchecked.
+    case $((i % 3)) in
+      0) curl -s -o /dev/null -x "$PROXY" --max-time 5 -X POST --data '{"tick":true}' "$U/tick-post" || true ;;
+      1) curl -s -o /dev/null -x "$PROXY" --max-time 5 "$U/notfound?tick=$i" || true ;;
+      2) curl -s -o /dev/null -x "$PROXY" --max-time 5 "http://127.0.0.1:$DEAD_PORT/dead-$i" || true ;;
+    esac
+    sleep 0.7
+  done
+) &
 PIDS+=($!)
 
 # Open the URL the daemon printed, token fragment and all. The UI trades that fragment for the

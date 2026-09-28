@@ -389,18 +389,72 @@ const PROBE_TARGETS = {
   rightPane: 'div[class*="flex-1"][class*="border-l"]',
 };
 
-/** Click the flow row whose text contains this marker, so a shot can target a known body. */
-async function clickFlowMatching(marker) {
+/**
+ * Type into the flow filter box, the way a person does (a real `input` event, not a value poke).
+ *
+ * The list is virtualised, so a row is only in the DOM while it is on screen: searching for a row
+ * without filtering first only works while the capture is short enough to fit. That is a property of
+ * the traffic, not of the UI, and it silently stopped holding once the fixture stream grew.
+ */
+async function setFlowFilter(text) {
   const ok = await evaluate(`
     (() => {
-      const rows = [...document.querySelectorAll('div[style*="top:"]')];
-      const row = rows.find((r) => r.textContent.includes(${JSON.stringify(marker)}));
-      if (!row) return false;
-      row.click();
+      const input = document.getElementById('flow-filter');
+      if (!input) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(text)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
       return true;
     })()`);
-  if (!ok) throw new Error(`no flow row containing ${JSON.stringify(marker)}`);
+  if (!ok) throw new Error('no #flow-filter input to type into');
+  await sleep(300);
+}
+
+/** Click the flow row whose text contains this marker, so a shot can target a known body. */
+async function clickFlowMatching(marker) {
+  // Filter down to the wanted rows first, then click one and put the list back the way it was.
+  await setFlowFilter(marker);
+  const found = await evaluate(`
+    (() => {
+      const rows = [...document.querySelectorAll('div[data-flow-id]')];
+      const row = rows.find((r) => r.textContent.includes(${JSON.stringify(marker)}));
+      if (!row) return rows.length;
+      row.click();
+      return -1;
+    })()`);
+  if (found >= 0) {
+    throw new Error(
+      `filtering by ${JSON.stringify(marker)} left ${found} row(s), none of which contains it`,
+    );
+  }
   await sleep(800);
+  await setFlowFilter('');
+  await sleep(300);
+}
+
+/** Read the payload view the switcher highlights, or null when it is not a single clear answer. */
+async function activePayloadView() {
+  return evaluate(`
+    (() => {
+      const views = ['JSON', 'HEX', 'TEXT'];
+      const buttons = [...document.querySelectorAll('button')].filter((b) => views.includes(b.textContent.trim()));
+      if (buttons.length !== views.length) return null;
+      const active = buttons.filter((b) => b.className.includes('bg-accent/20'));
+      return active.length === 1 ? active[0].textContent.trim() : null;
+    })()`);
+}
+
+/** Pick a payload view by its label. Returns false when the switcher has no such button. */
+async function clickPayloadView(label) {
+  const ok = await evaluate(`
+    (() => {
+      const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)});
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+  await sleep(400);
+  return ok;
 }
 
 /** Open the Payload tab of whatever flow is selected. */
@@ -507,45 +561,119 @@ async function checkDetailTabs() {
 }
 
 /**
+ * Read the drawn flow rows: identity, and what the row actually says.
+ *
+ * `sig` is the part of a row that must render identically however the row was produced: the time,
+ * method, status, the host+path target, and the badges. `duration_ms` is deliberately excluded — a
+ * capture still in flight legitimately has no duration yet in one of the two renderings.
+ */
+async function readFlowRows() {
+  const rows = await evaluate(`
+    (() => {
+      const rows = [...document.querySelectorAll('div[data-flow-id]')]
+        .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top));
+      return rows.map((row) => {
+        // Direct children only: the target cell contains a nested span for the path, and selecting
+        // every descendant span shifted the columns so the duration was read as the last element —
+        // which made rows differ in a field (the duration) that was supposed to be excluded.
+        const cells = [...row.children].filter((el) => el.tagName === 'SPAN');
+        if (cells.length < 5) return null;
+        const col = (i) => cells[i].textContent.trim();
+        return {
+          id: row.getAttribute('data-flow-id'),
+          status: col(2),
+          sig: [col(0), col(1), col(2), col(3), cells.slice(5).map((c) => c.textContent.trim()).join('+')].join(' | '),
+        };
+      });
+    })()`);
+  if (rows.length === 0 || rows.some((r) => r === null || !r.id)) {
+    throw new Error(`could not read the flow rows (${rows.length} rows, ${rows.filter((r) => !r || !r.id).length} unreadable)`);
+  }
+  return rows;
+}
+
+/**
  * Check that the drawn list is in the order the API returned it.
  *
  * The API page is newest-first, so anything that applies that page one row at a time with an
  * unshift ends up reversed — and the symptom only shows after a refresh, which is why it survived
  * until someone reported it. Rows are read from the DOM rather than from the store, because what a
  * person sees is the point.
+ *
+ * Only the ids the two sides share are compared, and only their relative order: traffic keeps
+ * arriving during the run, so a flow may be in one reading and not the other. A new arrival at the
+ * top does not disturb the relative order of the rest, so this cannot flake on it.
  */
 async function checkFlowOrder() {
-  const drawn = await evaluate(`
-    (() => {
-      const rows = [...document.querySelectorAll('div[style*="top:"]')]
-        .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top));
-      return rows.map((row) => {
-        const spans = row.querySelectorAll('span');
-        // method | status | host+path: fixed columns, but if the markup changes the shape must be
-        // reported as a tool error rather than compared as if it were a list of flows.
-        if (spans.length < 4) return null;
-        return spans[1].textContent.trim() + ' ' + spans[3].textContent.trim().replace(/\\s+/g, '');
-      });
-    })()`);
-  if (drawn.length === 0 || drawn.some((r) => r === null)) {
-    throw new Error(`could not read the flow rows (${drawn.length} rows, ${drawn.filter((r) => r === null).length} unreadable)`);
-  }
+  const drawn = await readFlowRows();
   const fromApi = await evaluate(
     `fetch('/api/v1/flows?limit=100').then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-       .then((j) => (j.items || []).map((f) => f.method + ' ' + (f.host + f.path).replace(/\\s+/g, '')))`,
+       .then((j) => (j.items || []).map((f) => ({ id: f.id, target: f.method + ' ' + (f.host + f.path).replace(/\\s+/g, '') })))`,
     { awaitPromise: true }
   );
-  const n = Math.min(drawn.length, fromApi.length);
-  console.log(`\n[flow order] ${n} row(s) compared against the API page (newest first)`);
+  const drawnIds = drawn.map((r) => r.id).filter((id) => fromApi.some((f) => f.id === id));
+  const apiIds = fromApi.map((f) => f.id).filter((id) => drawn.some((r) => r.id === id));
+  console.log(`\n[flow order] ${drawnIds.length} row(s) compared against the API page (newest first)`);
+  if (drawnIds.length === 0) {
+    throw new Error('no row was also in the API page — the comparison measured nothing');
+  }
   let mismatches = 0;
-  for (let i = 0; i < n; i += 1) {
-    if (drawn[i] !== fromApi[i]) {
+  for (let i = 0; i < drawnIds.length; i += 1) {
+    if (drawnIds[i] !== apiIds[i]) {
       mismatches += 1;
-      if (mismatches <= 3) fault(`flow order: row ${i} is "${drawn[i]}" but the API has "${fromApi[i]}"`);
+      if (mismatches <= 3) {
+        const target = fromApi.find((f) => f.id === apiIds[i])?.target ?? '?';
+        fault(`flow order: position ${i} is ${drawnIds[i]} but the API has ${apiIds[i]} (${target})`);
+      }
     }
   }
-  if (mismatches > 3) fault(`flow order: ${mismatches} of ${n} rows are in the wrong place`);
-  if (mismatches === 0) console.log(`  ok — the drawn order matches the API order`);
+  if (mismatches > 3) fault(`flow order: ${mismatches} of ${drawnIds.length} rows are in the wrong place`);
+  if (mismatches === 0) console.log('  ok — the drawn order matches the API order');
+}
+
+/**
+ * Check that a row looks the same whether the browser or the server summarised it.
+ *
+ * This is the check for the defect the harness could not have caught before: a capture arriving over
+ * SSE is summarised in the browser (`webui/src/lib/flowSummary.ts`) while a row loaded from
+ * `/api/v1/flows` was summarised in Rust (`flow_to_summary`). The two derivations drifted — the
+ * browser's `path` kept the query string and its `host` kept the port, and only the server's version
+ * counted an upstream error as an error — so the *same row* changed appearance after a refresh.
+ *
+ * Method: read the rows while captures are still arriving (browser-derived), reload the page so
+ * every row comes back from the API (server-derived), and compare the rows present in both.
+ */
+async function checkLiveVersusRefreshed() {
+  const live = await readFlowRows();
+  await send('Page.reload');
+  await sleep(settle);
+  await clickByTitle('Flows');
+  const refreshed = new Map((await readFlowRows()).map((r) => [r.id, r]));
+
+  // A row whose response arrived between the two readings cannot be compared: one side legitimately
+  // has no status yet. Both sides showing `---` is a *comparable* row — an upstream failure never
+  // gets a status — and skipping those would skip exactly the error rows, which is how the first
+  // version of this check missed the error badge.
+  const shared = live.filter((row) => {
+    const other = refreshed.get(row.id);
+    if (!other) return false;
+    return !(row.status === '---' && other.status !== '---');
+  });
+  console.log(`\n[live vs refreshed] ${shared.length} row(s) drawn twice (${live.length} live, ${refreshed.size} from the API)`);
+  if (shared.length === 0) {
+    // Not a UI defect — a harness one: without fresh captures there is nothing to compare, and a
+    // silent pass would read as "the two derivations agree".
+    throw new Error('no row was drawn both live and from the API — is the traffic ticker still running?');
+  }
+  for (const row of shared) {
+    const other = refreshed.get(row.id);
+    if (row.sig !== other.sig) {
+      fault(`row ${row.id} changed after a refresh:\n        live:      ${row.sig}\n        refreshed: ${other.sig}`);
+    }
+  }
+  if (!faults.some((f) => f.startsWith('row '))) {
+    console.log('  ok — every row renders the same live and after a refresh');
+  }
 }
 
 /**
@@ -565,6 +693,51 @@ async function checkStillAlive() {
     console.log('\n[still alive] ok — switching views still updates the screen');
   }
   await clickByTitle('Flows');
+}
+
+/**
+ * The body view is a statement about one body, so it must not outlive the selection it was made for.
+ *
+ * `effectiveView()` falls back to the content type exactly so that an image does not open on a JSON
+ * view that can only print mojibake. A pick that survives a change of row defeats that fallback: read
+ * a binary body through the text view and the pane decodes bytes as UTF-8 while a hint underneath
+ * tells the reader to use HEX instead. The check drives that sequence and reads the switcher.
+ */
+async function checkPayloadViewFollowsTheSelection() {
+  await clickFlowMatching('/hello');
+  await openPayloadTab();
+  const picked = await clickPayloadView('TEXT');
+  if (!picked) {
+    fault('could not click the TEXT payload view — the switcher is not there or is not labelled');
+    return;
+  }
+  await clickFlowMatching('/binary');
+  await openPayloadTab();
+  const afterSwitch = await activePayloadView();
+  console.log(
+    `\n[payload view] picked TEXT on a JSON body, then selected a binary one: switcher says ${afterSwitch ?? 'nothing'}`,
+  );
+  if (afterSwitch === null) {
+    fault('could not read the active payload view — the switcher has no single highlighted button');
+    return;
+  }
+  if (afterSwitch !== 'HEX') {
+    fault(
+      `the payload view stayed on ${afterSwitch} after selecting another flow; a binary body must ` +
+        `open on HEX, its content-type default`,
+    );
+    return;
+  }
+  // Put the reader's own pick back on the JSON flow: it must still be honoured within one selection.
+  await clickFlowMatching('/hello');
+  await openPayloadTab();
+  const pickedAgain = await clickPayloadView('TEXT');
+  const kept = pickedAgain ? await activePayloadView() : null;
+  if (kept !== 'TEXT') {
+    fault(`a payload view picked for the selected flow was not honoured (switcher says ${kept})`);
+    return;
+  }
+  console.log('  ok — the view resets on a new selection and is still honoured within one');
 }
 
 console.log(`capturing into ${outDir}`);
@@ -628,6 +801,14 @@ await checkFlowOrder();
 await clickFirstFlow();
 await checkDetailTabs();
 await checkStillAlive();
+// Run this last of the three: it reloads the page, so anything that needs the live SSE state must
+// happen before it.
+await clickByTitle('Flows');
+await checkLiveVersusRefreshed();
+// Also behaviour, and also invisible to a screenshot: the pane looks right either way, because the
+// difference is which of two plausible renderings it chose.
+await clickByTitle('Flows');
+await checkPayloadViewFollowsTheSelection();
 
 // A narrow window: every other shot is 1600x1000, so nothing has ever checked that the layout holds
 // when it cannot. Fixed widths in the list, the palette and the toolbar all assume room.
