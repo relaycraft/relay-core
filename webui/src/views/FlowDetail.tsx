@@ -1,7 +1,8 @@
-import { createSignal, createResource, Show, For, Switch, Match } from 'solid-js';
+import { createSignal, createResource, createMemo, createEffect, on, Show, For, Switch, Match, ErrorBoundary } from 'solid-js';
 import { getFlow, replayFlow, exportFlowHar } from '@/lib/api';
 import { bodyBytes, decodeBodyText } from '@/lib/bodyText';
 import { buildCurlCommand } from '@/lib/flowActions';
+import { flowTrace } from '@/lib/flowTrace';
 import { store } from '@/lib/store';
 import type { Flow, HttpLayer, BodyData } from '@/types/api';
 
@@ -124,6 +125,15 @@ export default function FlowDetail(props: { flowId: string }) {
 
   const tabs: DetailTab[] = ['headers', 'payload', 'timing', 'messages', 'trace'];
 
+  /**
+   * Retry a view that threw, as soon as the reader moves to another tab or another flow.
+   *
+   * The boundary below keeps a failure inside the pane, but a fallback that outlives its cause is its
+   * own kind of freeze: the reader switches tabs and nothing happens. This makes the retry automatic.
+   */
+  let retryView: (() => void) | undefined;
+  createEffect(on(() => [activeTab(), props.flowId], () => retryView?.(), { defer: true }));
+
   return (
     <div class="h-full flex flex-col">
       {/* Tab bar */}
@@ -188,23 +198,51 @@ export default function FlowDetail(props: { flowId: string }) {
           }
         >
           {(current) => (
-            <Switch>
-              <Match when={activeTab() === 'headers'}>
-                <HeadersView flow={current()} />
-              </Match>
-              <Match when={activeTab() === 'payload'}>
-                <PayloadView flow={current()} view={effectiveView()} />
-              </Match>
-              <Match when={activeTab() === 'timing'}>
-                <TimingView flow={current()} />
-              </Match>
-              <Match when={activeTab() === 'messages'}>
-                <MessagesView flow={current()} />
-              </Match>
-              <Match when={activeTab() === 'trace'}>
-                <TraceView flow={current()} />
-              </Match>
-            </Switch>
+            /**
+             * One view's fault stays in that view.
+             *
+             * The Trace tab threw while reading a field the API omits when it is empty, and because
+             * the throw happened *during* a Solid update it aborted the update queue: from then on
+             * every tab click in this pane did nothing. A reader cannot tell that apart from the UI
+             * freezing, so the failure is contained and reported here instead.
+             */
+            <ErrorBoundary
+              fallback={(error, reset) => {
+                retryView = reset;
+                return (
+                  <div class="p-2 space-y-1 text-xs">
+                    <div class="text-error">This view could not be rendered.</div>
+                    <div class="text-text-dim break-all">
+                      {error instanceof Error ? error.message : String(error)}
+                    </div>
+                    <button
+                      class="px-2 py-0.5 rounded border border-border text-text-dim hover:text-text hover:bg-hover"
+                      onClick={() => reset()}
+                    >
+                      Try again
+                    </button>
+                  </div>
+                );
+              }}
+            >
+              <Switch>
+                <Match when={activeTab() === 'headers'}>
+                  <HeadersView flow={current()} />
+                </Match>
+                <Match when={activeTab() === 'payload'}>
+                  <PayloadView flow={current()} view={effectiveView()} />
+                </Match>
+                <Match when={activeTab() === 'timing'}>
+                  <TimingView flow={current()} />
+                </Match>
+                <Match when={activeTab() === 'messages'}>
+                  <MessagesView flow={current()} />
+                </Match>
+                <Match when={activeTab() === 'trace'}>
+                  <TraceView flow={current()} />
+                </Match>
+              </Switch>
+            </ErrorBoundary>
           )}
         </Show>
       </div>
@@ -578,20 +616,28 @@ function MessagesView(props: { flow: Flow }) {
 }
 
 function TraceView(props: { flow: Flow }) {
+  // Read through `flowTrace` rather than off the flow: the API omits `matched_rules` and
+  // `rule_variables` entirely when they are empty, and reading them directly threw on every flow no
+  // rule had touched. See `lib/flowTrace.ts`.
+  const trace = createMemo(() => flowTrace(props.flow));
+
   return (
     <div class="text-xs">
-      <Show when={props.flow.matched_rules.length > 0} fallback={<div class="text-text-dim">No rules matched</div>}>
+      <Show
+        when={trace().matchedRules.length > 0}
+        fallback={<div class="text-text-dim">No rules matched</div>}
+      >
         <h3 class="text-accent text-[13px] font-bold mb-1">Matched Rules</h3>
-        <For each={props.flow.matched_rules}>
+        <For each={trace().matchedRules}>
           {(ruleId) => (
             <div class="text-text px-1 py-0.5">{ruleId}</div>
           )}
         </For>
       </Show>
 
-      <Show when={props.flow.rule_variables && Object.keys(props.flow.rule_variables).length > 0}>
+      <Show when={trace().ruleVariables.length > 0}>
         <h3 class="text-accent text-[13px] font-bold mt-3 mb-1">Rule Variables</h3>
-        <For each={Object.entries(props.flow.rule_variables)}>
+        <For each={trace().ruleVariables}>
           {([key, value]) => (
             <div class="flex text-[13px]">
               <span class="w-40 text-text-dim">{key}</span>

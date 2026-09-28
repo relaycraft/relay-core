@@ -137,9 +137,16 @@ export interface Flow {
   network: NetworkInfo;
   layer: Layer;
   tags: string[];
-  resilience_trace: ResilienceTrace | null;
-  rule_variables: Record<string, string>;
-  matched_rules: string[];
+  /** Omitted from the wire when the flow met no resilience machinery. */
+  resilience_trace?: ResilienceTrace | null;
+  /**
+   * Omitted from the wire when empty: the API skips empty collections (`skip_serializing_if`), so an
+   * ordinary capture carries neither key. They are declared optional because that is what arrives —
+   * typing them as always present is what let the Trace tab read `matched_rules.length` off a flow
+   * that had no such field.
+   */
+  rule_variables?: Record<string, string>;
+  matched_rules?: string[];
 }
 
 export interface FlowPage {
