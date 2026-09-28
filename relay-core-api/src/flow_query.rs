@@ -49,7 +49,9 @@ pub fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
         return false;
     }
     if let Some(err_only) = query.has_error {
-        let is_err = flow_has_error(flow, status);
+        // Same rule as the summary's `has_error` and the UI's badge: the filter must not disagree
+        // with the badge the user is looking at.
+        let is_err = crate::flow::flow_is_error(flow);
         if err_only != is_err {
             return false;
         }
@@ -201,10 +203,6 @@ fn flow_layer_fields(flow: &Flow) -> (String, String, String, Option<u16>, bool)
     }
 }
 
-fn flow_has_error(flow: &Flow, status: Option<u16>) -> bool {
-    status.is_some_and(|s| s >= 500) || flow.tags.iter().any(|t| t == "error")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +283,102 @@ mod tests {
     }
 
     #[test]
+    fn parse_path_token_is_a_substring_constraint() {
+        let f = parse_flow_filter("path:/v1/orders");
+        assert_eq!(f.query.path_contains.as_deref(), Some("/v1/orders"));
+        assert!(f.query.host.is_none());
+    }
+
+    /// The web UI's filter bar mirrors this parser (`webui/src/lib/flowFilter.test.ts`), so the cases
+    /// below are the ones a second implementation is most likely to get subtly wrong: an unparsable
+    /// value is *no* constraint rather than an impossible one, and the strict comparisons saturate.
+    #[test]
+    fn unparsable_status_token_leaves_no_constraint() {
+        for token in [
+            "status:abc",
+            "status:>abc",
+            "status:404abc",
+            "status:0x1a",
+            "status:-100",
+            "status:1-2-3",
+            "status:70000",
+            "status:>=70000",
+        ] {
+            let f = parse_flow_filter(token);
+            assert_eq!(f.query.status_min, None, "{token} must not set a minimum");
+            assert_eq!(f.query.status_max, None, "{token} must not set a maximum");
+        }
+        // A filter that constrains nothing selects everything, including a row it could not parse.
+        assert!(flow_matches_filter(
+            &http_flow("http://x.com", "GET", Some(200)),
+            &parse_flow_filter("status:70000")
+        ));
+    }
+
+    #[test]
+    fn status_bounds_saturate_at_the_u16_edges() {
+        assert_eq!(
+            parse_flow_filter("status:>65535").query.status_min,
+            Some(65535)
+        );
+        assert_eq!(parse_flow_filter("status:<0").query.status_max, Some(0));
+    }
+
+    #[test]
+    fn a_status_constraint_excludes_a_flow_with_no_status() {
+        // A request that has not been answered is not a `0`; `status:<400` must not select it.
+        let pending = http_flow("http://x.com", "GET", None);
+        let q = FlowQuery {
+            status_min: Some(200),
+            ..Default::default()
+        };
+        assert!(!flow_matches_query(&pending, &q));
+        let q = FlowQuery {
+            status_max: Some(399),
+            ..Default::default()
+        };
+        assert!(!flow_matches_query(&pending, &q));
+        assert!(flow_matches_query(&pending, &FlowQuery::default()));
+    }
+
+    #[test]
+    fn a_key_without_a_value_is_plain_text() {
+        // `had_structured` is only set for a `key:value` token with a value, so a half-typed token is
+        // a word to search for — and it selects nothing, which is the visible consequence.
+        let f = parse_flow_filter("status:");
+        assert_eq!(f.query.status_min, None);
+        assert_eq!(f.query.status_max, None);
+        assert_eq!(f.text_tokens, vec!["status:"]);
+        assert!(!flow_matches_filter(
+            &http_flow("http://x.com", "GET", Some(200)),
+            &f
+        ));
+    }
+
+    #[test]
+    fn plain_text_matches_the_method_as_a_substring() {
+        // The engine matches `method` with `contains`, not equality: `atch` finds `PATCH`.
+        let flow = http_flow("http://api.example.com/x", "PATCH", Some(200));
+        assert!(flow_matches_filter(&flow, &parse_flow_filter("atch")));
+        assert!(flow_matches_filter(
+            &flow,
+            &parse_flow_filter("method:PATCH")
+        ));
+        assert!(!flow_matches_filter(
+            &flow,
+            &parse_flow_filter("method:PAT")
+        ));
+    }
+
+    #[test]
+    fn plain_text_may_span_the_host_and_the_path() {
+        // `host_str` and `path` are concatenated before matching, so a token can cross the boundary.
+        let flow = http_flow("http://api.example.com/v1/users", "GET", Some(200));
+        assert!(flow_matches_filter(&flow, &parse_flow_filter("com/v1")));
+        assert!(flow_matches_filter(&flow, &parse_flow_filter("/v1/users")));
+    }
+
+    #[test]
     fn parse_status_range_and_err_ws() {
         let f = parse_flow_filter("status:>=400 err ws");
         assert_eq!(f.query.status_min, Some(400));
@@ -353,5 +447,32 @@ mod tests {
         assert!(flow_matches_filter(&flow, &filter));
         let filter_fail = parse_flow_filter("host:other method:POST");
         assert!(!flow_matches_filter(&flow, &filter_fail));
+    }
+
+    #[test]
+    fn err_filter_matches_an_upstream_failure() {
+        // The request never reached an answer, so there is no status to look at. `err` used to be
+        // status-and-tag only, which meant the filter could not find the failures the interface
+        // labels as errors — the same row the summary called healthy.
+        let mut flow = http_flow("http://api.example.com/x", "GET", None);
+        if let Layer::Http(http) = &mut flow.layer {
+            http.error = Some("Upstream Error: connection refused".into());
+        }
+        assert!(crate::flow::flow_is_error(&flow));
+        assert!(flow_matches_query(
+            &flow,
+            &FlowQuery {
+                has_error: Some(true),
+                ..Default::default()
+            }
+        ));
+        assert!(flow_matches_filter(&flow, &parse_flow_filter("err")));
+    }
+
+    #[test]
+    fn err_filter_ignores_a_flow_that_only_has_a_404() {
+        let flow = http_flow("http://api.example.com/missing", "GET", Some(404));
+        assert!(!crate::flow::flow_is_error(&flow));
+        assert!(!flow_matches_filter(&flow, &parse_flow_filter("err")));
     }
 }
