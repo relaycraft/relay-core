@@ -3,6 +3,7 @@ import { getFlow, replayFlow, exportFlowHar } from '@/lib/api';
 import { bodyBytes, decodeBodyText } from '@/lib/bodyText';
 import { buildCurlCommand } from '@/lib/flowActions';
 import { flowTrace } from '@/lib/flowTrace';
+import { grpcOutcome } from '@/lib/flowSummary';
 import { store } from '@/lib/store';
 import type { Flow, HttpLayer, BodyData } from '@/types/api';
 
@@ -133,6 +134,17 @@ export default function FlowDetail(props: { flowId: string }) {
    */
   let retryView: (() => void) | undefined;
   createEffect(on(() => [activeTab(), props.flowId], () => retryView?.(), { defer: true }));
+
+  /**
+   * Forget the picked body view when the reader selects another flow.
+   *
+   * The view is a statement about *this* body — "the text view is enough" or "show me the hex" — and
+   * the default is derived from the new body's content type precisely so that an image does not open
+   * on a JSON view that can only render mojibake. Keeping the previous pick across a selection
+   * defeats that: pick TEXT on a JSON response, select a binary one, and the pane decodes the bytes
+   * as UTF-8 even though it would have opened on HEX by itself.
+   */
+  createEffect(on(() => props.flowId, () => setPayloadView(null), { defer: true }));
 
   return (
     <div class="h-full flex flex-col">
@@ -266,30 +278,32 @@ export default function FlowDetail(props: { flowId: string }) {
 }
 
 function HeadersView(props: { flow: Flow }) {
-  const http = (props.flow.layer as HttpLayer)?.data;
-  const req = http?.request;
-  const res = http?.response;
+  /**
+   * Read through the props on every access rather than destructuring once.
+   *
+   * A view is created when the reader selects a row and lives until they select another, so a
+   * destructured `const res = http?.response` is a snapshot of the flow as it was at that moment: the
+   * response section never appeared for a flow opened while it was still in flight, and the timing
+   * rows stayed empty after the answer arrived. Nothing here may be captured outside a thunk.
+   */
+  const http = () => (props.flow.layer as HttpLayer)?.data;
+  const req = () => http()?.request;
+  const res = () => http()?.response;
 
-  /** The reason phrase, minus a status code it may already contain. */
-  const grpcStatus = () => {
-    const raw = res?.trailers?.find(([name]) => name.toLowerCase() === 'grpc-status')?.[1];
-    if (raw == null || raw.trim() === '') return null;
-    const code = Number.parseInt(raw.trim(), 10);
-    return Number.isFinite(code) ? code : null;
-  };
-  const grpcMessage = () => {
-    const raw = res?.trailers?.find(([name]) => name.toLowerCase() === 'grpc-message')?.[1];
-    if (!raw) return '';
-    try {
-      return decodeURIComponent(raw);
-    } catch {
-      return raw;
-    }
-  };
+  /**
+   * The gRPC outcome, through the shared reader (`lib/flowSummary.ts`).
+   *
+   * This used to parse the trailers itself with `parseInt` and `decodeURIComponent`, which read `14x`
+   * as 14 and threw on a `%FF`, so the pane could show a gRPC status the badge beside it did not.
+   */
+  const grpc = () => grpcOutcome(res()?.trailers);
+  const grpcStatus = () => grpc().status;
+  const grpcMessage = () => grpc().message ?? '';
 
   const reasonPhrase = () => {
-    const text = res?.status_text ?? '';
-    const code = res?.status != null ? String(res.status) : '';
+    const response = res();
+    const text = response?.status_text ?? '';
+    const code = response?.status != null ? String(response.status) : '';
     if (code && text.startsWith(code)) return text.slice(code.length).trim();
     return text;
   };
@@ -302,8 +316,10 @@ function HeadersView(props: { flow: Flow }) {
 
   return (
     <div class="space-y-3 text-[13px]">
-      <Show when={http?.error}>
-        <div class="bg-error/10 border border-error/30 rounded p-2 text-error text-xs">{http?.error}</div>
+      <Show when={http()?.error}>
+        <div class="bg-error/10 border border-error/30 rounded p-2 text-error text-xs">
+          {http()?.error}
+        </div>
       </Show>
 
       <section class="rounded-md border border-border/60 overflow-hidden">
@@ -311,22 +327,22 @@ function HeadersView(props: { flow: Flow }) {
           Request
         </h3>
         <div class="px-2 py-1.5">
-          <span class="font-bold">{req?.method}</span>{' '}
-          <span class="text-text-dim break-all">{req?.url}</span>{' '}
-          <span class="text-text-dim/60">{req?.version}</span>
+          <span class="font-bold">{req()?.method}</span>{' '}
+          <span class="text-text-dim break-all">{req()?.url}</span>{' '}
+          <span class="text-text-dim/60">{req()?.version}</span>
         </div>
-        <HeaderTable headers={req?.headers ?? []} />
+        <HeaderTable headers={req()?.headers ?? []} />
       </section>
 
-      <Show when={res}>
+      <Show when={res()}>
         <section class="rounded-md border border-border/60 overflow-hidden">
           <h3 class="px-2 py-1 text-[12px] font-bold uppercase tracking-wide text-accent bg-accent/10 border-b border-border/60">
             Response
           </h3>
           <div class="px-2 py-1.5">
-            <span class="font-bold">{res?.status}</span>{' '}
+            <span class="font-bold">{res()?.status}</span>{' '}
             <span class="text-text-dim">{reasonPhrase()}</span>{' '}
-            <span class="text-text-dim/60">{res?.version}</span>
+            <span class="text-text-dim/60">{res()?.version}</span>
             <Show when={grpcStatus() != null}>
               <span
                 class={`ml-2 font-mono ${grpcStatus() === 0 ? 'text-text-dim' : 'text-error'}`}
@@ -336,10 +352,10 @@ function HeadersView(props: { flow: Flow }) {
               </span>
             </Show>
           </div>
-          <HeaderTable headers={res?.headers ?? []} />
-          <Show when={(res?.trailers?.length ?? 0) > 0}>
+          <HeaderTable headers={res()?.headers ?? []} />
+          <Show when={(res()?.trailers?.length ?? 0) > 0}>
             <div class="px-2 py-1 text-[12px] text-text-dim border-t border-border/60">Trailers</div>
-            <HeaderTable headers={res?.trailers ?? []} />
+            <HeaderTable headers={res()?.trailers ?? []} />
           </Show>
         </section>
       </Show>
@@ -391,7 +407,9 @@ function HeaderTable(props: { headers: [string, string][] }) {
 }
 
 function PayloadView(props: { flow: Flow; view: 'json' | 'hex' | 'text' }) {
-  const http = (props.flow.layer as HttpLayer)?.data;
+  // Read reactively: a body that streams in after the row was selected arrives as a new flow, and a
+  // captured `http` here would keep showing "No request body" for it.
+  const http = () => (props.flow.layer as HttpLayer)?.data;
   const budgetExceeded = () => store.state.bodyBudgetExceeded.has(props.flow.id);
 
   return (
@@ -401,26 +419,33 @@ function PayloadView(props: { flow: Flow; view: 'json' | 'hex' | 'text' }) {
           Body exceeded rule inspection budget; rules were skipped for this flow.
         </div>
       </Show>
-      <Show when={http?.request?.body} fallback={<div class="text-text-dim text-xs">No request body</div>}>
-        <section>
-          <h3 class="text-accent text-[13px] font-bold mb-1">Request Body</h3>
-          <BodyDisplay
-            body={http!.request!.body!}
-            view={props.view}
-            contentType={headerValue(http!.request!.headers, 'content-type')}
-          />
-        </section>
+      <Show
+        when={http()?.request?.body}
+        fallback={<div class="text-text-dim text-xs">No request body</div>}
+      >
+        {(body) => (
+          <section>
+            <h3 class="text-accent text-[13px] font-bold mb-1">Request Body</h3>
+            <BodyDisplay
+              body={body()}
+              view={props.view}
+              contentType={headerValue(http()?.request?.headers, 'content-type')}
+            />
+          </section>
+        )}
       </Show>
 
-      <Show when={http?.response?.body}>
-        <section>
-          <h3 class="text-accent text-[13px] font-bold mb-1">Response Body</h3>
-          <BodyDisplay
-            body={http!.response!.body!}
-            view={props.view}
-            contentType={headerValue(http!.response!.headers, 'content-type')}
-          />
-        </section>
+      <Show when={http()?.response?.body}>
+        {(body) => (
+          <section>
+            <h3 class="text-accent text-[13px] font-bold mb-1">Response Body</h3>
+            <BodyDisplay
+              body={body()}
+              view={props.view}
+              contentType={headerValue(http()?.response?.headers, 'content-type')}
+            />
+          </section>
+        )}
       </Show>
     </div>
   );
@@ -556,22 +581,25 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text'; con
 }
 
 function TimingView(props: { flow: Flow }) {
-  const http = (props.flow.layer as HttpLayer)?.data;
-  const timing = http?.response?.timing;
+  // Reactive for the same reason as the headers: the timing only exists once the response does, which
+  // is usually after the row was selected.
+  const timing = () => (props.flow.layer as HttpLayer)?.data?.response?.timing;
 
   return (
     <div class="text-xs">
-      <Show when={timing} fallback={<div class="text-text-dim">No timing data available</div>}>
-        <div class="grid grid-cols-2 gap-2">
-          <div class="text-text-dim">TTFB:</div>
-          <div class="text-text">{timing?.time_to_first_byte ?? '-'} ms</div>
-          <div class="text-text-dim">TTLB:</div>
-          <div class="text-text">{timing?.time_to_last_byte ?? '-'} ms</div>
-          <div class="text-text-dim">Connect:</div>
-          <div class="text-text">{timing?.connect_time_ms ?? '-'} ms</div>
-          <div class="text-text-dim">SSL:</div>
-          <div class="text-text">{timing?.ssl_time_ms ?? '-'} ms</div>
-        </div>
+      <Show when={timing()} fallback={<div class="text-text-dim">No timing data available</div>}>
+        {(value) => (
+          <div class="grid grid-cols-2 gap-2">
+            <div class="text-text-dim">TTFB:</div>
+            <div class="text-text">{value().time_to_first_byte ?? '-'} ms</div>
+            <div class="text-text-dim">TTLB:</div>
+            <div class="text-text">{value().time_to_last_byte ?? '-'} ms</div>
+            <div class="text-text-dim">Connect:</div>
+            <div class="text-text">{value().connect_time_ms ?? '-'} ms</div>
+            <div class="text-text-dim">SSL:</div>
+            <div class="text-text">{value().ssl_time_ms ?? '-'} ms</div>
+          </div>
+        )}
       </Show>
 
       <Show when={props.flow.resilience_trace}>
@@ -592,26 +620,36 @@ function TimingView(props: { flow: Flow }) {
 }
 
 function MessagesView(props: { flow: Flow }) {
-  if (props.flow.layer.type !== 'WebSocket') {
-    return <div class="text-text-dim text-xs">Not a WebSocket connection</div>;
-  }
-  const ws = props.flow.layer as { type: 'WebSocket'; data: { messages?: unknown[] } };
-  const messages = (ws.data?.messages ?? []) as { opcode: string; direction: string; content: BodyData }[];
+  // The layer check is reactive too: an early `return` in a component body is a decision made once, at
+  // mount, and this pane has to follow the flow it was opened on. A WebSocket's messages arrive over
+  // the whole life of the connection, which is the case this view exists for.
+  type Message = { opcode: string; direction: string; content: BodyData };
+  const messages = (): Message[] =>
+    props.flow.layer.type === 'WebSocket'
+      ? (((props.flow.layer as { data: { messages?: unknown[] } }).data?.messages ?? []) as Message[])
+      : [];
 
   return (
-    <div class="text-xs">
-      <For each={messages}>
-        {(msg) => (
-          <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
-            <span class={`w-12 shrink-0 ${msg.direction === 'ClientToServer' ? 'text-accent' : 'text-warn'}`}>
-              {msg.direction === 'ClientToServer' ? '→' : '←'}
-            </span>
-            <span class="w-12 shrink-0 text-text-dim">{msg.opcode}</span>
-            <pre class="flex-1 whitespace-pre-wrap break-all text-text">{msg.content?.content?.slice(0, 500) ?? ''}</pre>
-          </div>
-        )}
-      </For>
-    </div>
+    <Show
+      when={props.flow.layer.type === 'WebSocket'}
+      fallback={<div class="text-text-dim text-xs">Not a WebSocket connection</div>}
+    >
+      <div class="text-xs">
+        <For each={messages()}>
+          {(msg) => (
+            <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
+              <span
+                class={`w-12 shrink-0 ${msg.direction === 'ClientToServer' ? 'text-accent' : 'text-warn'}`}
+              >
+                {msg.direction === 'ClientToServer' ? '→' : '←'}
+              </span>
+              <span class="w-12 shrink-0 text-text-dim">{msg.opcode}</span>
+              <pre class="flex-1 whitespace-pre-wrap break-all text-text">{msg.content?.content?.slice(0, 500) ?? ''}</pre>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
   );
 }
 
