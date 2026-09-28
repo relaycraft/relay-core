@@ -700,3 +700,111 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
     assert_eq!(index.status, 101);
     assert_eq!(index.path, "/chat");
 }
+
+/// A `Flow` with one HTTP exchange, for the index assertions below.
+fn http_flow(status: Option<u16>, error: Option<&str>, start_offset_ms: i64) -> Flow {
+    let start = Utc::now();
+    Flow {
+        id: Uuid::new_v4(),
+        start_time: start,
+        end_time: Some(start + chrono::Duration::milliseconds(start_offset_ms)),
+        close_reason: None,
+        network: NetworkInfo {
+            client_ip: "127.0.0.1".to_string(),
+            client_port: 12345,
+            server_ip: "1.1.1.1".to_string(),
+            server_port: 80,
+            server_host: None,
+            protocol: TransportProtocol::TCP,
+            tls: false,
+            tls_version: None,
+            sni: None,
+        },
+        layer: Layer::Http(HttpLayer {
+            request: HttpRequest {
+                method: "GET".to_string(),
+                url: Url::parse("http://example.com/api/test").unwrap(),
+                version: "HTTP/1.1".to_string(),
+                headers: vec![],
+                body: None,
+                cookies: vec![],
+                query: vec![],
+            },
+            response: status.map(|status| HttpResponse {
+                status,
+                status_text: "OK".to_string(),
+                version: "HTTP/1.1".to_string(),
+                headers: vec![],
+                body: None,
+                trailers: vec![],
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
+                cookies: vec![],
+            }),
+            error: error.map(str::to_string),
+        }),
+        tags: vec![],
+        meta: HashMap::new(),
+        resilience_trace: None,
+        rule_variables: std::collections::HashMap::new(),
+        matched_rules: vec![],
+    }
+}
+
+/// The desktop list's error flag must be the engine's one error rule, not a default.
+///
+/// It was hard-coded `false`, so the index a desktop row is built from could not mark an error at all:
+/// the same 500 the web list flagged as `ERR` appeared healthy in the other host.
+#[test]
+fn test_flow_index_error_flag_follows_the_shared_rule() {
+    let ok = FlowIndex::from(http_flow(Some(200), None, 10));
+    assert!(!ok.has_error, "a 200 is not an error");
+
+    let server_error = FlowIndex::from(http_flow(Some(500), None, 10));
+    assert!(server_error.has_error, "a 5xx is an error");
+
+    let not_found = FlowIndex::from(http_flow(Some(404), None, 10));
+    assert!(
+        !not_found.has_error,
+        "a 404 is a captured answer, not a failure"
+    );
+
+    // No response at all means the request never reached an answer, which is the clearest error the
+    // index can carry — and the case a status-only rule silently reported as healthy.
+    let unreachable = FlowIndex::from(http_flow(
+        None,
+        Some("Upstream Error: connection refused"),
+        10,
+    ));
+    assert!(unreachable.has_error, "an upstream failure is an error");
+
+    let pending = FlowIndex::from(http_flow(None, None, 10));
+    assert!(
+        !pending.has_error,
+        "an unanswered request with no error recorded"
+    );
+}
+
+/// `num_milliseconds() as u64` wraps a negative difference instead of clamping it.
+#[test]
+fn test_flow_index_duration_never_wraps() {
+    let backwards = FlowIndex::from(http_flow(Some(200), None, -50));
+    assert_eq!(
+        backwards.time, 0,
+        "an end before the start is a duration of zero, not 1.8e19 ms"
+    );
+
+    let forwards = FlowIndex::from(http_flow(Some(200), None, 250));
+    assert_eq!(forwards.time, 250);
+
+    // The same value in the detail payload, which is what a HAR export reports.
+    let detail = FlowDetail::from(http_flow(Some(200), None, -50));
+    assert_eq!(detail.time, 0);
+
+    let detail = FlowDetail::from(http_flow(Some(200), None, 250));
+    assert_eq!(detail.time, 250);
+}

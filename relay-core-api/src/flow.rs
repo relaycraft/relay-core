@@ -1,3 +1,4 @@
+use crate::event::CloseReason;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
@@ -5,6 +6,49 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
+
+/// Whether this flow should be presented as failed.
+///
+/// The single definition of "an error" for every host and every derivation: the HTTP API's summary
+/// (`FlowSummary::has_error`, which is also the persisted column behind the `?has_error=` filter),
+/// the filter language's `err` token, the CLI and TUI, and the web UI's live rows — mirrored in
+/// `webui/src/lib/flowSummary.ts`, which must keep the same rule.
+///
+/// It is written once because it used to be written four times, each slightly differently, and the
+/// differences were visible in the interface rather than in a test: an upstream failure was an error
+/// in the browser (which had just received the `Flow`) and not in the summary (which is what a
+/// refresh reloads), so the error badge on a row disappeared when the page was reloaded.
+///
+/// An upstream failure counts even though it has no status code: the request never got an answer,
+/// which is the most useful thing "error" can mean in a proxy.
+pub fn flow_is_error(flow: &Flow) -> bool {
+    if flow.tags.iter().any(|tag| tag == "error") {
+        return true;
+    }
+    // A reset is the peer cancelling mid-exchange: the captured bytes are a prefix, not a result.
+    if matches!(flow.close_reason, Some(CloseReason::Reset))
+        || flow.tags.iter().any(|tag| tag == "stream-reset")
+    {
+        return true;
+    }
+    match &flow.layer {
+        Layer::Http(http) => {
+            if http.error.is_some() {
+                return true;
+            }
+            let Some(response) = http.response.as_ref() else {
+                return false;
+            };
+            if response.status >= 500 {
+                return true;
+            }
+            let (grpc_status, _) = crate::grpc::outcome_from_trailers(&response.trailers);
+            grpc_status.is_some_and(|code| code != 0)
+        }
+        Layer::WebSocket(ws) => ws.handshake_response.status >= 500,
+        _ => false,
+    }
+}
 
 /// Trait for custom protocol layers to implement
 pub trait ProtocolLayer: Any + Send + Sync + std::fmt::Debug {
@@ -356,4 +400,154 @@ pub enum FlowUpdate {
         /// The reset reason, as reported by the HTTP/2 stack.
         detail: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow::{ResponseTiming, TransportProtocol};
+
+    fn base_flow(layer: Layer) -> Flow {
+        Flow {
+            id: Uuid::new_v4(),
+            start_time: Utc::now(),
+            end_time: None,
+            close_reason: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".into(),
+                client_port: 1,
+                server_ip: "127.0.0.1".into(),
+                server_port: 80,
+                server_host: None,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer,
+            tags: vec![],
+            meta: HashMap::new(),
+            resilience_trace: None,
+            rule_variables: HashMap::new(),
+            matched_rules: vec![],
+        }
+    }
+
+    fn response(status: u16, trailers: Vec<(String, String)>) -> HttpResponse {
+        HttpResponse {
+            status,
+            status_text: "OK".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![],
+            cookies: vec![],
+            body: None,
+            trailers,
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+        }
+    }
+
+    fn http_flow(response: Option<HttpResponse>, error: Option<&str>) -> Flow {
+        base_flow(Layer::Http(HttpLayer {
+            request: HttpRequest {
+                method: "GET".into(),
+                url: Url::parse("http://example.com/x").unwrap(),
+                version: "HTTP/1.1".into(),
+                headers: vec![],
+                cookies: vec![],
+                query: vec![],
+                body: None,
+            },
+            response,
+            error: error.map(str::to_string),
+        }))
+    }
+
+    #[test]
+    fn upstream_failure_is_an_error_even_though_it_has_no_status() {
+        // The regression: the browser called this an error (it had the `Flow`) and the summary did
+        // not (it only looked at the status), so the badge vanished on refresh.
+        let flow = http_flow(None, Some("Upstream Error: connection refused"));
+        assert!(flow_is_error(&flow));
+    }
+
+    #[test]
+    fn status_and_tag_rules() {
+        assert!(flow_is_error(&http_flow(Some(response(500, vec![])), None)));
+        assert!(!flow_is_error(&http_flow(
+            Some(response(404, vec![])),
+            None
+        )));
+        assert!(!flow_is_error(&http_flow(
+            Some(response(200, vec![])),
+            None
+        )));
+
+        let mut tagged = http_flow(Some(response(200, vec![])), None);
+        tagged.tags.push("error".into());
+        assert!(flow_is_error(&tagged));
+    }
+
+    #[test]
+    fn grpc_status_decides_a_call_that_returned_200() {
+        let ok = http_flow(
+            Some(response(200, vec![("grpc-status".into(), "0".into())])),
+            None,
+        );
+        assert!(!flow_is_error(&ok));
+        let failed = http_flow(
+            Some(response(200, vec![("grpc-status".into(), "13".into())])),
+            None,
+        );
+        assert!(flow_is_error(&failed));
+    }
+
+    #[test]
+    fn a_reset_is_an_error_however_it_was_recorded() {
+        let mut by_reason = http_flow(Some(response(200, vec![])), None);
+        by_reason.close_reason = Some(CloseReason::Reset);
+        assert!(flow_is_error(&by_reason));
+
+        let mut by_tag = http_flow(Some(response(200, vec![])), None);
+        by_tag.tags.push("stream-reset".into());
+        assert!(flow_is_error(&by_tag));
+    }
+
+    #[test]
+    fn websocket_handshake_failure_is_an_error() {
+        let flow = |status: u16| {
+            base_flow(Layer::WebSocket(WebSocketLayer {
+                handshake_request: HttpRequest {
+                    method: "GET".into(),
+                    url: Url::parse("ws://example.com/socket").unwrap(),
+                    version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    cookies: vec![],
+                    query: vec![],
+                    body: None,
+                },
+                handshake_response: response(status, vec![]),
+                messages: vec![],
+                closed: false,
+            }))
+        };
+        assert!(flow_is_error(&flow(500)));
+        assert!(!flow_is_error(&flow(101)));
+    }
+
+    #[test]
+    fn a_flow_with_no_application_layer_is_not_an_error_by_default() {
+        // Raw TCP has no status, no response and no trailers: "no answer" is not the same statement
+        // as "the answer was a failure", and a capture tool that marks every opaque connection as an
+        // error is one whose error filter nobody can use.
+        let flow = base_flow(Layer::Tcp(TcpLayer {
+            bytes_up: 0,
+            bytes_down: 0,
+        }));
+        assert!(!flow_is_error(&flow));
+    }
 }

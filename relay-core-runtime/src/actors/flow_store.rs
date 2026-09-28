@@ -281,9 +281,12 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
         ),
     };
 
+    // Both ends are truncated to milliseconds *before* subtracting, which is what a client does when
+    // it parses the two RFC3339 timestamps — so the same row cannot read `1 ms` while it is live and
+    // `0 ms` after a refresh. Subtracting first and truncating the difference does that.
     let duration_ms = flow
         .end_time
-        .map(|e| (e - flow.start_time).num_milliseconds().max(0) as u64);
+        .map(|e| (e.timestamp_millis() - flow.start_time.timestamp_millis()).max(0) as u64);
 
     let (grpc_status, grpc_message) = match &flow.layer {
         Layer::Http(http) => http
@@ -293,12 +296,7 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
             .unwrap_or((None, None)),
         _ => (None, None),
     };
-    let stream_reset = matches!(flow.close_reason, Some(CloseReason::Reset))
-        || flow.tags.iter().any(|tag| tag == "stream-reset");
-    let has_error = status.is_some_and(|s| s >= 500)
-        || flow.tags.iter().any(|t| t == "error")
-        || grpc_status.is_some_and(|code| code != 0)
-        || stream_reset;
+    let has_error = relay_core_api::flow::flow_is_error(flow);
 
     FlowSummary {
         id: flow.id.to_string(),
@@ -314,5 +312,127 @@ fn flow_to_summary(flow: &Flow) -> FlowSummary {
         is_websocket: is_ws,
         grpc_status,
         grpc_message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use relay_core_api::flow::{
+        HttpLayer, HttpRequest, HttpResponse, NetworkInfo, ResponseTiming, TransportProtocol,
+    };
+    use url::Url;
+    use uuid::Uuid;
+
+    /// A summary must be a faithful, host-independent description of the flow.
+    ///
+    /// The web UI draws a row twice — once from this summary after a refresh, once from the `Flow`
+    /// itself while the capture is live — and the two renderings have to agree, or the same row
+    /// changes appearance when the user reloads the page. That is what these assertions pin down.
+    fn flow(url: &str, start_ms: i64, end_ms: Option<i64>) -> Flow {
+        let request = HttpRequest {
+            method: "GET".into(),
+            url: Url::parse(url).unwrap(),
+            version: "HTTP/1.1".into(),
+            headers: vec![],
+            cookies: vec![],
+            query: vec![],
+            body: None,
+        };
+        Flow {
+            id: Uuid::new_v4(),
+            start_time: Utc.timestamp_millis_opt(start_ms).unwrap(),
+            end_time: end_ms.map(|ms| Utc.timestamp_millis_opt(ms).unwrap()),
+            close_reason: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".into(),
+                client_port: 1,
+                server_ip: "127.0.0.1".into(),
+                server_port: 18090,
+                server_host: None,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Http(HttpLayer {
+                request,
+                response: Some(HttpResponse {
+                    status: 200,
+                    status_text: "OK".into(),
+                    version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    cookies: vec![],
+                    body: None,
+                    trailers: vec![],
+                    timing: ResponseTiming {
+                        time_to_first_byte: None,
+                        time_to_last_byte: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
+                    },
+                }),
+                error: None,
+            }),
+            tags: vec![],
+            meta: std::collections::HashMap::new(),
+            resilience_trace: None,
+            rule_variables: std::collections::HashMap::new(),
+            matched_rules: vec![],
+        }
+    }
+
+    #[test]
+    fn host_is_the_host_and_path_is_the_path() {
+        // The query string lives in `url` and nowhere else: `host` and `path` stay what every other
+        // matcher in the engine means by those words (policy, rules, `flow_query`), and the interface
+        // renders the full target from `url`. The client side follows the same rule — see
+        // `webui/src/lib/flowSummary.ts`.
+        let summary = flow_to_summary(&flow(
+            "http://example.com:8080/a/b?token=secret",
+            1_000,
+            Some(1_002),
+        ));
+        assert_eq!(summary.host, "example.com");
+        assert_eq!(summary.path, "/a/b");
+        assert_eq!(summary.url, "http://example.com:8080/a/b?token=secret");
+    }
+
+    #[test]
+    fn duration_truncates_both_ends_before_subtracting() {
+        // A browser parses the two timestamps into milliseconds and subtracts, so a sub-millisecond
+        // `start_time` has to be truncated on this side too: 0.6 ms → 1.4 ms is `0 ms` to the browser
+        // and was `1 ms` here, which made the duration column change on refresh.
+        let summary = flow_to_summary(&flow("http://example.com/x", 1_000, Some(1_000)));
+        assert_eq!(summary.duration_ms, Some(0));
+
+        let mut f = flow("http://example.com/x", 1_000, Some(1_001));
+        // 0.9 ms of a millisecond: the difference is 0.2 ms, which truncates to zero.
+        f.start_time =
+            Utc.timestamp_millis_opt(1_000).unwrap() + chrono::Duration::microseconds(900);
+        f.end_time =
+            Some(Utc.timestamp_millis_opt(1_001).unwrap() + chrono::Duration::microseconds(100));
+        assert_eq!(flow_to_summary(&f).duration_ms, Some(1));
+    }
+
+    #[test]
+    fn a_flow_with_no_end_time_has_no_duration() {
+        assert_eq!(
+            flow_to_summary(&flow("http://example.com/x", 1_000, None)).duration_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn an_upstream_failure_is_flagged_as_an_error() {
+        let mut f = flow("http://example.com/x", 1_000, Some(1_001));
+        if let Layer::Http(http) = &mut f.layer {
+            http.response = None;
+            http.error = Some("Upstream Error: connection refused".into());
+        }
+        let summary = flow_to_summary(&f);
+        assert!(summary.has_error, "the error badge must survive a refresh");
+        assert_eq!(summary.status, None);
     }
 }

@@ -279,11 +279,18 @@ impl From<Flow> for FlowIndex {
             ),
         };
 
+        // `.max(0)` because `num_milliseconds() as u64` on a negative difference does not clamp, it
+        // wraps: an end timestamp that precedes the start — a clock step, or an ending recorded
+        // before the start of the exchange it belongs to — became a duration of 1.8e19 ms in the HAR
+        // index. The HTTP API's summary already clamps; this is the same value for the same row.
         let duration = if let Some(end) = flow.end_time {
-            (end - flow.start_time).num_milliseconds() as u64
+            (end - flow.start_time).num_milliseconds().max(0) as u64
         } else {
             0
         };
+
+        // Computed while the whole `Flow` is still available: `tags` below is moved into the index.
+        let has_error = relay_core_api::flow::flow_is_error(&flow);
 
         FlowIndex {
             id: flow.id.to_string(),
@@ -303,7 +310,10 @@ impl From<Flow> for FlowIndex {
             tags: flow.tags,
             app_name: None,
             app_display_name: None,
-            has_error: false,
+            // The one error rule (`relay_core_api::flow::flow_is_error`), not a second one: this was
+            // hard-coded `false`, so the desktop list could not mark an error at all — a 500, a
+            // reset stream and a request that never reached an answer all arrived as healthy rows.
+            has_error,
             has_request_body: has_req_body,
             has_response_body: has_resp_body,
             is_websocket: is_ws,
@@ -516,8 +526,9 @@ fn convert_websocket_message(
 
 impl From<Flow> for FlowDetail {
     fn from(flow: Flow) -> Self {
+        // Clamped for the same reason as the index above: `as u64` wraps rather than saturates.
         let duration = if let Some(end) = flow.end_time {
-            (end - flow.start_time).num_milliseconds() as u64
+            (end - flow.start_time).num_milliseconds().max(0) as u64
         } else {
             0
         };
