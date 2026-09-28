@@ -9,13 +9,17 @@
 # Usage: ./scripts/ui-fixtures.sh [out-dir]
 #
 # Everything runs on loopback on ports 18080-18099, and the instance is killed on exit.
+# Set CDP_PORT if 9222 is already taken: it usually is, because Chrome is a single-instance app on
+# macOS and a developer's own browser happily answers on that port — which is how a harness ends up
+# screenshotting someone else's tabs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-/tmp/relay-core-ui}"
+CDP_PORT="${CDP_PORT:-9222}"
+export CDP_PORT
 PROXY_PORT=18080
 API_PORT=18082
-CONTROL_PORT=18081
 UPSTREAM_PORT=18090
 GRPC_PORT=18091
 WORKDIR="$(mktemp -d)"
@@ -23,7 +27,7 @@ PIDS=()
 
 cleanup() {
   for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
-  pkill -f "remote-debugging-port=9222" 2>/dev/null || true
+  pkill -f "remote-debugging-port=$CDP_PORT" 2>/dev/null || true
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -186,14 +190,27 @@ PIDS+=($!)
 sleep 2
 
 echo "==> starting relay-core with the Web UI"
-"$BIN" run --listen "127.0.0.1:$PROXY_PORT" --control-port "$CONTROL_PORT" --api-port "$API_PORT" --web \
+# `RELAY_DATA_DIR` keeps this instance out of the way of a daemon the developer already has running:
+# without it the second daemon refuses to start ("another daemon already owns <dir>"), and the
+# harness then blames the UI for an instance that never came up.
+RELAY_DATA_DIR="$WORKDIR/data" \
+  "$BIN" run --listen "127.0.0.1:$PROXY_PORT" --api-port "$API_PORT" --web \
   > "$WORKDIR/proxy.log" 2>&1 &
 PIDS+=($!)
 
+# The control API wants a bearer token, and the daemon prints the Web UI URL carrying it. Poll with
+# it: an unauthenticated `curl -sf` gets 401, so the old readiness loop silently burned its whole
+# timeout and the run continued against an instance that might not have been up.
+TOKEN=""
 for _ in $(seq 1 40); do
-  if curl -sf -o /dev/null "http://127.0.0.1:$API_PORT/api/v1/flows"; then break; fi
+  TOKEN="$(grep -o '#token=[a-f0-9]*' "$WORKDIR/proxy.log" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+  if [ -n "$TOKEN" ] && curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" \
+      "http://127.0.0.1:$API_PORT/api/v1/flows"; then
+    break
+  fi
   sleep 0.5
 done
+[ -n "$TOKEN" ] || { echo "the daemon never printed a UI token; see $WORKDIR/proxy.log" >&2; exit 1; }
 
 echo "==> driving traffic through the proxy"
 PROXY="http://127.0.0.1:$PROXY_PORT"
@@ -224,16 +241,23 @@ curl -s -o /dev/null -x "$PROXY" --http2-prior-knowledge --max-time 12 \
 fetch "https://example.com/"
 
 sleep 1
-COUNT=$(curl -s "http://127.0.0.1:$API_PORT/api/v1/flows?limit=100" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("items", [])))')
+COUNT=$(curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$API_PORT/api/v1/flows?limit=100" \
+  | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("items", [])))')
 echo "==> $COUNT flows captured"
+# A harness that cannot count its own traffic reports "0 flows captured" and lets every later finding
+# be read against an empty UI, so fail loudly instead.
+[ "$COUNT" -gt 0 ] || { echo "no flows were captured; the fixture traffic never reached the proxy" >&2; exit 1; }
 
 echo "==> starting headless Chrome with a debugging port"
 rm -rf "$WORKDIR/chrome"
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless --disable-gpu --no-sandbox --hide-scrollbars \
-  --remote-debugging-port=9222 --user-data-dir="$WORKDIR/chrome" \
+  --remote-debugging-port="$CDP_PORT" --user-data-dir="$WORKDIR/chrome" \
   --window-size=1600,1000 about:blank > "$WORKDIR/chrome.log" 2>&1 &
 PIDS+=($!)
 
-node "$ROOT/scripts/ui-snapshot.mjs" "http://127.0.0.1:$API_PORT/" "$OUT" "${@:2}"
+# Open the URL the daemon printed, token fragment and all. The UI trades that fragment for the
+# `relay_core_token` cookie; `/` without it authenticates nothing, so the browser gets 401s, the flow
+# list renders empty, and the harness then reports on a blank UI.
+node "$ROOT/scripts/ui-snapshot.mjs" "http://127.0.0.1:$API_PORT/#token=$TOKEN" "$OUT" "${@:2}"
 echo "==> screenshots in $OUT"

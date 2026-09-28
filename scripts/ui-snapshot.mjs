@@ -14,12 +14,16 @@
  * Usage:
  *   node scripts/ui-snapshot.mjs <ui-url> <out-dir> [--dpr=1] [--settle=1500]
  *
- * Requires Chrome running with --remote-debugging-port=9222; scripts/ui-fixtures.sh starts it.
+ * Requires Chrome running with --remote-debugging-port=$CDP_PORT (default 9222);
+ * scripts/ui-fixtures.sh starts it. Set CDP_PORT when something else already owns 9222 — a developer's
+ * own browser does — because attaching to *that* browser photographs their tabs and reports it as a
+ * review of this UI.
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [url, outDir] = process.argv.slice(2);
+const cdpPort = Number(process.env.CDP_PORT ?? 9222);
 const dpr = Number((process.argv.find((a) => a.startsWith('--dpr=')) ?? '--dpr=1').split('=')[1]);
 const settle = Number(
   (process.argv.find((a) => a.startsWith('--settle=')) ?? '--settle=1500').split('=')[1]
@@ -39,14 +43,23 @@ class Cdp {
     this.ws = ws;
     this.id = 0;
     this.pending = new Map();
+    this.listeners = new Map();
     ws.addEventListener('message', (event) => {
       const msg = JSON.parse(event.data);
       if (msg.id && this.pending.has(msg.id)) {
         const { resolve, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
         msg.error ? reject(new Error(`${msg.error.message} (${JSON.stringify(msg.error.data)})`)) : resolve(msg.result);
+        return;
       }
+      for (const handler of this.listeners.get(msg.method) ?? []) handler(msg.params, msg.sessionId);
     });
+  }
+
+  /** Subscribe to a CDP event (no `id`), e.g. `Runtime.exceptionThrown`. */
+  on(method, handler) {
+    if (!this.listeners.has(method)) this.listeners.set(method, []);
+    this.listeners.get(method).push(handler);
   }
 
   static async connect(wsUrl) {
@@ -71,7 +84,7 @@ class Cdp {
 async function browserWsUrl() {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
-      const res = await fetch('http://127.0.0.1:9222/json/version');
+      const res = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
       const json = await res.json();
       if (json.webSocketDebuggerUrl) return json.webSocketDebuggerUrl;
     } catch {
@@ -79,13 +92,54 @@ async function browserWsUrl() {
     }
     await sleep(500);
   }
-  throw new Error('Chrome is not exposing a debugging endpoint on 127.0.0.1:9222');
+  throw new Error(`Chrome is not exposing a debugging endpoint on 127.0.0.1:${cdpPort}`);
 }
 
 const browser = await Cdp.connect(await browserWsUrl());
+
+/**
+ * Refuse to drive a browser that is not the harness's own.
+ *
+ * The debugging port is a fixed number, so anything already on it wins: a developer's everyday Chrome
+ * does, and then every screenshot in the output directory is of *their* tabs while the report reads
+ * like a review of the UI. A fresh harness browser has no page open at all, which is what makes the
+ * check possible. Failing here costs one run; not failing produced findings about the wrong screen.
+ */
+const { targetInfos } = await browser.send('Target.getTargets');
+const strays = targetInfos.filter((t) => t.type === 'page' && t.url !== 'about:blank');
+if (strays.length > 0) {
+  throw new Error(
+    `the browser on port ${cdpPort} already has ${strays.length} page(s) open (e.g. ${strays[0].url}); ` +
+      `it is not this harness's browser — set CDP_PORT to a free port`
+  );
+}
+
 const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' });
 const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true });
 const send = (method, params) => browser.send(method, params, sessionId);
+
+/**
+ * Every uncaught page exception, in order.
+ *
+ * A thrown error inside a Solid update does not stop at the component that threw: it aborts the
+ * update queue, so *later, unrelated* interactions silently do nothing. The user calls that "the UI
+ * froze", and a screenshot of the frozen state looks like a normal screen. Collecting the exceptions
+ * is what turns that into a finding instead of a mystery — and this harness previously collected
+ * none, so a page throwing on every render still produced a clean folder of screenshots.
+ */
+const pageErrors = [];
+browser.on('Runtime.exceptionThrown', (params) => {
+  const details = params?.exceptionDetails ?? {};
+  const description = details.exception?.description ?? details.text ?? 'unknown error';
+  pageErrors.push(`${description.split('\n')[0]} — ${details.url ?? '?'}:${details.lineNumber ?? '?'}`);
+});
+
+/** Defects found by the checks below. A non-empty list makes the run exit non-zero. */
+const faults = [];
+const fault = (message) => {
+  faults.push(message);
+  console.log(`  FAIL ${message}`);
+};
 
 await send('Page.enable');
 await send('Runtime.enable');
@@ -362,6 +416,157 @@ async function openPayloadTab() {
   await sleep(500);
 }
 
+/** Put the page in a known theme the honest way: store the choice the app reads, then reload. */
+async function setTheme(theme) {
+  await evaluate(`localStorage.setItem('relay-core.theme', ${JSON.stringify(theme)})`);
+  await send('Page.reload');
+  await sleep(settle);
+}
+
+/**
+ * Read the detail pane: which tab the strip says is open, and what the pane below it actually shows.
+ *
+ * Both halves matter. A click that writes its signal but never re-renders leaves the strip showing
+ * the new tab while the content is still the old one — which is exactly what a wedged Solid update
+ * queue looks like, and it is invisible in a screenshot because the highlighted tab is correct.
+ */
+async function readDetailPane() {
+  return evaluate(`
+    (() => {
+      const labels = ['headers', 'payload', 'timing', 'messages', 'trace'];
+      const buttons = [...document.querySelectorAll('button')].filter((b) =>
+        labels.includes(b.textContent.trim().toLowerCase())
+      );
+      if (buttons.length === 0) return null;
+      const strip = buttons[0].parentElement;
+      const pane = strip && strip.nextElementSibling;
+      const active = buttons.find((b) => b.getAttribute('aria-current') === 'page');
+      return {
+        tabs: buttons.map((b) => b.textContent.trim()),
+        active: active ? active.textContent.trim() : null,
+        // The measured window is the pane itself: the tab strip's next sibling is the scroll
+        // container the Switch renders into, so this cannot pick up a neighbouring panel by accident.
+        pane: pane ? pane.textContent.replace(/\\s+/g, ' ').trim().slice(0, 200) : null,
+      };
+    })()`);
+}
+
+/**
+ * Click every tab in the detail pane and check the pane actually followed.
+ *
+ * This is the regression check for the "Trace freezes the UI" defect: clicking Trace used to throw
+ * while reading a field the API omits when it is empty, and because that throw happened inside a
+ * Solid update it killed the whole update queue — the tab highlighted, the content did not change,
+ * and every later click in the pane was a no-op.
+ */
+async function checkDetailTabs() {
+  const first = await readDetailPane();
+  // A check that cannot see the thing it measures must say so: an empty result here would otherwise
+  // read as "no problems found".
+  if (!first) throw new Error('no detail tab strip on screen — is a flow selected?');
+  console.log(`\n[detail tabs] clicking ${first.tabs.length} tab(s): ${first.tabs.join(', ')}`);
+
+  const panes = new Map();
+  for (const label of first.tabs) {
+    const clicked = await evaluate(`
+      (() => {
+        const b = [...document.querySelectorAll('button')].find((n) => n.textContent.trim() === ${JSON.stringify(label)});
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+    if (!clicked) {
+      fault(`${label}: the tab vanished between reading the strip and clicking it`);
+      continue;
+    }
+    await sleep(350);
+    const now = await readDetailPane();
+    console.log(`  ${label}: strip says "${now?.active}" — pane "${(now?.pane ?? '').slice(0, 60)}"`);
+    if (!now) {
+      fault(`${label}: the tab strip disappeared after the click`);
+      continue;
+    }
+    if (now.active !== label) {
+      fault(`${label}: clicked, but the strip still shows "${now.active}" as open`);
+    }
+    if (!now.pane) {
+      fault(`${label}: rendered an empty pane`);
+      continue;
+    }
+    if (now.pane.includes('This view could not be rendered')) {
+      fault(`${label}: the view threw and was contained — pane says "${now.pane.slice(0, 120)}"`);
+      continue;
+    }
+    const previous = panes.get(now.pane);
+    if (previous) {
+      fault(`${label}: the pane still shows ${previous}'s content — the click changed nothing`);
+    } else {
+      panes.set(now.pane, label);
+    }
+  }
+}
+
+/**
+ * Check that the drawn list is in the order the API returned it.
+ *
+ * The API page is newest-first, so anything that applies that page one row at a time with an
+ * unshift ends up reversed — and the symptom only shows after a refresh, which is why it survived
+ * until someone reported it. Rows are read from the DOM rather than from the store, because what a
+ * person sees is the point.
+ */
+async function checkFlowOrder() {
+  const drawn = await evaluate(`
+    (() => {
+      const rows = [...document.querySelectorAll('div[style*="top:"]')]
+        .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top));
+      return rows.map((row) => {
+        const spans = row.querySelectorAll('span');
+        // method | status | host+path: fixed columns, but if the markup changes the shape must be
+        // reported as a tool error rather than compared as if it were a list of flows.
+        if (spans.length < 4) return null;
+        return spans[1].textContent.trim() + ' ' + spans[3].textContent.trim().replace(/\\s+/g, '');
+      });
+    })()`);
+  if (drawn.length === 0 || drawn.some((r) => r === null)) {
+    throw new Error(`could not read the flow rows (${drawn.length} rows, ${drawn.filter((r) => r === null).length} unreadable)`);
+  }
+  const fromApi = await evaluate(
+    `fetch('/api/v1/flows?limit=100').then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+       .then((j) => (j.items || []).map((f) => f.method + ' ' + (f.host + f.path).replace(/\\s+/g, '')))`,
+    { awaitPromise: true }
+  );
+  const n = Math.min(drawn.length, fromApi.length);
+  console.log(`\n[flow order] ${n} row(s) compared against the API page (newest first)`);
+  let mismatches = 0;
+  for (let i = 0; i < n; i += 1) {
+    if (drawn[i] !== fromApi[i]) {
+      mismatches += 1;
+      if (mismatches <= 3) fault(`flow order: row ${i} is "${drawn[i]}" but the API has "${fromApi[i]}"`);
+    }
+  }
+  if (mismatches > 3) fault(`flow order: ${mismatches} of ${n} rows are in the wrong place`);
+  if (mismatches === 0) console.log(`  ok — the drawn order matches the API order`);
+}
+
+/**
+ * Check the interface still reacts at all.
+ *
+ * An exception thrown inside a Solid update wedges the update queue, and the way a person meets that
+ * is "nothing responds any more". Reading the body text before and after a view change is the
+ * cheapest honest test of that: if the queue is dead, the text does not move.
+ */
+async function checkStillAlive() {
+  const before = await evaluate(`document.body.innerText.replace(/\\s+/g, ' ').slice(0, 400)`);
+  await clickByTitle('Settings');
+  const after = await evaluate(`document.body.innerText.replace(/\\s+/g, ' ').slice(0, 400)`);
+  if (before === after) {
+    fault('the view did not change after clicking Settings — reactive updates are wedged');
+  } else {
+    console.log('\n[still alive] ok — switching views still updates the screen');
+  }
+  await clickByTitle('Flows');
+}
+
 console.log(`capturing into ${outDir}`);
 
 // The views a person moves between, each reached the way they would reach it.
@@ -399,9 +604,7 @@ await shot('10-help-dark');
 // Measure both themes deterministically: set the stored choice and reload, rather than toggling and
 // trusting that the label matches what the last click left behind (it did not, first time round).
 for (const theme of ['dark', 'light']) {
-  await evaluate(`localStorage.setItem('relay-core.theme', ${JSON.stringify(theme)})`);
-  await send('Page.reload');
-  await sleep(settle);
+  await setTheme(theme);
   await probe(theme, PROBE_TARGETS);
   await scanDarkElements(theme);
   await clickByTitle('Flows');
@@ -414,6 +617,17 @@ for (const theme of ['dark', 'light']) {
   await clickFirstFlow();
   await focusSweep(`${theme}/detail`, 14);
 }
+
+// Behaviour, not appearance: the two checks below are the regressions that screenshots alone did not
+// catch. Run them on a freshly loaded page — the flow-order defect only appears after a reload.
+// The theme is set explicitly because the loop above ends on light, and every later filename says
+// `-dark`: without this the shots were labelled dark while showing the light theme.
+await setTheme('dark');
+await clickByTitle('Flows');
+await checkFlowOrder();
+await clickFirstFlow();
+await checkDetailTabs();
+await checkStillAlive();
 
 // A narrow window: every other shot is 1600x1000, so nothing has ever checked that the layout holds
 // when it cannot. Fixed widths in the list, the palette and the toolbar all assume room.
@@ -457,6 +671,21 @@ await clickFlowMatching('/hello');
 await openPayloadTab();
 await shot('16-json-body-dark');
 
+/**
+ * The verdict, printed last so it is the thing left on screen.
+ *
+ * An uncaught exception is always a finding: it is either breaking this run's rendering or wedging
+ * the reactive update queue for whatever the user does next, and the frozen result photographs
+ * perfectly. Exiting non-zero is deliberate — `ui-fixtures.sh` stops on it, so a broken UI cannot
+ * leave behind a folder of plausible screenshots and a "done".
+ */
+console.log(`\n[page errors] ${pageErrors.length} uncaught exception(s)`);
+for (const error of pageErrors) console.log(`  ${error}`);
+
 await browser.send('Target.closeTarget', { targetId });
+if (faults.length > 0 || pageErrors.length > 0) {
+  console.error(`\n[failed] ${faults.length} check(s) and ${pageErrors.length} uncaught error(s); see above`);
+  process.exit(1);
+}
 console.log('done');
 process.exit(0);
