@@ -1,12 +1,13 @@
 import { createStore, produce } from 'solid-js/store';
+import { grpcOutcome } from '@/lib/flowSummary';
 import type { FlowSummary, CoreMetrics, CoreStatusSnapshot, InterceptItem, Rule } from '@/types/api';
 
 export type ViewId = 'flows' | 'workshop' | 'rules' | 'scripts' | 'settings';
 
 export const MAX_FLOWS = 5000;
 
-/** How long body events for the open flow wait before one detail refresh. */
-export const BODY_DETAIL_REFRESH_MS = 200;
+/** How long changes to the open flow wait before one detail refresh. */
+export const DETAIL_REFRESH_MS = 200;
 
 export interface AppState {
   activeView: ViewId;
@@ -120,34 +121,35 @@ export function createAppStore() {
     setState('selectedFlowId', id);
   }
 
-  let bodyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let detailRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function notifyHttpBody(flowId: string) {
+  /**
+   * The open flow changed on the wire: re-fetch it once the events stop arriving.
+   *
+   * Called for every event that can alter a flow already on screen — a body chunk, trailers, a stream
+   * reset, a WebSocket message, and the snapshot that carries the response headers. A live connection
+   * emits one of these per chunk, and refreshing on every one keeps the detail request in flight, so
+   * the pane never leaves "Loading..."; one refresh per quiet gap is enough.
+   *
+   * The snapshot case is what made a flow selected while it was in flight stay blank: its response
+   * arrived as a `flow` event, the list row updated, and the pane kept the body it had fetched at
+   * selection time — which had no response in it — until the reader selected the row again.
+   */
+  function notifyFlowChanged(flowId: string) {
     if (state.selectedFlowId !== flowId) return;
-    // A live connection emits a body event per chunk. Refreshing on every one keeps the detail
-    // request in flight, so the pane never leaves "Loading...". One refresh per quiet gap is enough.
-    if (bodyRefreshTimer !== undefined) return;
-    bodyRefreshTimer = setTimeout(() => {
-      bodyRefreshTimer = undefined;
+    if (detailRefreshTimer !== undefined) return;
+    detailRefreshTimer = setTimeout(() => {
+      detailRefreshTimer = undefined;
       if (state.selectedFlowId === flowId) {
         setState('flowDetailGeneration', (n) => n + 1);
       }
-    }, BODY_DETAIL_REFRESH_MS);
+    }, DETAIL_REFRESH_MS);
   }
 
   function applyGrpcTrailers(flowId: string, trailers: [string, string][]) {
-    const statusRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-status')?.[1];
-    const messageRaw = trailers.find(([name]) => name.toLowerCase() === 'grpc-message')?.[1];
-    const parsed = statusRaw != null ? Number.parseInt(statusRaw.trim(), 10) : NaN;
-    const grpcStatus = Number.isFinite(parsed) ? parsed : null;
-    let grpcMessage: string | null = null;
-    if (messageRaw && messageRaw.trim() !== '') {
-      try {
-        grpcMessage = decodeURIComponent(messageRaw.trim());
-      } catch {
-        grpcMessage = messageRaw.trim();
-      }
-    }
+    // One parser for both paths into a row: this event patches a row that `flowToSummary` already
+    // summarised, and a laxer read here put a `g14` badge on a row that a refresh then dropped.
+    const { status: grpcStatus, message: grpcMessage } = grpcOutcome(trailers);
     setState(
       produce((s) => {
         const summary = s.flows.get(flowId);
@@ -186,7 +188,7 @@ export function createAppStore() {
     clearFlows,
     setActiveView,
     selectFlow,
-    notifyHttpBody,
+    notifyFlowChanged,
     applyGrpcTrailers,
     markStreamReset,
     markBodyBudgetExceeded,

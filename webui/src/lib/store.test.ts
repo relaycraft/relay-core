@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BODY_DETAIL_REFRESH_MS, createAppStore, MAX_FLOWS } from './store';
+import { DETAIL_REFRESH_MS, createAppStore, MAX_FLOWS } from './store';
 import type { FlowSummary } from '@/types/api';
 
 function makeSummary(id: string, startTimeMs = Date.now()): FlowSummary {
@@ -50,10 +50,10 @@ describe('createAppStore', () => {
     const app = createAppStore();
     app.upsertFlow(makeSummary('a'));
     app.selectFlow('a');
-    app.notifyHttpBody('a');
-    app.notifyHttpBody('a');
+    app.notifyFlowChanged('a');
+    app.notifyFlowChanged('a');
     expect(app.state.flowDetailGeneration).toBe(0);
-    vi.advanceTimersByTime(BODY_DETAIL_REFRESH_MS);
+    vi.advanceTimersByTime(DETAIL_REFRESH_MS);
     expect(app.state.flowDetailGeneration).toBe(1);
   });
 
@@ -61,8 +61,8 @@ describe('createAppStore', () => {
     vi.useFakeTimers();
     const app = createAppStore();
     app.upsertFlow(makeSummary('a'));
-    app.notifyHttpBody('a');
-    vi.advanceTimersByTime(BODY_DETAIL_REFRESH_MS);
+    app.notifyFlowChanged('a');
+    vi.advanceTimersByTime(DETAIL_REFRESH_MS);
     expect(app.state.flowDetailGeneration).toBe(0);
   });
 
@@ -131,6 +131,28 @@ describe('flow order', () => {
     expect(app.state.flowOrder.length).toBe(MAX_FLOWS);
     expect(app.state.flows.has('flow-0')).toBe(true);
     expect(app.state.flows.has(`flow-${MAX_FLOWS + 9}`)).toBe(false);
+  });
+
+  it('reads a live grpc trailer exactly as the summary does', () => {
+    const app = createAppStore();
+    app.upsertFlow(makeSummary('a'));
+
+    // `parseInt` reads `14x` as 14, so this row would have carried a `g14` badge until a refresh
+    // dropped it. The trailer event and the summary use one parser, so both say "no status".
+    app.applyGrpcTrailers('a', [['grpc-status', '14x']]);
+    expect(app.state.flows.get('a')?.grpc_status).toBeNull();
+    expect(app.state.flows.get('a')?.has_error).toBe(false);
+
+    app.applyGrpcTrailers('a', [['grpc-status', '+14'], ['grpc-message', 'bad%FFescape']]);
+    expect(app.state.flows.get('a')?.grpc_status).toBe(14);
+    expect(app.state.flows.get('a')?.grpc_message).toBe('bad\ufffdescape');
+    expect(app.state.flows.get('a')?.has_error).toBe(true);
+
+    // A zero status is a success and must not raise the badge the summary would not raise.
+    app.upsertFlow(makeSummary('b'));
+    app.applyGrpcTrailers('b', [['grpc-status', '0']]);
+    expect(app.state.flows.get('b')?.grpc_status).toBe(0);
+    expect(app.state.flows.get('b')?.has_error).toBe(false);
   });
 });
 

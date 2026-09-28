@@ -1,6 +1,7 @@
 import { createMemo, For, Show, createSignal, onMount, onCleanup } from 'solid-js';
 import { store } from '@/lib/store';
 import { filterFlows, orderedFlows } from '@/lib/flowFilter';
+import { flowTargetParts } from '@/lib/flowSummary';
 import { formatDurationMs, formatFlowTime } from '@/lib/format';
 import { copyCurlForFlow, replayFlowById } from '@/lib/flowActions';
 import { isEditingTarget } from '@/lib/editing';
@@ -176,8 +177,16 @@ export default function FlowsView() {
               {(flow, idx) => {
                 const i = () => visibleFlows().startIndex + idx();
                 const isSelected = () => store.state.selectedFlowId === flow.id;
+                // Derived once per change rather than once per column: `flowTargetParts` parses the
+                // URL, and both halves are read on every render of the row.
+                const target = createMemo(() => flowTargetParts(flow));
                 return (
                   <div
+                    // A flow row has two possible origins — summarised in the browser from the SSE
+                    // `Flow`, or loaded as a server-side summary — and the harness compares the two
+                    // renderings of the same id. Without an identity on the row it can only match on
+                    // text, which is how it once reported an ordering defect that did not exist.
+                    data-flow-id={flow.id}
                     class={`absolute left-0 right-0 flex items-center h-[32px] px-2 gap-3 cursor-pointer text-[13px] border-b border-border/30 transition-colors ${
                       isSelected() ? 'bg-accent/15 text-text' : 'hover:bg-hover text-text-dim'
                     } ${i() % 2 === 0 ? '' : 'bg-surface/50'}`}
@@ -199,10 +208,13 @@ export default function FlowsView() {
                     >
                       {flow.status ?? '---'}
                     </span>
-                    {/* `min-w-0` is what lets the truncation work inside a flex row. */}
+                    {/* `min-w-0` is what lets the truncation work inside a flex row. The target is
+                        read from `url` (see `flowTargetParts`), not from `host` + `path`, because
+                        those two are the values the filter language matches on and deliberately drop
+                        the port and the query string. */}
                     <span class="flex-1 min-w-0 truncate">
-                      {flow.host}
-                      <span class="text-text-dim/50">{flow.path}</span>
+                      {target().host}
+                      <span class="text-text-dim/50">{target().path}</span>
                     </span>
                     <span class="w-[64px] shrink-0 whitespace-nowrap tabular-nums text-right text-text-dim/70">
                       {flow.duration_ms != null ? formatDurationMs(flow.duration_ms) : ''}
@@ -230,9 +242,11 @@ export default function FlowsView() {
           </div>
           <Show when={filteredFlows().length === 0}>
             <div class="flex items-center justify-center h-full text-text-dim text-sm">
+              {/* `sseConnected` is only true while the event stream is open, so this distinguishes
+                  "the engine has seen nothing" from "the interface stopped hearing about it". */}
               {store.state.sseConnected
                 ? 'No flows captured yet. Start browsing through the proxy.'
-                : 'Connecting...'}
+                : 'Not receiving flow events — reconnecting…'}
             </div>
           </Show>
         </div>

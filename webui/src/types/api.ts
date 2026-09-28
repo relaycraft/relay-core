@@ -116,7 +116,10 @@ export interface WebSocketLayer {
     handshake_request: HttpRequest;
     handshake_response: HttpResponse;
     messages: WebSocketMessage[];
-    open: boolean;
+    /** Whether the connection has closed. The Rust field is `closed`; this said `open`, which is the
+     *  one thing the wire never carries — a reader of `.open` would get `undefined` and read it as
+     *  `false`, i.e. "still open", for every socket that had already closed. */
+    closed: boolean;
   };
 }
 
@@ -147,11 +150,35 @@ export interface Flow {
    */
   rule_variables?: Record<string, string>;
   matched_rules?: string[];
+  /**
+   * How the exchange ended, in the unified vocabulary of `relay-core-api/src/event.rs`.
+   *
+   * Internally tagged on the wire — `{"reason":"reset"}`, `{"reason":"timeout","kind":"idle"}` — and
+   * omitted when the ending was not recorded, which is different from a confirmed normal completion.
+   */
+  close_reason?: CloseReason | null;
 }
 
+export type CloseReason =
+  | { reason: 'client_closed' }
+  | { reason: 'upstream_closed' }
+  | { reason: 'timeout'; kind: string }
+  | { reason: 'reset' }
+  | { reason: 'policy_drop'; detail: string }
+  | { reason: 'parser_error'; detail: string }
+  | { reason: 'tls_error'; detail: string }
+  | { reason: 'completed' };
+
+/**
+ * One page of stored flow summaries, as `GET /api/v1/flows` answers it.
+ *
+ * There is no `total`: the route returns `FlowSearchResponse { items, returned, limit, offset }` and
+ * never counted the matches. The `total` this interface used to require was `undefined` at runtime,
+ * so `page.total > page.items.length` would have been `false` for a truncated page — a lie that only
+ * shows up as a missing control, never as an error.
+ */
 export interface FlowPage {
   items: FlowSummary[];
-  total: number;
   returned: number;
   limit: number;
   offset: number;
