@@ -666,3 +666,132 @@ async fn test_audit_retention_is_bounded_separately_from_traffic() {
         "an audit bound must not evict traffic history"
     );
 }
+
+// ── The stored query must agree with the in-memory matcher ──────────────────────────
+//
+// `flow_matches_filter` compares a filter against the same fields with `str::contains`, so `%`
+// and `_` are ordinary characters there. SQLite `LIKE` gives them wildcard meaning, so an
+// unescaped filter returned a superset of what the live list showed.
+
+fn summary(id: &str, host: &str, start_time_ms: i64) -> relay_core_api::modification::FlowSummary {
+    relay_core_api::modification::FlowSummary {
+        id: id.to_string(),
+        method: "GET".to_string(),
+        url: format!("http://{host}/p"),
+        host: host.to_string(),
+        path: "/p".to_string(),
+        status: Some(200),
+        duration_ms: Some(1),
+        tags: vec![],
+        start_time_ms,
+        has_error: false,
+        is_websocket: false,
+        grpc_status: None,
+        grpc_message: None,
+    }
+}
+
+fn host_query(host: &str) -> relay_core_api::modification::FlowQuery {
+    relay_core_api::modification::FlowQuery {
+        host: Some(host.to_string()),
+        path_contains: None,
+        method: None,
+        status_min: None,
+        status_max: None,
+        has_error: None,
+        is_websocket: None,
+        limit: Some(50),
+        offset: Some(0),
+    }
+}
+
+async fn store_with(summaries: &[relay_core_api::modification::FlowSummary]) -> Store {
+    let store = Store::connect(&sqlite_url()).await.expect("connect failed");
+    store.init().await.expect("init failed");
+    for summary in summaries {
+        store
+            .upsert_flow_summary(summary)
+            .await
+            .expect("upsert summary failed");
+    }
+    store
+}
+
+#[tokio::test]
+async fn test_host_filter_matches_like_metacharacters_literally() {
+    let store = store_with(&[
+        summary("percent-literal", "a%b.example.com", 1000),
+        summary("percent-wildcard", "axxb.example.com", 2000),
+        summary("underscore-literal", "a_b.example.com", 3000),
+        summary("underscore-wildcard", "axb.example.com", 4000),
+        summary("backslash-literal", "a\\b.example.com", 5000),
+    ])
+    .await;
+
+    for (filter, expected) in [
+        ("a%b.example.com", "percent-literal"),
+        ("a_b.example.com", "underscore-literal"),
+        ("a\\b.example.com", "backslash-literal"),
+    ] {
+        let page = store
+            .query_flow_summaries(&host_query(filter))
+            .await
+            .expect("query failed");
+        let ids: Vec<&str> = page.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![expected],
+            "filter {filter:?} must be a literal substring match, not a LIKE pattern"
+        );
+    }
+
+    // A substring of the literal host still matches.
+    let page = store
+        .query_flow_summaries(&host_query("%b.example"))
+        .await
+        .expect("query failed");
+    assert_eq!(
+        page.len(),
+        1,
+        "a filter with wildcards is still a substring"
+    );
+    assert_eq!(page[0].id, "percent-literal");
+}
+
+#[tokio::test]
+async fn test_equal_start_times_keep_a_stable_capture_order() {
+    let store = store_with(&[
+        summary("first", "a.example.com", 7000),
+        summary("second", "a.example.com", 7000),
+        summary("third", "a.example.com", 7000),
+    ])
+    .await;
+
+    let ids: Vec<String> = store
+        .query_flow_summaries(&host_query("a.example.com"))
+        .await
+        .expect("query failed")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["first", "second", "third"],
+        "equal start times must fall back to capture order instead of an arbitrary one"
+    );
+
+    // Paging over a tie group must neither drop nor repeat a row.
+    let mut paged = Vec::new();
+    for offset in [0, 1, 2] {
+        let mut query = host_query("a.example.com");
+        query.limit = Some(1);
+        query.offset = Some(offset);
+        let page = store
+            .query_flow_summaries(&query)
+            .await
+            .expect("paged query failed");
+        assert_eq!(page.len(), 1, "offset {offset} must still return a row");
+        paged.push(page[0].id.clone());
+    }
+    assert_eq!(paged, vec!["first", "second", "third"]);
+}

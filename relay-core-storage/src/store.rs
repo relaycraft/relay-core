@@ -12,6 +12,21 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Escape the `LIKE` metacharacters of a substring filter, for use with `ESCAPE '\'`.
+///
+/// Filters are literal substrings everywhere else (`str::contains` in `flow_matches_filter`), so
+/// a `%` or `_` typed into a search box has to match itself rather than act as a wildcard.
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 /// Current on-disk schema version. Bump this and add an arm to `apply_migration` together.
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -324,7 +339,7 @@ impl Store {
 
             let deleted = sqlx::query(
                 "DELETE FROM flow_summaries WHERE id NOT IN (
-                     SELECT id FROM flow_summaries ORDER BY start_time_ms DESC LIMIT ?
+                     SELECT id FROM flow_summaries ORDER BY start_time_ms DESC, rowid ASC LIMIT ?
                  );",
             )
             .bind(max_flows as i64)
@@ -553,22 +568,29 @@ impl Store {
     pub async fn query_flow_summaries(&self, query: &FlowQuery) -> Result<Vec<FlowSummary>> {
         let limit = query.limit.unwrap_or(50).clamp(1, 200) as i64;
         let offset = query.offset.unwrap_or(0) as i64;
+        // `LIKE` would read `%` and `_` out of the filter as wildcards, while the in-memory
+        // matcher (`flow_matches_filter`) treats them as ordinary characters. Escape them so a
+        // stored query returns exactly the rows the live list shows.
+        let host = query.host.as_deref().map(escape_like);
+        let path_contains = query.path_contains.as_deref().map(escape_like);
         let rows = sqlx::query(
             "SELECT content
              FROM flow_summaries
-             WHERE (?1 IS NULL OR host LIKE '%' || ?1 || '%')
-               AND (?2 IS NULL OR path LIKE '%' || ?2 || '%')
+             WHERE (?1 IS NULL OR host LIKE '%' || ?1 || '%' ESCAPE '\\')
+               AND (?2 IS NULL OR path LIKE '%' || ?2 || '%' ESCAPE '\\')
                AND (?3 IS NULL OR lower(method) = lower(?3))
                AND (?4 IS NULL OR status >= ?4)
                AND (?5 IS NULL OR status <= ?5)
                AND (?6 IS NULL OR has_error = ?6)
                AND (?7 IS NULL OR is_websocket = ?7)
-             ORDER BY start_time_ms DESC
+             -- `rowid` breaks ties: equal `start_time_ms` values keep capture order, so paging
+             -- over a tie group neither drops nor repeats a row.
+             ORDER BY start_time_ms DESC, rowid ASC
              LIMIT ?8
              OFFSET ?9",
         )
-        .bind(query.host.as_deref())
-        .bind(query.path_contains.as_deref())
+        .bind(host.as_deref())
+        .bind(path_contains.as_deref())
         .bind(query.method.as_deref())
         .bind(query.status_min.map(i64::from))
         .bind(query.status_max.map(i64::from))
