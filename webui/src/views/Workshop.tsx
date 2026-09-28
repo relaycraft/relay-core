@@ -20,18 +20,15 @@ export default function WorkshopView() {
   const [modResHeaders, setModResHeaders] = createSignal('');
   const [modResBody, setModResBody] = createSignal('');
 
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-
   createEffect(() => {
-    if (store.state.activeView === 'workshop') {
-      pollIntercepts();
-      pollTimer = setInterval(pollIntercepts, 1000);
-    } else {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-    }
+    if (store.state.activeView !== 'workshop') return;
+    void pollIntercepts();
+    const timer = setInterval(() => void pollIntercepts(), 1000);
+    // Clearing the timer belongs to the effect, not to the other branch of an `if`. Switching views
+    // unmounts this component (`Layout` renders views with `&&`), which disposes the effect without
+    // ever running the else branch — so every visit to the Workshop left a poller behind, each one
+    // asking the engine for its pending intercepts once a second for the rest of the session.
+    onCleanup(() => clearInterval(timer));
   });
 
   async function pollIntercepts() {

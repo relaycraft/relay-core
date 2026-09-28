@@ -1,5 +1,6 @@
-import { createSignal, createEffect, onCleanup } from 'solid-js';
+import { createSignal, createEffect } from 'solid-js';
 import { store } from '@/lib/store';
+import { createRateMeter } from '@/lib/rate';
 import { IconWarning } from '@/components/Icons';
 
 export default function StatusBar() {
@@ -9,25 +10,16 @@ export default function StatusBar() {
   const sseLagged = () => store.state.sseLagged;
 
   const [qps, setQps] = createSignal<number | null>(null);
-  let prevTotal = 0;
-  let prevAt = Date.now();
+  // The counter is a lifetime total, so the first reading is a baseline rather than a rate. See
+  // `lib/rate.ts` — this used to divide that total by the time since the page opened, and displayed a
+  // request rate that had never happened for the first interval.
+  const sampleRate = createRateMeter();
 
   createEffect(() => {
     const m = metrics();
     if (!m) return;
-    const now = Date.now();
-    const dt = (now - prevAt) / 1000;
-    if (dt >= 1) {
-      const rate = (m.proxy_http_request_total - prevTotal) / dt;
-      setQps(Math.max(0, Math.round(rate)));
-      prevTotal = m.proxy_http_request_total;
-      prevAt = now;
-    }
-  });
-
-  onCleanup(() => {
-    prevTotal = 0;
-    prevAt = Date.now();
+    const rate = sampleRate(m.proxy_http_request_total, Date.now());
+    if (rate != null) setQps(rate);
   });
 
   return (

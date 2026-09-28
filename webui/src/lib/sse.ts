@@ -11,7 +11,10 @@ export type SseEvent =
   | { type: 'lifecycle'; data: CoreStatusSnapshot }
   | { type: 'lagged'; data: string }
   | { type: 'audit-lagged'; data: string }
-  | { type: 'connected' };
+  | { type: 'connected' }
+  /* The stream dropped. Reported because the browser hides it otherwise: `onerror` fires, the
+     connection is retried, and everything downstream keeps believing the last `connected`. */
+  | { type: 'disconnected' };
 
 export type SseEventHandler = (event: SseEvent) => void;
 
@@ -100,6 +103,10 @@ export function connectSse(handler: SseEventHandler, options?: SseConnectOptions
       if (stopped) return;
       es.close();
       eventSource = null;
+      // Nothing downstream can see a stream that stopped: `sseConnected` stayed true, so the status
+      // bar showed a healthy SSE dot and an empty flow list blamed the proxy for a browser that was
+      // no longer listening.
+      handler({ type: 'disconnected' });
       reconnectTimer = setTimeout(connect, 2000);
     };
   }

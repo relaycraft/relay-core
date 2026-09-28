@@ -1,36 +1,14 @@
 import { onMount, onCleanup } from 'solid-js';
 import { connectSse } from '@/lib/sse';
 import { flowToSummary } from '@/lib/flowSummary';
+import { createFlowBatcher } from '@/lib/flowQueue';
 import { store } from '@/lib/store';
 import { searchFlows, getMetrics, getStatus, listRules, listIntercepts } from '@/lib/api';
-import type { Flow } from '@/types/api';
 import Layout from '@/components/Layout';
-
-const MAX_UPSERTS_PER_FRAME = 100;
 
 export default function App() {
   let disconnectSse: (() => void) | null = null;
   let metricsTimer: ReturnType<typeof setInterval> | null = null;
-  let pendingFlows: Flow[] = [];
-  let rafId: number | null = null;
-
-  function flushFlowBatch() {
-    rafId = null;
-    const batch = pendingFlows.splice(0, MAX_UPSERTS_PER_FRAME);
-    for (const flow of batch) {
-      store.upsertFlow(flowToSummary(flow));
-    }
-    if (pendingFlows.length > 0) {
-      rafId = requestAnimationFrame(flushFlowBatch);
-    }
-  }
-
-  function queueFlowUpdate(flow: Flow) {
-    pendingFlows.push(flow);
-    if (rafId === null) {
-      rafId = requestAnimationFrame(flushFlowBatch);
-    }
-  }
 
   async function fullSync() {
     try {
@@ -53,6 +31,16 @@ export default function App() {
     }
   }
 
+  /**
+   * Captures reach the list one frame at a time, and the queue is bounded (`lib/flowQueue.ts`): a
+   * background tab does not run frame callbacks, so it is the queue — not the frame — that decides
+   * how much memory a night of traffic costs.
+   */
+  const flows = createFlowBatcher({
+    apply: (flow) => store.upsertFlow(flowToSummary(flow)),
+    resync: () => void fullSync(),
+  });
+
   async function refreshMetrics() {
     try {
       const metrics = await getMetrics();
@@ -70,38 +58,43 @@ export default function App() {
           case 'connected':
             store.setState('sseConnected', true);
             break;
+          case 'disconnected':
+            store.setState('sseConnected', false);
+            break;
           case 'flow':
-            queueFlowUpdate(event.data);
+            flows.push(event.data);
+            // The same snapshot carries the response once it has been captured, so a flow the reader
+            // opened while it was in flight must be re-read — otherwise its pane never learns that it
+            // was answered.
+            store.notifyFlowChanged(event.data.id);
             break;
           case 'lifecycle':
             store.setState('status', event.data);
             break;
           case 'lagged':
             store.setState('sseLagged', (n) => n + 1);
-            pendingFlows = [];
-            if (rafId !== null) {
-              cancelAnimationFrame(rafId);
-              rafId = null;
-            }
+            // The dropped events are gone, so the queued snapshots are a partial list and the API is
+            // the authority from here.
+            flows.reset();
             fullSync();
             break;
           case 'http-body':
-            store.notifyHttpBody(event.data.flow_id);
+            store.notifyFlowChanged(event.data.flow_id);
             break;
           case 'response-trailers':
             store.applyGrpcTrailers(event.data.flow_id, event.data.trailers);
-            store.notifyHttpBody(event.data.flow_id);
+            store.notifyFlowChanged(event.data.flow_id);
             break;
           case 'stream-reset':
             store.markStreamReset(event.data.flow_id);
-            store.notifyHttpBody(event.data.flow_id);
+            store.notifyFlowChanged(event.data.flow_id);
             break;
           case 'body-budget-exceeded':
             store.markBodyBudgetExceeded(event.data.flow_id);
             break;
           case 'ws-message':
             if (store.state.selectedFlowId === event.data.flow_id) {
-              store.notifyHttpBody(event.data.flow_id);
+              store.notifyFlowChanged(event.data.flow_id);
             }
             break;
         }
@@ -113,7 +106,7 @@ export default function App() {
   onCleanup(() => {
     disconnectSse?.();
     if (metricsTimer) clearInterval(metricsTimer);
-    if (rafId !== null) cancelAnimationFrame(rafId);
+    flows.reset();
   });
 
   return <Layout />;
