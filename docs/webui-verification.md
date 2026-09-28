@@ -68,7 +68,19 @@ CDP_PORT=9333 ./scripts/ui-fixtures.sh  # 9222 被别人占着时（很常见，
 | 13 | 规则列表空态什么都不显示；`Mock` 是唯一的琥珀色实心按钮 | — | ✅ 空态 + 强调色 + 禁用态 |
 | 14 | 详情面板点 **`Trace` 标签页即"卡死"**，此后该面板任何标签点击都无反应 | 靶场此前只切 6 个**顶层**视图，从没点进 flow 详情的标签页；而炸的条件是服务端**省略字段** | ✅ 可选类型 + `flowTrace()` + `ErrorBoundary` |
 | 15 | flow 列表**顺序不稳定**：起始最新在上，刷新后最新掉到最下，再抓一条又回到最上 | 要"刷新"与"新捕获"两个来源**混在一起**才显现，单看任一来源都正常 | ✅ `syncFlows()` 独占排序规则 |
-| 16 | 同一请求**实时**显示 `/hello?r=11`，**刷新后**变成 `/hello` | 需要把同一条 flow 在刷新前后对比才看得出 | ⚠️ 未修复，见文末「待定」 |
+| 16 | 同一请求**实时**显示 `/hello?r=11`，**刷新后**变成 `/hello` | 需要把同一条 flow 在刷新前后对比才看得出 | ✅ 统一线上契约，见下文 |
+| 17 | 过滤框的语言**不是** TUI 那套：`status:` 语义、纯文本匹配范围、不可解析 token 的处理都不同 | 一个"能用就行"的实现看起来正常，只有和服务端逐条对比才暴露 | ✅ 逐条对齐 `parse_flow_filter` |
+| 18 | 详情面板**切换到另一条 flow 后仍显示上一条**（Headers/Payload/Timing/Messages） | 单看一条 flow 完全正常；要"选 A → 选 B"才显现 | ✅ props 改 thunk + accessor children |
+| 19 | 一条 flow 的**错误判定有三份实现**且互不一致（Tauri 恒 `false`；服务端少看 `close_reason`/gRPC） | 三处分别自测都通过；只有并排比较才发现 | ✅ 收敛到 `flow_is_error()` |
+| 20 | Tauri `FlowIndex.duration_ms` 用 `u64` 减法可**下溢回绕**成天文数字 | 需要一条 `end < start` 的 flow 才触发 | ✅ `.max(0)` + 回归测试 |
+| 21 | Workshop 页**每进一次泄漏一个 1 Hz 定时器** | 泄漏不改变任何一屏画面 | ✅ 移进 `createEffect` + `onCleanup` |
+| 22 | 状态栏 QPS 首次采样把 `prevTotal = 0` 当基线，开局打印一个假的高 QPS | 一闪而过 | ✅ 首帧只做基线 |
+| 23 | SSE 突发时待处理队列**无上限**（引擎抖动会堆内存） | 需要把流量打到超过一帧的处理能力 | ✅ 有界 + 溢出后重同步 |
+| 24 | **SSE 断线在界面上不可见**：空列表与"确实没抓到"长得一样 | 断线时界面"看起来正常" | ✅ `disconnected` 事件 + 空态文案 |
+| 25 | TS 类型**说谎**：`close_reason` 缺失、WebSocket 的 `closed` 写成 `open`、`FlowPage.total` 服务端根本没有 | 类型断言不会在运行时报警 | ✅ 按 serde 实际输出修正 |
+| 26 | 存储层 `host`/`path` 过滤把 `%`/`_` 当**通配符**，而在内存过滤里它们是普通字符 | 需要一个带 `%` 的过滤词才暴露 | ✅ `ESCAPE` + 转义 |
+| 27 | 相同 `start_time_ms` 的排序**不确定**，分页可能重复或漏行 | 值相同才触发，界面看着"就是有点乱" | ✅ `rowid` 兜底 |
+| 28 | 选了 **Payload 的视图（JSON/HEX/TEXT）后换一条 flow，视图不重置**：文本视图去解码二进制 body | 两种渲染都"看着正常"，差别只在选了哪一个 | ✅ 换行即重置，靶场新增 `[payload view]` |
 
 ## 卡死与顺序：两个只有真实点击才暴露的缺陷（#14 / #15，已修复）
 
@@ -139,13 +151,17 @@ signal 已经写入、memo/effect 却不再重新运行——**界面停在上�
 ### 于是把"只能人工点"的部分变成了常驻检查
 
 缺陷 #14/#15 都是**截图看不出来**的：卡死的那一屏拍下来完全正常，顺序翻转也只是一行行的位置。
-现在 `ui-snapshot.mjs` 除截图外还做四件事，任何一项失败都会**非零退出**（`ui-fixtures.sh` 随之停下）：
+现在 `ui-snapshot.mjs` 除截图外还做五件事，任何一项失败都会**非零退出**（`ui-fixtures.sh` 随之停下）：
 
 - **`[detail tabs]`**：逐个点开详情面板的标签页，同时读**两个东西**——标签条说哪个是打开的、下面的内容区**实际渲染了什么**。
   只读前者会漏掉这个 bug（卡死时高亮是**对的**），只读后者说不清是"没点动"还是"本来就一样"。
   两条判据：内容区与上一个标签页**逐字相同**（没有兜底时更新队列已死的表现），
   或内容区出现**兜底文案**（有兜底时异常被挡在这里，而它拍进截图里也只是一段普通文字）。
 - **`[flow order]`**：把 DOM 里画出来的行与 API 那一页（新→旧）**逐行对比**，这是 #15 的直接回归检查。
+- **`[live vs refreshed]`**：把**同时**来自"实时 SSE"和"刷新后的 API 页"的行**逐行比签名**，
+  这是 #16 的直接回归检查——**唯一能把"同一行的两种来源"摆在一起**的地方。
+- **`[payload view]`**：在 JSON body 上故意选 TEXT，再选一条二进制 flow，读**视图切换器高亮的是哪一个**
+  （必须回到 content-type 默认的 HEX），并复查"同一个选择内用户的手选仍然被尊重"——#28 的回归检查。
 - **`[still alive]`**：切换视图前后读 `body.innerText`，**文本没变就是更新队列已经死了**——这才是用户说的"卡死"。
 - **`[page errors]`**：收集 `Runtime.exceptionThrown`，**任何未捕获异常都算缺陷**。
   这一条是根治性的：此前靶场一个异常都不收，所以一个"每次渲染都在抛错"的页面照样能产出一整套干净的截图。
@@ -168,15 +184,143 @@ FAIL Trace: the view threw and was contained — pane says "This view could not 
 `[page errors]`（0 条）**单独并不能**发现这个 bug——真正抓住它的是"内容区与上一个标签页逐字相同"这条判据；
 而兜底文案本身也成了新的信号（检查项里显式匹配它）。
 
-## 待定：#16 查询串在刷新后消失（未修复）
+## #16 查询串在刷新后消失（已修复）——这是决策，不是补丁
 
 服务端 `FlowSummary.path` 取的是 `url.path()`（**不含查询串**），客户端的实时摘要 `flowToSummary` 用的却是
 `pathname + search`。于是同一请求：**实时显示 `/hello?r=11`，刷新一次变成 `/hello`。**
 
 影响面不只是显示——客户端的 flow 过滤也在比这个字段，所以刷新会让一条 flow"换个名字"。
 
-**没有顺手改**，因为要改的不是一行：得先定 `FlowSummary.path` 的线上契约（是"路径"还是"路径+查询"），
-它会牵动 Tauri / MCP / HAR 导出与各自的测试。**这是需要决策的事，不是需要补丁的事。**
+### 决策：改客户端，不改线上契约
+
+先查了**谁在用 `host` / `path`**，结论是所有人用的都是同一个定义——**没有任何一处**把查询串算进 `path`：
+
+| 消费者 | 用的什么 |
+|---|---|
+| 策略 / 规则匹配 | `host_str()` / `path()` |
+| `flow_query` 的 `host:` / `path:` | `path()` 上的**子串**约束 |
+| 存储层 | `path` 列的 `LIKE`（现已转义，见 #26） |
+| MCP（`relay-core-probe` 的 `path_contains`） | 同一个 `FlowQuery.path_contains`，所以**连转义一起受益** |
+| HAR 导出（`relay-core-api/src/har.rs`） | 条目 URL 取 `request.url.to_string()`（**完整含查询串**），`path()`/`query()` 只用来算 `headersSize` 的字节数 |
+| Tauri 列表/详情 | `url.path()` |
+| CLI / TUI | `display_path()` 同样只画 `path()`，有查询串时**只多打一个 `?` 提示**（列宽不够） |
+
+真正的线上契约因此是：
+
+| 字段 | 含义 |
+|---|---|
+| `host` | `url.host_str()`——**不含端口** |
+| `path` | `url.path()`——**不含查询串** |
+| `url` | 完整 URL |
+
+于是让客户端**照做**，而不是让服务端跟着客户端的习惯改（那会牵动 Tauri / MCP / HAR 导出及其测试）。
+列表行显示的目标串仍带端口与查询串，但它**从 `url` 派生**，不再借 `host`/`path` 之手——
+TUI 早就是这么做的，只是它把查询串折成了一个 `?`。
+
+### 代价（写在这里，免得下一个人再当 bug 修一遍）
+
+- 直接在过滤框里搜 `?marker=47` **匹配不到**——`path` 里没有查询串。TUI 一直如此，现在两端一致了。
+- 原始 L4（`Tcp`/`Udp`/`Quic`）没有 HTTP `url`，因此**没有可显示的目标串**；这与刷新后完全一致
+  （详情面板仍显示 `server_host`/`sni`）。
+- `host` 不含端口 ⇒ 以前"实时"那一列显示 `127.0.0.1:18090`、刷新后变成 `127.0.0.1`，
+  正是 #16 的另一半症状，一并消失。
+- 行里显示的完整 URL 仍在（`url` 字段），详情面板与 HAR 导出也都用它，**信息没有丢，只是归位**。
+
+### 验证
+
+靶场新增 **`[live vs refreshed]`**：把**同时**存在于"实时推送"和"刷新后的 API 页"里的行**逐行比对签名**
+（时间、方法、状态、目标串、徽章），任何差异都失败。它抓到的原始证据是：
+
+```
+live:      02:48:27 | GET | 200 | 127.0.0.1:18090/tick-47?marker=47
+refreshed: 02:48:27 | GET | 200 | 127.0.0.1/tick-47
+```
+
+修复后：
+
+```
+[live vs refreshed] 33 row(s) drawn twice (39 live, 39 from the API)
+  ok — every row renders the same live and after a refresh
+```
+
+`duration_ms` **故意排除**在签名之外：一条仍在传输中的 flow 在两种渲染里合法地一个有一个没有。
+
+## 这一轮顺带修掉的：同一个 bug 的多个副本
+
+修 #16 的过程中发现，**"同一个值被推导多次"**这个病根不止一处，于是把能找到的都收敛了。
+
+### 错误判定曾有三份实现（#19）
+
+一条 flow "算不算错"被写了三遍，而且**三遍都不一样**：
+
+| 位置 | 规则 | 问题 |
+|---|---|---|
+| `webui` 实时摘要 | 状态 ≥500、`error` 标签、`stream-reset`、`close_reason`、gRPC ≠ 0 | 最全 |
+| `relay-core-runtime` 摘要 | 只看状态 ≥500 与 `error` 标签 | **少看** `close_reason`/gRPC |
+| `relay-core-tauri` FlowIndex | 硬编码 `false` | **永远是"没错"** |
+
+服务端的 `has_error` 会**存进 SQLite 并参与服务端过滤**，所以这不只是徽章画错：**同一条 flow 在实时列表里
+可能被 `err` 筛出来，刷新后消失**。
+
+修法：`relay-core-api::flow::flow_is_error(&Flow)` 成为唯一规则——实时摘要、`err` 过滤 token、服务端摘要、
+Tauri 索引**四处共用**；`flow_has_error` 删除。客户端 `flowIsError()` 与它逐条对齐（含 `close_reason?.reason === 'reset'`）。
+
+### 过滤语言曾是"另一个实现"（#17）
+
+设计文档 §5.1 写明过滤框**复用 TUI 的 `parse_flow_filter` 语法**，但客户端实现是另写的，细节全错：
+`status:404` 的比较方向、`400-499` 区间、`host:`/`path:` 的分工、不可解析 token 该"无约束"还是"不匹配"、
+纯文本 token 该匹配哪些字段。现在 `webui/src/lib/flowFilter.ts` 与 `flow_query.rs` 逐条对齐，
+并且**两侧各有测试**（Rust 侧新增 7 条镜像测试，专门覆盖最容易写错的边界：区间、上溢饱和、无状态行、空值 token）。
+
+### 其他"会撒谎的东西"
+
+- **TS 类型**（#25）：`Flow.close_reason` 类型里干脆没有（serde 是内部标签 `{"reason":"reset"}`），
+  WebSocket 层把 `closed` 写成了 `open`，`FlowPage.total` 服务端**从不返回**。类型是给下一个人看的文档，
+  说谎的类型比没有类型更贵。
+- **存储层的过滤**（#26）：`host LIKE '%' || ?1 || '%'` 把用户输入的 `%`/`_` 当通配符，
+  于是"存储查询"返回的**多于**"内存过滤"选中的。已加 `ESCAPE '\'` 与转义函数。
+- **相同时间戳的排序**（#27）：`ORDER BY start_time_ms DESC` 在值相同时顺序未定义，分页会漏行/重复。
+  加 `rowid` 兜底；保留策略用同一顺序，于是"留下的恰好是列表最上面那些"。
+
+### 界面侧的"不响应"（#18 / #21 / #22 / #23 / #24）
+
+这一组都是 Solid 的直接后果，值得单独记：
+
+- **组件体只执行一次**，解构出来的 props 是**快照**。`HeadersView` 等直接 `const { headers } = props.flow…`，
+  于是**换一条 flow 后仍渲染上一条**。改成 thunk + accessor children（`<Show>{(body) => …}`），
+  非 keyed 的 `<Show>` 才会随值重建。
+- **`else` 分支不会在卸载时执行**：Workshop 的轮询定时器写在 `createEffect` 之外，`onCleanup` 从不触发，
+  **每访问一次泄漏一个 1 Hz 定时器**。
+- **首次采样不能当变化**：状态栏把 `prevTotal = 0` 当基线，开局第一个数就是一个假的高 QPS。
+- **无上限的队列**：SSE 突发时 `pendingFlows` 无界增长；现在有界（1000），溢出丢最旧并触发一次重同步。
+- **断线要看得见**：`onerror` 只重连不报状态，于是"没数据"和"断了"长得一样。现在有 `disconnected` 事件，
+  空态明说"Not receiving flow events — reconnecting…"。
+- **选择变了，属于上一个选择的状态就该清掉**（#28）：Payload 的视图（JSON/HEX/TEXT）是一次"关于这个 body"的
+  表态，默认值本来按 content-type 推导（**"图片不要用只能打印乱码的 JSON 视图打开"** 就是它的注释写的），
+  但用户手选的值会跨选择留下——于是"JSON 里点 TEXT → 选一条二进制"就把字节按 UTF-8 解码了，
+  下面还挂着一句"这是二进制，请用 HEX"。
+
+  **这一条同时验证了检查项本身**：把重置那行**临时注释掉**重跑靶场，`[payload view]` 立刻报
+
+  ```
+  [payload view] picked TEXT on a JSON body, then selected a binary one: switcher says TEXT
+    FAIL the payload view stayed on TEXT after selecting another flow; a binary body must open on HEX,
+         its content-type default
+  [failed] 1 check(s) and 0 uncaught error(s)
+  ```
+
+  并**非零退出**（`HARNESS_EXIT=1`）；恢复那行后同一靶场全绿。**一个从未失败过的检查，不算检查。**
+
+## 靶场自身的第 6 次失败（虚拟列表）
+
+`[live vs refreshed]` 全绿之后，脚本还是退出了：`no flow row containing "/png"`。
+
+原因不在 UI：靶场的 tick 流量跑到 200 条，flow 列表**是虚拟化的**——行只在可见范围内才在 DOM 里。
+老写法（挑不在屏幕上的行）只在捕获量小的时候碰巧成立，**流量一多就静默失效**。
+现在先**用过滤框把目标行筛出来**再点（真实 `input` 事件，不是改 value），点完清空。
+失败信息也改成"筛完剩 N 行，没有一行包含它"——**工具错误与 UI 缺陷必须能分辨**。
+
+教训与前面几条同源：**一个依赖环境规模才成立的检查，会在某天安静地不再检查任何东西。**
 
 ## 方法论上的提醒
 
