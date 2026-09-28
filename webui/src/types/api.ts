@@ -327,7 +327,8 @@ export interface RedactionPolicy {
 export interface UpstreamProxyConfig {
   proxy_url: string;
   auth?: { username: string; password?: string };
-  bypass_hosts: string[];
+  /** Omitted when empty, like every other `Vec` in the API (`skip_serializing_if`). */
+  bypass_hosts?: string[];
   fail_open: boolean;
 }
 
@@ -336,7 +337,8 @@ export interface ProxyPolicy {
   transparent_enabled: boolean;
   quic_mode: string;
   redaction: RedactionPolicy;
-  upstream: UpstreamProxyConfig | null;
+  /** Omitted — not `null` — when no upstream proxy is configured, so read it with `?.`. */
+  upstream?: UpstreamProxyConfig;
   max_body_size: number;
   rule_body_inspect_budget: number;
   request_timeout_ms: number;
