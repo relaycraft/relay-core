@@ -52,20 +52,55 @@ export function createAppStore() {
           s.flowOrder.unshift(summary.id);
         }
         s.flows.set(summary.id, summary);
-
-        while (s.flowOrder.length > MAX_FLOWS) {
-          let evicted = false;
-          for (let i = s.flowOrder.length - 1; i >= 0 && s.flowOrder.length > MAX_FLOWS; i--) {
-            const id = s.flowOrder[i];
-            if (id === s.selectedFlowId) continue;
-            s.flowOrder.splice(i, 1);
-            s.flows.delete(id);
-            evicted = true;
-          }
-          if (!evicted) break;
-        }
+        evictOverflow(s);
       }),
     );
+  }
+
+  /**
+   * Replace the list with a page from the API, keeping the one ordering rule the list has: index 0
+   * is the newest capture.
+   *
+   * The order is computed here rather than inherited from the page. Applying a newest-first page one
+   * flow at a time through `upsertFlow` put each one at the *front*, so a refresh reversed the whole
+   * list — the newest flow ended up at the bottom, and the next live capture jumped back to the top.
+   * Sorting by capture time makes both paths agree, and it also keeps a flow that arrived while the
+   * page was in flight instead of dropping it.
+   */
+  function syncFlows(summaries: FlowSummary[]) {
+    setState(
+      produce((s) => {
+        const known = new Map(s.flows);
+        for (const summary of summaries) known.set(summary.id, summary);
+
+        const newestFirst = [...known.values()].sort(
+          (a, b) => b.start_time_ms - a.start_time_ms,
+        );
+
+        s.flows = new Map();
+        s.flowOrder = [];
+        for (const summary of newestFirst) {
+          s.flows.set(summary.id, summary);
+          s.flowOrder.push(summary.id);
+        }
+        evictOverflow(s);
+      }),
+    );
+  }
+
+  /** Keep the newest `MAX_FLOWS`, never evicting the flow the reader has open. */
+  function evictOverflow(s: AppState) {
+    while (s.flowOrder.length > MAX_FLOWS) {
+      let evicted = false;
+      for (let i = s.flowOrder.length - 1; i >= 0 && s.flowOrder.length > MAX_FLOWS; i--) {
+        const id = s.flowOrder[i];
+        if (id === s.selectedFlowId) continue;
+        s.flowOrder.splice(i, 1);
+        s.flows.delete(id);
+        evicted = true;
+      }
+      if (!evicted) break;
+    }
   }
 
   function clearFlows() {
@@ -147,6 +182,7 @@ export function createAppStore() {
     state,
     setState,
     upsertFlow,
+    syncFlows,
     clearFlows,
     setActiveView,
     selectFlow,

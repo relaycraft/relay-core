@@ -41,15 +41,13 @@ export default function App() {
         listRules(),
         listIntercepts(),
       ]);
-      store.setState('flows', new Map());
-      store.setState('flowOrder', []);
-      for (const f of page.items) {
-        store.upsertFlow(f);
-      }
       store.setState('metrics', metrics);
       store.setState('status', status);
       store.setState('rules', rules);
       store.setState('intercepts', interceptSnapshot.items ?? []);
+      // The list is replaced through the store so the ordering rule lives in one place: the page
+      // arrives newest first, but it must not be *applied* one flow at a time, which reversed it.
+      store.syncFlows(page.items);
     } catch {
       // API not available yet — retry later
     }
