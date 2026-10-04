@@ -42,6 +42,8 @@ http.response.body = { encoding: "utf-8", content: "rewritten", size: 9 };
 
 `headers` is an array of `[name, value]` pairs. `request.body` and `response.body` are `{ encoding, content, size }` or null.
 
+A gRPC body (content type `application/grpc`, `+proto` or `+json`) also carries `grpc`: `{ messages: [{ index, length, compressed, text }], unparsed_bytes }`. `text` is set only when the uncompressed payload is UTF-8 and within 4096 bytes; the raw bytes stay in `content` (base64), so read `content` to rewrite and `grpc` to inspect. `application/grpc-web` is not framed.
+
 `content` is plaintext unless `encoding` is `"base64"`, in which case `content` is standard base64. `atob` and `btoa` are the browser Latin-1 globals (`btoa("hi") === "aGk="`). `relay.base64.encode` and `relay.base64.decode` are UTF-8. They are not substitutes for `atob` and `btoa`.
 
 A WebSocket flow uses `flow.layer.data.handshake_request`, not `flow.layer.data.request`.

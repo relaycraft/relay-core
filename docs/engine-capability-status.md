@@ -105,7 +105,7 @@
 
 1. **CA 私钥以 `0644` 落盘。** `relay-core-lib/src/tls/ca.rs:247-251` 用普通 `fs::write`，工作区内**没有任何** `set_permissions`；本机实测 `ca_key.pem` 为 `-rw-r--r--`（仓库根与 `relay-core-cli/` 各一份）。
    好消息：这两个文件**未被 git 跟踪**且被 `.gitignore:80` 覆盖，因此没有泄漏进版本库；坏消息是同一台机器上的任何用户都能读走签发任意站点的能力。
-2. **脱敏默认关闭。** `RedactionPolicy::default()` 为 `enabled:false` + `redact_bodies:false`（`relay-core-api/src/policy.rs:126-131`）⇒ `Authorization` / `Cookie` / body 默认**原样写入 SQLite 并原样由 API 返回**。脱敏链路本身是完整的（落盘前、输出前、快照路径都过），但默认值使 §16 的隐私条目在默认配置下不成立。
+2. **脱敏默认开启（header/query），body 仍为 opt-in。** `RedactionPolicy::default()` 现为 `enabled:true` + `redact_bodies:false`（`relay-core-api/src/policy.rs:128-144`）⇒ `Authorization` / `Cookie` / 敏感 query 默认在落盘前与输出前被清除；`redact_bodies` 关闭时 body 仍原样存储（改 body 会改变规则/脚本看到的载荷，因此留给操作者显式开启）。
 3. **依赖漏洞门禁（本次新增后暴露出一批真实漏洞）。** 此前无 `deny.toml`、无 `cargo-deny`/`cargo-audit` 步骤、无 dependabot。
    现在 CI 有 `audit` job：**licences 与 bans 为阻塞门禁**（已实测通过），advisories 先作为**追踪项**（见下）。
 

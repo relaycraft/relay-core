@@ -70,6 +70,21 @@ pub fn rule_api_guide() -> String {
             &serde_json::to_string(&action).unwrap(),
         );
     }
+    out.push_str(
+        "\n## What a captured flow records\n\n\
+         A flow records the result, not only the rule that fired. Two fields an agent commonly \
+         needs when a rule did not behave as expected:\n\n\
+         - `body.grpc` — present on a `request.body` or `response.body` whose content type is \
+           `application/grpc` (also `application/grpc+proto` / `+json`). It is \
+           `{ \"messages\": [{ \"index\", \"length\", \"compressed\", \"text\"? }], \"unparsed_bytes\" }`. \
+           `text` is set only when the uncompressed payload is UTF-8 and within 4096 bytes; protobuf \
+           payloads stay binary. `application/grpc-web` is deliberately not framed.\n\
+         - `tags` — `rule_skipped:streaming_body` means a full-body rule was skipped because the \
+           response streamed (no content length), so `Inspect` never ran. `rule_skipped:body_truncated` \
+           means the body exceeded the rule inspection budget. `budget-exceeded` (with a \
+           `:client-to-server` / `:server-to-client` variant) and `stream-reset` mark the same \
+           conditions on the flow.\n\n",
+    );
     out
 }
 
@@ -346,6 +361,21 @@ mod tests {
         assert!(stages.contains("RequestHeaders"));
         assert!(!stages.contains("ResponseHeaders"));
         assert!(!stages.contains("ResponseBody"));
+    }
+
+    /// The gRPC framing and the skip tags exist on every captured flow but live nowhere else an
+    /// agent reads. If they drop out of the guide they become undiscoverable again.
+    #[test]
+    fn the_guide_names_the_grpc_body_and_skip_tags() {
+        let guide = rule_api_guide();
+        for phrase in [
+            "body.grpc",
+            "unparsed_bytes",
+            "rule_skipped:streaming_body",
+            "rule_skipped:body_truncated",
+        ] {
+            assert!(guide.contains(phrase), "the guide must document {phrase}");
+        }
     }
 
     #[test]
