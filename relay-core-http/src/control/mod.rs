@@ -6,6 +6,7 @@ pub mod bootstrap;
 pub mod client;
 pub mod config;
 pub mod manifest;
+pub mod policy_store;
 
 /// Default port of the daemon's control API (and of the Web UI it can serve).
 pub const DEFAULT_API_PORT: u16 = 8082;
@@ -26,3 +27,4 @@ pub use manifest::{
     MANIFEST_FILE_NAME, daemon_lock_path, discover, load, manifest_path, process_alive,
     remove_manifest, write_manifest,
 };
+pub use policy_store::{POLICY_FILE_NAME, PolicyStoreError, load_policy, policy_path, save_policy};

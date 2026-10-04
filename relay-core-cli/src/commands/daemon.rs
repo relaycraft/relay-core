@@ -276,6 +276,11 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
 
     let state = Arc::new(CoreState::new(db_url(&options, &data_dir)).await);
 
+    // Policy is runtime state the user tunes over HTTP/MCP. Persist it so a restart cannot silently
+    // revert `body_observation`, redaction or upstream to the built-in default.
+    spawn_policy_persister(&state, data_dir.clone());
+    let had_persisted_policy = apply_persisted_policy(&state, &data_dir)?;
+
     let controller = Arc::new(match options.save_stream.clone() {
         Some(path) => CoreProxyController::with_save_stream(state.clone(), path)
             .map_err(anyhow::Error::msg)?,
@@ -299,7 +304,12 @@ pub async fn start(options: DaemonOptions) -> Result<RunningDaemon> {
     )
     .await?;
 
-    exclude_own_endpoints(&state, api_addr.port(), options.mcp_port);
+    exclude_own_endpoints(
+        &state,
+        api_addr.port(),
+        options.mcp_port,
+        had_persisted_policy,
+    );
 
     let mcp_port = serve_mcp_endpoint(&state, controller.clone(), options.mcp_port).await;
 
@@ -475,7 +485,12 @@ fn apply_startup_policy(state: &Arc<CoreState>, options: &DaemonOptions) -> Resu
 ///
 /// With the proxy configured system-wide, the control API and the Web UI would otherwise show up as
 /// user traffic — and an agent reading flows would see its own requests.
-fn exclude_own_endpoints(state: &Arc<CoreState>, api_port: u16, mcp_port: Option<u16>) {
+fn exclude_own_endpoints(
+    state: &Arc<CoreState>,
+    api_port: u16,
+    mcp_port: Option<u16>,
+    had_persisted_policy: bool,
+) {
     // The proxy port is added when the proxy actually binds, and removed when it stops. Writing
     // the configured default here hid a real service on 8080 after the proxy moved to another port.
     let mut exclude = vec![
@@ -491,12 +506,54 @@ fn exclude_own_endpoints(state: &Arc<CoreState>, api_port: u16, mcp_port: Option
     policy.capture_exclude = exclude;
     // The engine default keeps bodies off the live flow. This host is what CLI and MCP read, so it
     // asks for a bounded prefix while the body keeps streaming. Desktop still sets Full on its own.
-    policy.body_observation = relay_core_api::body_plan::BodyObservation::Prefixed;
+    // A persisted policy already states what the user chose — honor it, so a restart does not undo
+    // `body_observation = full`. The default only applies the first time, before any file exists.
+    if !had_persisted_policy {
+        policy.body_observation = relay_core_api::body_plan::BodyObservation::Prefixed;
+    }
     state.update_policy_from(
         relay_core_runtime::audit::AuditActor::Cli,
         "daemon.capture_exclude".to_string(),
         policy,
     );
+}
+
+/// Persist the policy whenever it changes, so the next daemon reads back what this one was told.
+///
+/// A task rather than a hook on each writer: HTTP, MCP and CLI all funnel through
+/// `CoreState::update_policy_from`, which replaces the `watch` value, so one subscriber covers every
+/// source and no future caller can forget to persist.
+fn spawn_policy_persister(state: &Arc<CoreState>, data_dir: PathBuf) {
+    let mut rx = state.policy_tx.subscribe();
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let policy = rx.borrow_and_update().clone();
+            if let Err(error) =
+                relay_core_http::control::policy_store::save_policy(&data_dir, &policy)
+            {
+                tracing::warn!(target: "relay_core_daemon", error = %error, "could not persist policy");
+            }
+        }
+    });
+}
+
+/// Load the policy a previous daemon wrote, applying it before startup flags.
+///
+/// Returns whether a file existed, which tells [`exclude_own_endpoints`] whether it may still apply
+/// the first-run `body_observation` default.
+fn apply_persisted_policy(state: &Arc<CoreState>, data_dir: &Path) -> Result<bool> {
+    match relay_core_http::control::policy_store::load_policy(data_dir) {
+        Ok(Some(policy)) => {
+            state.update_policy_from(
+                relay_core_runtime::audit::AuditActor::Cli,
+                "daemon.persisted_policy".to_string(),
+                policy,
+            );
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(error) => Err(anyhow::anyhow!(error.to_string())),
+    }
 }
 
 /// Load the rules file a host named, failing the daemon start when it cannot be used.
@@ -972,7 +1029,7 @@ mod tests {
             "the engine default stays off until this host declares otherwise"
         );
 
-        exclude_own_endpoints(&state, 18082, Some(18083));
+        exclude_own_endpoints(&state, 18082, Some(18083), false);
 
         let policy = state.policy_snapshot();
         assert_eq!(
@@ -991,6 +1048,29 @@ mod tests {
                 .iter()
                 .all(|host| host != "127.0.0.1:8080" && host != "localhost:8080"),
             "the proxy port is excluded only while the proxy is listening on it"
+        );
+    }
+
+    /// A policy loaded from disk states what the user chose. The host must recompute its own
+    /// capture-exclude list without resetting that choice — otherwise `body_observation = full`
+    /// silently reverts on every restart, which is the bug persistence exists to remove.
+    #[tokio::test]
+    async fn a_persisted_body_choice_survives_startup() {
+        let state = Arc::new(relay_core_runtime::CoreState::new(None).await);
+        let mut policy = state.policy_snapshot();
+        policy.body_observation = relay_core_api::body_plan::BodyObservation::Full;
+        state.update_policy_from(
+            relay_core_runtime::audit::AuditActor::Cli,
+            "test.persisted".to_string(),
+            policy,
+        );
+
+        exclude_own_endpoints(&state, 18082, Some(18083), true);
+
+        assert_eq!(
+            state.policy_snapshot().body_observation,
+            relay_core_api::body_plan::BodyObservation::Full,
+            "a persisted body_observation must not be overwritten by the first-run default"
         );
     }
 
