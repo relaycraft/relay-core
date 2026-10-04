@@ -278,7 +278,9 @@ fn concurrent_starts_converge_on_one_daemon() {
     let harness = Harness::new();
 
     // Two clients racing is the case a pid-file lock gets wrong, so it is tested with real
-    // processes rather than simulated.
+    // processes rather than simulated. A port the OS handed us can still be taken before either
+    // binds — an environment collision, not the race under test — so the race is repeated with
+    // fresh ports rather than reported as a product failure.
     let spawn = || {
         Command::new(CLI)
             .args([
@@ -297,27 +299,38 @@ fn concurrent_starts_converge_on_one_daemon() {
             .expect("spawning relay start")
     };
 
-    let first = spawn();
-    let second = spawn();
-    let first = first.wait_with_output().expect("first start");
-    let second = second.wait_with_output().expect("second start");
+    for attempt in 0..3 {
+        let first = spawn().wait_with_output().expect("first start");
+        let second = spawn().wait_with_output().expect("second start");
 
-    assert!(
-        first.status.success() && second.status.success(),
-        "both starts must succeed and converge:\n  first: {}\n  second: {}",
-        stderr(&first),
-        stderr(&second)
-    );
+        if first.status.success() && second.status.success() {
+            let status = harness.relay_json(&["status", "--json"]);
+            assert_eq!(
+                status["proxy"]["phase"],
+                "running",
+                "both clients asked for one proxy; the loser must not fail it (clients: {} / {})",
+                stderr(&first),
+                stderr(&second)
+            );
+            assert_eq!(status["proxy"]["port"], harness.proxy_port());
+            return;
+        }
 
-    let status = harness.relay_json(&["status", "--json"]);
-    assert_eq!(
-        status["proxy"]["phase"],
-        "running",
-        "both clients asked for one proxy; the loser must not fail it (clients: {} / {})",
-        stderr(&first),
-        stderr(&second)
-    );
-    assert_eq!(status["proxy"]["port"], harness.proxy_port());
+        let collision = stderr(&first).contains("Address already in use")
+            || stderr(&second).contains("Address already in use");
+        if attempt < 2 && collision {
+            let _ = harness.relay(&["shutdown"]);
+            harness.repick_ports();
+            continue;
+        }
+
+        panic!(
+            "both starts must succeed and converge:\n  first: {}\n  second: {}",
+            stderr(&first),
+            stderr(&second)
+        );
+    }
+    unreachable!("the loop returns or panics");
 }
 
 #[test]
@@ -416,70 +429,107 @@ fn the_daemon_serves_the_mcp_endpoint() {
 /// clients find it, and shutting the daemon down ends the foreground process.
 #[test]
 fn a_foreground_run_is_discoverable_and_stoppable() {
-    let harness = Harness::new();
-    let mcp_port = free_port();
+    // A foreground run binds ports the OS handed us, and under a parallel suite one can be taken
+    // between selection and bind — surfacing as `proxy.phase == "failed"` or an MCP endpoint that
+    // fell back to an ephemeral port. Retry with a fresh data directory and ports, the same way
+    // `relay start` does, instead of reporting an environment collision as a product failure.
+    let mut last_stderr = String::new();
+    for attempt in 0..3 {
+        let harness = Harness::new();
+        let mcp_port = unique_port();
+        let mcp_url = format!("http://127.0.0.1:{mcp_port}/mcp");
 
-    let mut child = Command::new(CLI)
-        .args([
-            "run",
-            "--listen",
-            &format!("127.0.0.1:{}", harness.proxy_port()),
-            "--api-port",
-            "0",
-            "--mcp-port",
-            &mcp_port.to_string(),
-        ])
-        .env("RELAY_DATA_DIR", harness.data_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawning relay run");
+        let mut child = Command::new(CLI)
+            .args([
+                "run",
+                "--listen",
+                &format!("127.0.0.1:{}", harness.proxy_port()),
+                "--api-port",
+                "0",
+                "--mcp-port",
+                &mcp_port.to_string(),
+            ])
+            .env("RELAY_DATA_DIR", harness.data_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawning relay run");
 
-    // Discovery is the property under test: `relay status` must find a foreground run, which the
-    // old `relay run` (no manifest) could never satisfy.
-    let status = match wait_for_status(&harness, Duration::from_secs(15)) {
-        Some(status) => status,
-        None => {
+        // Discovery is the property under test: `relay status` must find a foreground run, which the
+        // old `relay run` (no manifest) could never satisfy. Wait for the proxy to settle, not for
+        // the first status, whose phase is still `starting`.
+        let status = wait_for_proxy_settled(&harness, Duration::from_secs(15));
+        let ready = status.as_ref().is_some_and(|status| {
+            status["daemon"]["status"] == "running"
+                && status["proxy"]["phase"] == "running"
+                && status["mcp_url"] == mcp_url
+        });
+        if !ready {
             let _ = child.kill();
             let output = child.wait_with_output().expect("output");
+            last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if attempt < 2 {
+                continue;
+            }
             panic!(
-                "a foreground run must publish a discoverable daemon; stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
+                "a foreground run must publish a discoverable daemon with a running proxy; stderr:\n{last_stderr}"
             );
         }
-    };
 
-    assert_eq!(status["daemon"]["status"], "running");
-    assert_eq!(status["proxy"]["phase"], "running");
-    assert_eq!(status["proxy"]["port"], harness.proxy_port());
-    assert_eq!(
-        status["mcp_url"],
-        format!("http://127.0.0.1:{mcp_port}/mcp")
-    );
-    assert!(wait_for_listener(
-        harness.proxy_port(),
-        Duration::from_secs(5)
-    ));
+        let status = status.expect("ready implies a status");
+        assert_eq!(status["daemon"]["status"], "running");
+        assert_eq!(status["proxy"]["phase"], "running");
+        assert_eq!(status["proxy"]["port"], harness.proxy_port());
+        assert_eq!(status["mcp_url"], mcp_url);
+        assert!(wait_for_listener(
+            harness.proxy_port(),
+            Duration::from_secs(5)
+        ));
 
-    let shutdown = harness.relay(&["shutdown"]);
-    assert!(
-        shutdown.status.success(),
-        "shutdown failed: {}",
-        stderr(&shutdown)
-    );
+        let shutdown = harness.relay(&["shutdown"]);
+        assert!(
+            shutdown.status.success(),
+            "shutdown failed: {}",
+            stderr(&shutdown)
+        );
 
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(_) => break,
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                panic!("shutting the daemon down must end the foreground run");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            match child.try_wait().expect("try_wait") {
+                Some(_) => break,
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    panic!("shutting the daemon down must end the foreground run");
+                }
+                None => std::thread::sleep(Duration::from_millis(50)),
             }
-            None => std::thread::sleep(Duration::from_millis(50)),
         }
+        return;
     }
+}
+
+/// `relay status` until the proxy reaches a terminal phase (`running` or `failed`), or `None` when
+/// the deadline passes.
+///
+/// The first successful `status` says the daemon published its manifest, which can be before the
+/// proxy is bound; waiting for a settled phase is what distinguishes "still starting" from a real
+/// failure (used to decide whether a foreground-run port collision is worth retrying).
+fn wait_for_proxy_settled(harness: &Harness, timeout: Duration) -> Option<serde_json::Value> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let output = harness.relay(&["status", "--json"]);
+        if output.status.success()
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        {
+            match value["proxy"]["phase"].as_str() {
+                Some("running" | "failed") => return Some(value),
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
 }
 
 /// `relay status` until it succeeds, or `None` when the deadline passes.
