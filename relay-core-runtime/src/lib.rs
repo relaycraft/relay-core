@@ -3448,10 +3448,12 @@ mod tests {
         {
             let flow = sample_http_flow("api.example.com", &format!("/f{i}"), "GET", 200, ts);
             state.upsert_flow(Box::new(flow));
-            // Let the actor drain so the row is actually written before pruning.
-            sleep(Duration::from_millis(30)).await;
         }
-        sleep(Duration::from_millis(80)).await;
+        // `upsert_flow` queues the write and `prune_now` opens its own connection straight to
+        // SQLite, so the test must wait for the actor to finish. A round trip through the actor's
+        // own message queue is that barrier; a fixed sleep was only a heuristic and raced the
+        // prune — sometimes evicting nothing, sometimes leaving a late row behind.
+        let _ = state.get_metrics().await;
 
         let pruned = state.prune_now().await.expect("prune should report counts");
         assert!(
@@ -3485,9 +3487,10 @@ mod tests {
         {
             let flow = sample_http_flow("api.example.com", &format!("/p{i}"), "GET", 200, ts);
             state.upsert_flow(Box::new(flow));
-            sleep(Duration::from_millis(30)).await;
         }
-        sleep(Duration::from_millis(80)).await;
+        // Same barrier as `retention_evicts_persisted_flows_through_the_runtime`: wait for the actor
+        // to persist every queued flow before pruning on a separate connection.
+        let _ = state.get_metrics().await;
 
         // The host-facing path: one policy update, no direct call to the storage setter.
         // Age is left unset so this asserts the count bound, not the clock on the sample flows.
