@@ -134,10 +134,7 @@ mod tests {
         let policy = ProxyPolicy {
             upstream: Some(UpstreamProxyConfig {
                 proxy_url: "http://corp-proxy:8080".to_string(),
-                auth: Some(UpstreamAuth::new(
-                    "alice".to_string(),
-                    "s3cret".to_string(),
-                )),
+                auth: Some(UpstreamAuth::new("alice".to_string(), "s3cret".to_string())),
                 bypass_hosts: vec!["*.internal".to_string()],
                 fail_open: false,
             }),
@@ -148,7 +145,10 @@ mod tests {
 
         let raw = std::fs::read_to_string(policy_path(dir.path())).expect("read");
         assert!(!raw.contains("s3cret"), "the password must not reach disk");
-        assert!(!raw.contains("***"), "the placeholder must not be written either");
+        assert!(
+            !raw.contains("***"),
+            "the placeholder must not be written either"
+        );
 
         let loaded = load_policy(dir.path())
             .expect("load")
