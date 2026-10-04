@@ -433,7 +433,6 @@ fn a_foreground_run_is_discoverable_and_stoppable() {
     // between selection and bind — surfacing as `proxy.phase == "failed"` or an MCP endpoint that
     // fell back to an ephemeral port. Retry with a fresh data directory and ports, the same way
     // `relay start` does, instead of reporting an environment collision as a product failure.
-    let mut last_stderr = String::new();
     for attempt in 0..3 {
         let harness = Harness::new();
         let mcp_port = unique_port();
@@ -468,12 +467,12 @@ fn a_foreground_run_is_discoverable_and_stoppable() {
         if !ready {
             let _ = child.kill();
             let output = child.wait_with_output().expect("output");
-            last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
             if attempt < 2 {
                 continue;
             }
             panic!(
-                "a foreground run must publish a discoverable daemon with a running proxy; stderr:\n{last_stderr}"
+                "a foreground run must publish a discoverable daemon with a running proxy; stderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
             );
         }
 
@@ -521,24 +520,7 @@ fn wait_for_proxy_settled(harness: &Harness, timeout: Duration) -> Option<serde_
         let output = harness.relay(&["status", "--json"]);
         if output.status.success()
             && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        {
-            match value["proxy"]["phase"].as_str() {
-                Some("running" | "failed") => return Some(value),
-                _ => {}
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    None
-}
-
-/// `relay status` until it succeeds, or `None` when the deadline passes.
-fn wait_for_status(harness: &Harness, timeout: Duration) -> Option<serde_json::Value> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let output = harness.relay(&["status", "--json"]);
-        if output.status.success()
-            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            && let Some("running" | "failed") = value["proxy"]["phase"].as_str()
         {
             return Some(value);
         }
