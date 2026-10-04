@@ -3195,7 +3195,8 @@ mod tests {
             ));
         }
         state.upsert_flow(Box::new(flow.clone()));
-        sleep(Duration::from_millis(80)).await;
+        // Wait for the queued write; the precondition reads the row on a separate connection.
+        let _ = state.get_metrics().await;
 
         let store = relay_core_storage::store::Store::connect(&url)
             .await
@@ -3527,7 +3528,8 @@ mod tests {
         let state = CoreState::new(Some(url.clone())).await;
         let flow = sample_http_flow("api.example.com", "/keep", "GET", 200, 1_700_000_021_000);
         state.upsert_flow(Box::new(flow));
-        sleep(Duration::from_millis(80)).await;
+        // Wait for the queued write to land; the store is read on a separate connection below.
+        let _ = state.get_metrics().await;
 
         state.update_policy(ProxyPolicy {
             retention: relay_core_api::policy::RetentionPolicy::unbounded(),
@@ -3556,7 +3558,8 @@ mod tests {
 
         let flow = sample_http_flow("api.example.com", "/keep", "GET", 200, 1_700_000_020_000);
         state.upsert_flow(Box::new(flow));
-        sleep(Duration::from_millis(80)).await;
+        // Wait for the queued write to land; the store is read on a separate connection below.
+        let _ = state.get_metrics().await;
 
         assert!(
             state.prune_now().await.is_some(),
