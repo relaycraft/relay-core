@@ -386,6 +386,81 @@ async fn test_core_state_update_http_body_request_and_response() {
     );
 }
 
+/// A body captured while the exchange is open must survive the finished `Full` snapshot.
+///
+/// The proxy reports a tapped body as an incremental update, then sends the completed flow as a
+/// `Full` snapshot that does not carry that body (the tap wrote it to the store, not to the proxy's
+/// local copy). Replacing the stored flow wholesale erased the request body. It is visible on gRPC
+/// because the request body is captured before the response, so the final `Full` lands on top of
+/// it, while the response body arrives after the final `Full` and survives.
+#[tokio::test]
+async fn test_full_snapshot_after_body_update_keeps_the_body() {
+    let state = CoreState::new(None).await;
+    let mut flow = create_test_flow("http://example.com/pkg.Service/Method", "POST");
+    if let Layer::Http(http) = &mut flow.layer {
+        http.response = Some(HttpResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            version: "HTTP/2.0".to_string(),
+            headers: vec![],
+            cookies: vec![],
+            body: None,
+            trailers: vec![],
+            timing: ResponseTiming {
+                time_to_first_byte: None,
+                time_to_last_byte: None,
+                connect_time_ms: None,
+                ssl_time_ms: None,
+            },
+        });
+    }
+    let flow_id = flow.id.to_string();
+    state.upsert_flow(Box::new(flow.clone()));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    state.update_http_body(
+        flow_id.clone(),
+        BodyData {
+            encoding: "base64".to_string(),
+            content: "AAAAAAVfZ3JwYw==".to_string(),
+            size: 8,
+            grpc: Some(relay_core_api::grpc::GrpcBody {
+                messages: vec![relay_core_api::grpc::GrpcMessage {
+                    index: 0,
+                    length: 3,
+                    compressed: false,
+                    text: Some("req".to_string()),
+                }],
+                unparsed_bytes: 0,
+            }),
+        },
+        Direction::ClientToServer,
+    );
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // The proxy's final `Full` snapshot does not carry the tapped request body.
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let found = state
+        .get_flow(flow_id)
+        .await
+        .expect("flow should be available");
+    let Layer::Http(http) = found.layer else {
+        panic!("expected http flow");
+    };
+    let body = http
+        .request
+        .body
+        .expect("the captured request body must survive the finished snapshot");
+    assert_eq!(
+        body.grpc.expect("gRPC framing must survive").messages[0]
+            .text
+            .as_deref(),
+        Some("req")
+    );
+}
+
 #[tokio::test]
 async fn test_core_state_update_http_body_missing_flow_is_noop() {
     let state = CoreState::new(None).await;

@@ -111,8 +111,17 @@ impl FlowStoreActor {
             match msg {
                 FlowStoreMessage::UpsertFlow(flow) => {
                     self.total_processed += 1;
+                    let mut flow = *flow;
+                    // A tapped body is reported as an incremental update, but the finished exchange
+                    // arrives as a `Full` snapshot built from the proxy's local flow, which never
+                    // held that body. Replacing the stored flow wholesale would erase it — most
+                    // visibly the request body, since it is captured before the response and the
+                    // final snapshot therefore lands on top of it. Keep what the snapshot omits.
+                    if let Some(existing) = self.flows.peek(&flow.id.to_string()) {
+                        merge_incremental(existing, &mut flow);
+                    }
                     self.persist_flow(&flow).await;
-                    self.flows.put(flow.id.to_string(), *flow);
+                    self.flows.put(flow.id.to_string(), flow);
                 }
                 FlowStoreMessage::AppendWebSocketMessage { flow_id, message } => {
                     let updated = if let Some(flow) = self.flows.get_mut(&flow_id) {
@@ -246,6 +255,39 @@ impl FlowStoreActor {
                 }
             }
         }
+    }
+}
+
+/// Carry incremental fields from the stored flow into an incoming `Full` snapshot that omits them.
+///
+/// The proxy's `Full` snapshot is built from its local `Flow`, which does not hold bodies the
+/// streaming tap wrote straight to the store. Applying that snapshot verbatim erased them. Bodies
+/// and trailers are only ever *added* incrementally (a rule replacement is present on the proxy's
+/// local flow and therefore in the snapshot), so an omitted field means "not carried by this
+/// update", never "clear it".
+fn merge_incremental(existing: &Flow, incoming: &mut Flow) {
+    let (Layer::Http(existing_http), Layer::Http(incoming_http)) =
+        (&existing.layer, &mut incoming.layer)
+    else {
+        return;
+    };
+
+    if incoming_http.request.body.is_none() {
+        incoming_http.request.body = existing_http.request.body.clone();
+    }
+
+    let (Some(existing_res), Some(incoming_res)) = (
+        existing_http.response.as_ref(),
+        incoming_http.response.as_mut(),
+    ) else {
+        return;
+    };
+
+    if incoming_res.body.is_none() {
+        incoming_res.body = existing_res.body.clone();
+    }
+    if incoming_res.trailers.is_empty() {
+        incoming_res.trailers = existing_res.trailers.clone();
     }
 }
 
