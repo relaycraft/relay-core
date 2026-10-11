@@ -37,7 +37,7 @@
 | 能力面 | 成熟度 | 一句话现状 | 最大缺口 |
 |---|---|---|---|
 | §3 数据面与 Mutation Pipeline | **Partial** | 头/状态/body/编码的改写都真的到线路了，且失败与超预算有结构化原因 | 没有「显式 Mutation 类型」；`BodyObservation` 策略不是真正决定保留的开关 |
-| §4 Connection/Stream/Message 模型 | **Skeleton** | `Layer` 枚举可扩展，但**关系字段全缺** | `connection_id`/`parent_flow_id`/`stream_id`/`protocol_stack` 仓库内 0 命中 ⇒ CONNECT 与外层、H2 stream 归组不可能 |
+| §4 Connection/Stream/Message 模型 | **Partial**（2026-10-11 由 Skeleton 升） | `connection_id` / `parent_flow_id` / `protocol_stack` 已交付并有线路契约；CONNECT 现在是一条带 `connect` 标签的 Flow（记录但默认不进列表） | **`stream_id` 仍缺，且已判定不该造**：没有任何应用层代理实现它，hyper 也不暴露（证据见路线图 §4-1）；Message 级（WS frame 增量已有，SSE event 未做） |
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
 | §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手现在都可观测 | `permessage-deflate` **既不支持也不剥离也不降级**（静默破坏）；帧级修改无线路断言 |

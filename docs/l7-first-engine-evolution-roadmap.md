@@ -206,14 +206,32 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 ### 必做（M0）
 
 1. **增加兼容性的关系字段**
-   - `connection_id`
-   - `parent_flow_id`
-   - `stream_id`
-   - `protocol_stack`
-   - 均以 optional/backward-compatible 方式加入
+   - `connection_id` —— ✅ **已交付**（每次 accept 一个 id；同一连接上的所有 exchange 共享）
+   - `parent_flow_id` —— ✅ **已交付**（隧道内的 Flow 指向它所在的那条 CONNECT Flow，
+     决策见 [`decisions/0010`](./decisions/0010-connect-tunnels-recorded-not-listed.md)）
+   - `protocol_stack` —— ✅ **已交付**（例如 `["tcp","tls","h2"]`、`["tcp","h2c"]`、`["udp"]`；
+     由**观察到的**事实推导：传输层、是否终止了 TLS、hyper 实际解析出的 HTTP 版本。
+     它**不是 ALPN**：ALPN 是「被提议与协商」的另一件事）
+   - `stream_id` —— ⬜ **不交付，降级为 E（见下）**
+   - 四项均以 optional/backward-compatible 方式加入（`serde(default, skip_serializing_if)`）
+
+   > **`stream_id` 为什么不做（已调研，勿重复调研）**：没有任何应用层代理暴露线路 stream id，
+   > 因为它只在数据包层可得。mitmproxy 的 `Flow` 没有它（只有 `client_conn`/`server_conn`，
+   > 各自带一个 UUID `id`）；HAR 1.2 只有 `entry.connection`（父 TCP/IP 连接 id）；
+   > Envoy access log 只有 `%CONNECTION_ID%`；`http2.streamid` 属于 tshark 这类抓包器
+   > （其手册说明第三套编号用于 HTTP/2 与 QUIC「因为它们多路复用」）。
+   > 本引擎也无法拿到：**hyper 1.10.1 不提供**（`src/ext/` 仅有 `h1_reason_phrase` 与
+   > `informational`；h2 server 只往 request extensions 写入 `Protocol`）。
+   > 结论：「同一 H2 连接的 streams 可归组」由 `connection_id` 满足（§4 验收标准已达成）；
+   > `stream_id` 的**线路保真价值**（与 Wireshark 帧对齐）保留为 E——
+   > 只有将来由我们自己驱动 h2 连接时才可能提供真实值，届时不得用「连接内序号」冒充。
+   > **不得**在目前状态下以任何形式宣称已记录 stream id。
 
 2. **区分生命周期层级**
-   - Connection：传输连接生命周期
+   - Connection：传输连接生命周期 —— 已有 id（`connection_id`），且
+     `ConnectionStats.flows_count` 不再是硬编码的 0，而是**在构造 Flow 处计数**
+     （一条连接的所有路径：普通 exchange、WebSocket 握手、隧道内部），
+     因为只有一个地方的计数才是真的。契约：`disconnect_reports_how_many_flows_the_connection_produced`
    - Stream/Flow：HTTP exchange 或逻辑 stream
    - Message：WebSocket frame、SSE event、未来 TCP/UDP message
 
@@ -250,9 +268,15 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 
 ### 验收标准
 
-- CONNECT 外层与内层 Flow 可关联
-- 同一 HTTP/2 连接的 streams 可归组
-- WebSocket/SSE messages 不再依赖覆盖整个大 Flow 才能增量传输
+- ✅ **CONNECT 外层与内层 Flow 可关联**（2026-10-11）：CONNECT 现在产生一条带 `connect` 标签的
+  Flow，隧道内的每条 Flow 用 `parent_flow_id` 指向它，且两者共享 `connection_id`。
+  契约：`flow_relationships.rs` 的 `a_tunnel_records_its_connect_flow_and_links_the_exchanges_inside_it`。
+  呈现上默认不进请求列表（决策见 [`decisions/0010`](./decisions/0010-connect-tunnels-recorded-not-listed.md)）。
+- ✅ **同一 HTTP/2 连接的 streams 可归组**（2026-10-11）：同一连接上的所有 exchange 共享
+  `connection_id`。契约：`exchanges_on_one_connection_share_a_connection_id`、
+  `separate_connections_get_separate_ids`。
+- ⬜ WebSocket/SSE messages 不再依赖覆盖整个大 Flow 才能增量传输（WS 已有
+  `FlowUpdate::WebSocketMessage` 增量路径；**被代理的 SSE 事件级解析仍未做**，见 §7.2）
 
 ---
 

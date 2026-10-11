@@ -1,0 +1,19 @@
+# Pin the toolchain, so "green locally" and "green in CI" mean the same thing.
+#
+# main went red on 2026-10-04 (run 37181044511) with 15 `clippy::double_must_use` errors that no one
+# could reproduce locally: this machine's `stable` was 1.95.0 while the CI runner tracks current
+# stable, and `double_must_use` had just entered `clippy::all`, so `-D warnings` failed on one side
+# and passed on the other. Because `quality` is a `needs:` prerequisite, that single difference also
+# skipped differential, audit and coverage on every run.
+#
+# The fix for that particular lint came from a dependency (`async-trait`), but the class of problem
+# is the toolchain, and it recurs on every rustc release. Pinning turns a toolchain change into an
+# explicit edit with a reason, instead of a silent difference between two machines.
+#
+# To bump: change the version here, run `./scripts/ci-check.sh`, and let CI confirm. CI's
+# `dtolnay/rust-toolchain@stable` installs stable, but a `rust-toolchain.toml` override wins over the
+# default toolchain, so cargo uses the pinned version on the runner too. `components` is listed so a
+# machine that has never installed this version gets rustfmt and clippy with it.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
