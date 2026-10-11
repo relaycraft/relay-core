@@ -427,6 +427,7 @@ async fn test_flow_summary_query_with_offset_and_filters() {
             is_websocket: None,
             limit: Some(1),
             offset: Some(1),
+            include_connect: false,
         })
         .await
         .expect("query page failed");
@@ -444,6 +445,7 @@ async fn test_flow_summary_query_with_offset_and_filters() {
             is_websocket: Some(false),
             limit: Some(10),
             offset: Some(0),
+            include_connect: false,
         })
         .await
         .expect("query filters failed");
@@ -700,6 +702,7 @@ fn host_query(host: &str) -> relay_core_api::modification::FlowQuery {
         status_max: None,
         has_error: None,
         is_websocket: None,
+        include_connect: false,
         limit: Some(50),
         offset: Some(0),
     }
@@ -794,4 +797,96 @@ async fn test_equal_start_times_keep_a_stable_capture_order() {
         paged.push(page[0].id.clone());
     }
     assert_eq!(paged, vec!["first", "second", "third"]);
+}
+
+// ── Tunnels in a stored history (§4-1) ──────────────────────────────────────────────
+//
+// The live filter leaves CONNECT flows out of a request list unless asked (see
+// `flow_matches_query`). A persisted history has to answer the same way, or a page loaded from
+// SQLite would contain rows the live list hides — the two would disagree about what "the flows"
+// means, and paging over the difference would neither drop consistently nor repeat consistently.
+
+#[tokio::test]
+async fn test_stored_tunnels_are_hidden_unless_asked_for() {
+    let store = Store::connect(&sqlite_url()).await.expect("connect failed");
+    store.init().await.expect("init failed");
+
+    store
+        .upsert_flow_summary(&summary("req-1", "a.example.com", 1000))
+        .await
+        .expect("upsert request");
+    let mut tunnel = summary("tunnel-1", "a.example.com", 2000);
+    tunnel.method = "CONNECT".to_string();
+    tunnel.tags = vec!["connect".to_string()];
+    store
+        .upsert_flow_summary(&tunnel)
+        .await
+        .expect("upsert tunnel");
+
+    let all = relay_core_api::modification::FlowQuery {
+        limit: Some(50),
+        offset: Some(0),
+        ..Default::default()
+    };
+    let listed = store.query_flow_summaries(&all).await.expect("query");
+    assert_eq!(
+        listed.len(),
+        1,
+        "a stored list must show the request, not the tunnel: {listed:?}"
+    );
+    assert_eq!(listed[0].id, "req-1");
+
+    let asked = relay_core_api::modification::FlowQuery {
+        include_connect: true,
+        ..all.clone()
+    };
+    let with_tunnels = store.query_flow_summaries(&asked).await.expect("query");
+    assert_eq!(
+        with_tunnels.len(),
+        2,
+        "asking for tunnels must reach them: {with_tunnels:?}"
+    );
+}
+
+/// A history written before `is_connect` existed must not lose its tunnels from the opt-in list.
+#[tokio::test]
+async fn test_migration_backfills_tunnels_from_the_stored_summary() {
+    let url = sqlite_url();
+    let store = Store::connect(&url).await.expect("connect failed");
+    store.init().await.expect("init failed");
+
+    let mut tunnel = summary("tunnel-old", "old.example.com", 1000);
+    tunnel.method = "CONNECT".to_string();
+    tunnel.tags = vec!["connect".to_string()];
+    store
+        .upsert_flow_summary(&tunnel)
+        .await
+        .expect("upsert tunnel");
+
+    // Simulate the pre-migration state: the column exists but was never populated, and the file
+    // still claims to be on version 1.
+    sqlx::query("UPDATE flow_summaries SET is_connect = 0;")
+        .execute(store.pool_for_tests())
+        .await
+        .expect("clear column");
+    sqlx::query("PRAGMA user_version = 1;")
+        .execute(store.pool_for_tests())
+        .await
+        .expect("stamp version 1");
+
+    store.migrate().await.expect("migrate forward");
+
+    let asked = relay_core_api::modification::FlowQuery {
+        include_connect: true,
+        limit: Some(50),
+        offset: Some(0),
+        ..Default::default()
+    };
+    let rows = store.query_flow_summaries(&asked).await.expect("query");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the migration must recognise the tunnel already in the file, not only future writes"
+    );
+    assert_eq!(rows[0].id, "tunnel-old");
 }

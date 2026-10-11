@@ -1,4 +1,5 @@
 use crate::error::Result;
+use relay_core_api::flow::CONNECT_TAG;
 use relay_core_api::modification::{FlowQuery, FlowSummary};
 use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -28,7 +29,7 @@ fn escape_like(value: &str) -> String {
 }
 
 /// Current on-disk schema version. Bump this and add an arm to `apply_migration` together.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone)]
 pub struct Store {
@@ -425,6 +426,44 @@ impl Store {
         match version {
             // Baseline: the schema created above is version 1. Nothing to alter.
             1 => Ok(()),
+            // 2: `is_connect`, so a persisted history can leave tunnels out of a request list the
+            // same way the live filter does. Without it the SQL path and the in-memory matcher would
+            // disagree, and a page of history would contain rows the live list hides — which is
+            // exactly the drift the retention work fixed for the two flow tables.
+            2 => {
+                // Guarded because a database whose version was reset (or written by a build that
+                // created the column at baseline) already has it, and SQLite has no
+                // `ADD COLUMN IF NOT EXISTS`. The recorded version is a claim about the file, and a
+                // migration that trusts it blindly turns a stale stamp into a hard failure.
+                let columns: Vec<(i64, String)> =
+                    sqlx::query_as("SELECT cid, name FROM pragma_table_info('flow_summaries');")
+                        .fetch_all(&self.pool)
+                        .await?;
+                if !columns.iter().any(|(_, name)| name == "is_connect") {
+                    sqlx::query(
+                        "ALTER TABLE flow_summaries ADD COLUMN is_connect INTEGER NOT NULL DEFAULT 0;",
+                    )
+                    .execute(&self.pool)
+                    .await?;
+                }
+                sqlx::query(
+                    "CREATE INDEX IF NOT EXISTS idx_flow_summaries_is_connect ON flow_summaries(is_connect);",
+                )
+                .execute(&self.pool)
+                .await?;
+                // Backfill from the stored summary: rows written before this column existed still
+                // know their tags, and reading them out of the JSON is exact rather than a LIKE.
+                sqlx::query(
+                    "UPDATE flow_summaries
+                     SET is_connect = 1
+                     WHERE EXISTS (
+                        SELECT 1 FROM json_each(json_extract(content, '$.tags')) WHERE value = 'connect'
+                     );",
+                )
+                .execute(&self.pool)
+                .await?;
+                Ok(())
+            }
             other => Err(crate::StorageError::UnknownMigration { version: other }),
         }
     }
@@ -539,8 +578,8 @@ impl Store {
         let content = serde_json::to_value(summary).unwrap_or_default();
         sqlx::query(
             "INSERT INTO flow_summaries (
-                id, start_time_ms, method, host, path, status, has_error, is_websocket, content
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, start_time_ms, method, host, path, status, has_error, is_websocket, is_connect, content
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 start_time_ms = excluded.start_time_ms,
                 method = excluded.method,
@@ -549,6 +588,7 @@ impl Store {
                 status = excluded.status,
                 has_error = excluded.has_error,
                 is_websocket = excluded.is_websocket,
+                is_connect = excluded.is_connect,
                 content = excluded.content",
         )
         .bind(&summary.id)
@@ -559,6 +599,11 @@ impl Store {
         .bind(summary.status.map(i64::from))
         .bind(if summary.has_error { 1i64 } else { 0i64 })
         .bind(if summary.is_websocket { 1i64 } else { 0i64 })
+        .bind(if summary.tags.iter().any(|tag| tag == CONNECT_TAG) {
+            1i64
+        } else {
+            0i64
+        })
         .bind(content)
         .execute(&self.pool)
         .await?;
@@ -583,6 +628,9 @@ impl Store {
                AND (?5 IS NULL OR status <= ?5)
                AND (?6 IS NULL OR has_error = ?6)
                AND (?7 IS NULL OR is_websocket = ?7)
+               -- Tunnels are hidden unless asked for, matching `flow_matches_query`. The parameter is
+               -- NULL when they are wanted, so the clause constrains nothing then.
+               AND (?10 IS NULL OR is_connect = ?10)
              -- `rowid` breaks ties: equal `start_time_ms` values keep capture order, so paging
              -- over a tie group neither drops nor repeats a row.
              ORDER BY start_time_ms DESC, rowid ASC
@@ -598,6 +646,11 @@ impl Store {
         .bind(query.is_websocket.map(|v| if v { 1i64 } else { 0i64 }))
         .bind(limit)
         .bind(offset)
+        .bind(if relay_core_api::modification::wants_connect(query) {
+            None
+        } else {
+            Some(0i64)
+        })
         .fetch_all(&self.pool)
         .await?;
 
