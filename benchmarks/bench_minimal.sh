@@ -57,6 +57,8 @@ PROXY_BIN="${RELAY_CORE_BIN:-$TARGET_DIR/release/relay-core-cli}"
 PROXY_PORT="${PROXY_PORT:-18880}"
 TARGET_PORT="${TARGET_PORT:-19100}"
 API_PORT="${API_PORT:-18882}"
+# How long `require_port_free` waits for a port to be released before calling it foreign.
+PORT_FREE_GRACE_MS="${PORT_FREE_GRACE_MS:-5000}"
 # Concurrency for the load generator.
 #
 # 100 is still unusable, but NOT for the reason previously recorded here. The old note claimed
@@ -107,10 +109,19 @@ STRICT=0
 # `echo_server.py`, which saturates near 2.7k req/s — below the DoD — and will show throughput
 # FAIL for upstream-bound reasons. Measured reference (M4 Max, 100 connections, 1KB payload):
 # direct upstream ~104k req/s, through RelayCore ~43k req/s.
-DOD_STARTUP=200
-DOD_IDLE_MB=85
-DOD_QPS=10000
-DOD_P99=20
+#
+# Every threshold is overridable, because these numbers describe *one machine*. `release` baselines
+# are taken on a workstation; the scheduled `benchmark-smoke` job runs on a shared 2-core GitHub
+# runner, where the defaults above are simply unreachable — two consecutive scheduled runs measured
+# cold start 1125ms and 882ms against a 200ms DoD, and throughput 9095 and 10435 req/s against a
+# 10000 req/s DoD. A threshold that can never be met is not a gate: it prints `FAIL` into every
+# report and teaches its readers to ignore the word. So the CI job passes its own values in
+# `benchmark-smoke.yml`, each written next to the measurement it came from. Widening a threshold
+# without recording the measurement is how a gate quietly stops gating.
+DOD_STARTUP="${DOD_STARTUP:-200}"
+DOD_IDLE_MB="${DOD_IDLE_MB:-85}"
+DOD_QPS="${DOD_QPS:-10000}"
+DOD_P99="${DOD_P99:-20}"
 # Minimum share of responses that must be 2xx/3xx for a run to count as a valid measurement.
 DOD_SUCCESS_RATE=99.0
 
@@ -132,6 +143,11 @@ Options:
   --version <semver>     Label release reports (use target release, e.g. 0.8.2)
   --strict               Exit non-zero on DoD failure or >10% regression
   -h, --help             Show this help
+
+Environment overrides (thresholds describe one machine, so a different machine sets its own):
+  DOD_STARTUP=200        Cold start DoD (ms)        DOD_QPS=10000      Throughput DoD (req/s)
+  DOD_IDLE_MB=85         Idle RSS DoD (MB)          DOD_P99=20         Latency P99 DoD (ms)
+  PORT_FREE_GRACE_MS=5000  How long to wait for a previous run to release a port
 EOF
 }
 
@@ -222,8 +238,31 @@ if [[ -z "${RELAY_DATA_DIR:-}" ]]; then
 fi
 
 cleanup() {
-  [[ -n "$PROXY_PID" ]] && kill "$PROXY_PID" 2>/dev/null || true
-  [[ -n "$TARGET_PID" ]] && kill "$TARGET_PID" 2>/dev/null || true
+  local pid waited
+  for pid in "$PROXY_PID" "$TARGET_PID"; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  done
+  # `kill` only *sends* the signal; the kernel reaps the child a little later. Reap here instead of
+  # exiting with the listeners still accepting, because the next invocation checks these very ports
+  # before binding: CI runs `quick` and `matrix` as two steps of one job about 120ms apart, and the
+  # second used to abort with "TARGET port 19100 is already in use — stop the process holding it"
+  # about a process that was already dying (runs 36400899293, 37291735034). Waiting here is what
+  # makes that message mean what it says: a listener this run did not start.
+  for pid in "$PROXY_PID" "$TARGET_PID"; do
+    [[ -n "$pid" ]] || continue
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [[ "$waited" -lt 5000 ]]; do
+      sleep 0.05
+      waited=$((waited + 50))
+    done
+    # Escalate rather than exit with the port still held: the point of waiting is that the next
+    # invocation's port check finds nothing, and a process that ignored SIGTERM would defeat it.
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    # Reap it, so the shell does not leave a zombie that `kill -0` would keep reporting as alive.
+    wait "$pid" 2>/dev/null || true
+  done
   # The daemon stops its proxy when asked; killing the process is enough for a benchmark, and the
   # directory it used is disposable.
   if [[ "${BENCH_DATA_DIR_CREATED:-0}" == "1" ]]; then
@@ -301,11 +340,24 @@ port_in_use() {
 # The readiness probe cannot tell OUR proxy apart from whatever else answers on that port, so a
 # stale or foreign listener previously made a dead proxy look healthy — and silently served the
 # load (observed: OrbStack holding 18080 turned a 55k req/s run into 1.2k req/s "PASS").
+#
+# A *previous* run winding down is not a foreign listener, though, and refusing instantly made the
+# scheduled CI job abort on its own echo server (see `cleanup`). So wait out a short grace window
+# and say so when the wait was needed: a listener that outlives the window is still reported as
+# what it is, and one that merely took a moment to close is no longer an abort.
 require_port_free() {
   local port="$1" label="$2"
-  if port_in_use "$port"; then
-    fail "$label port $port is already in use — stop the process holding it, or set a different port"
-    return 1
+  local waited=0
+  while port_in_use "$port"; do
+    if [[ "$waited" -ge "$PORT_FREE_GRACE_MS" ]]; then
+      fail "$label port $port is already in use — stop the process holding it, or set a different port"
+      return 1
+    fi
+    sleep 0.25
+    waited=$((waited + 250))
+  done
+  if [[ "$waited" -gt 0 ]]; then
+    info "$label port $port was released by a previous run after ${waited}ms"
   fi
   return 0
 }

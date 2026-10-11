@@ -12,6 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # DoD thresholds describe the machine that measured them. The defaults in bench_minimal.sh are
+    # calibrated on an Apple M4 Max (cold start 120–140ms, throughput ~35k req/s). This job runs on a
+    # shared 2-core GitHub runner, where two consecutive scheduled runs measured cold start 1125ms and
+    # 882ms against the default 200ms DoD, and throughput 9095 and 10435 req/s against the default
+    # 10000 req/s. Those defaults therefore wrote `FAIL` into every report this job produced — a
+    # signal nobody can act on, and one that hides a real regression when it arrives.
+    #
+    # The values below are those measurements with room for runner noise: 3000ms is ~2.7x the worst
+    # observed cold start and 5000 req/s is ~1.8x below the worst observed throughput. Cold start on
+    # a contended runner is the noisier of the two — the same binary on a busy developer machine was
+    # measured between 263ms and 2303ms in one session, the high end being the first launch of a
+    # freshly linked binary (macOS re-verifies a new file) — so this gate is deliberately set to catch
+    # order-of-magnitude problems rather than to police a few hundred milliseconds. Release baselines
+    # keep the strict defaults: `benchmarks/results/baseline_*.md` are taken on a workstation, on
+    # purpose (see RELEASE.md).
+    env:
+      DOD_STARTUP: "3000"
+      DOD_QPS: "5000"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
