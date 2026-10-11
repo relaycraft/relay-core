@@ -199,7 +199,11 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 
 具体缺口：
 - **Web UI 不消费 `flow-event`**：`webui/src/lib/sse.ts` 监听 8 个 SSE 事件，但不含本轮新加的 `flow-event` ⇒ 桌面/网页 UI 看不到暂停与改动归因。
-- **CLI 有两套控制面**：`src/server.rs` 的旧 WebSocket/`/api/intercept/*`（自带 `AtomicBool` 状态）与共享 HTTP adapter 并存；`rules list` 默认打到无人启动的 18082，`metrics` 调用无人提供的 `/_relay/metrics` ⇒ 这两个命令在当前引擎上**必然失败**。
+- **CLI 有两套控制面**：`src/server.rs` 的旧 WebSocket/`/api/intercept/*`（自带 `AtomicBool` 状态）与共享 HTTP adapter 并存。
+  `rules list` 默认打到无人启动的 18082（控制 API 默认 8082），且**不带任何凭证** ⇒ 面对一个正常运行的 daemon 也失败，两处独立原因。
+  `metrics` 的缺陷方向相反：它**能跑，但读的是默认端口上恰好存在的那个引擎**（§5 第 3 条有实测证据），
+  因此本段原先「二者必然失败」的说法对 `metrics` 不成立。
+  **已修**：两个命令都改走共享的 `ControlClient` + daemon 发现（`commands/daemon_client.rs`）；`metrics --proxy-url` 保留原能力。
 - `relay-core-api` 的 crate 文档让用户「依赖 `relay-core`」，但**工作区不存在该 crate**；真正的门面是 `relay-core-runtime`，而它只再导出 `flow` 与 `policy` ⇒ 外部消费者拿不到 `event` / `sse` / `body_plan`。
 
 ---
@@ -244,6 +248,24 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 **本文作者独立复核并纠正了审计结论 2 处**：
 - 「`mutated_fields` 响应头映射疑似错位」——**不成立**，映射正确（`relay-core-lib/src/rule/engine/actions/mod.rs`）。
 - 「§24.3 mock framing 仍不安全」——**不成立**，代码已修（见 §2.3）。
+
+**后续复核又纠正 1 处（2026-10-11）**：审计称「`metrics` 调用**无人提供**的 `/_relay/metrics` ⇒ 必然失败」——**不成立**。
+`/_relay/metrics` 与 `/_relay/metrics/prometheus` 由 `relay-core-runtime/src/interceptors/metrics.rs` 的
+`MetricsInterceptor`（注册于 `runtime/src/lib.rs:1809`）在**代理监听端口**上直接作答，返回的就是
+`CoreMetrics` JSON；而该命令 `--proxy-url` 的默认值恰好是代理的默认监听端口 8080。
+实测（代理监听 18899）：`curl http://127.0.0.1:18899/_relay/metrics` → `HTTP 200` + 完整 `CoreMetrics`。
+
+**但 `metrics` 确实有缺陷，只是机制与审计所说的相反——它不会失败，而是会给出错误答案。**
+在一次使用隔离数据目录的集成测试里，为该测试**自己的** daemon 执行 `metrics`，它报出的是本机**另一个引擎**的数字
+（`flows_total: 95073`、`proxy_http_request_total: 52193`，即那台已运行 472 小时的开发者代理），
+因为默认端口 8080 上恰好有别人。对一条监控命令而言，**静默读错引擎比读不到更危险**。
+
+**两个命令都已修**：`commands/daemon_client.rs` 提供唯一的 daemon 发现与凭证来源，
+两个命令都改走共享的 `ControlClient`。契约由 `live_state_commands_reach_the_running_daemon` 锁定，
+已双向验证——旧代码下该测试以两种独立方式失败：
+`http://127.0.0.1:18082/api/v1/rules: Connection refused`，以及 `left: 95073, right: 0`。
+教训与 §2.1 同源：**审计结论同样必须逐条复核**；这次错的是审计，
+而且错误方向是把「能跑但答错」说成「跑不了」，恰好掩盖了真正的问题。
 
 **已知不确定项（不应被当作结论）**：
 1. 透明捕获（Linux TPROXY / macOS PF / WinDivert）是否**真的工作**无从判断——0 测试且需要 root；本文只能确认「无覆盖」。

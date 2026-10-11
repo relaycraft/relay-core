@@ -1186,19 +1186,24 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   脱敏同样覆盖（`grpc-message` 是服务端自由文本，可按敏感名屏蔽）。
   契约：`wire_matrix_h2c_upstream_is_reachable` 现在同时断言**转发到客户端**与**记录进 Flow**，
   以及 `tap.rs` 的单测（既报 body 也报 trailers）。已双向验证。
-- 🟡 **gRPC 消息级 framing：解析层完成，端到端未落地**（2026-09-13，**已更正**：先前此处误标为「端到端可用」）。
-  已完成并有测试：`relay-core-api/src/grpc.rs`（5 字节前缀 → `{index, length, compressed}` +
-  `unparsed_bytes`；单条/多条/空体/二进制/截断报错/尾部残字节，7 个单测；`application/grpc-web`
-  **有意排除**——它复用 framing 但状态在 body 内编码的 trailer 里）；`BodyData.grpc` 可加字段；
+- ✅ **gRPC 消息级 framing 已端到端落地**（2026-09-16；本节此前为 🟡，且其「根因」结论是**错的**）。
+  解析层：`relay-core-api/src/grpc.rs`（5 字节前缀 → `{index, length, compressed}` + `unparsed_bytes`；
+  单条/多条/空体/二进制/截断报错/尾部残字节，7 个单测；`application/grpc-web` **有意排除**——它复用
+  framing 但状态在 body 内编码的 trailer 里）；`BodyData.grpc` 可加字段；
   `process_body_with_framing` 在两条物化路径接线（2 个单测）。
-  🔴 **端到端被一个真实缺陷挡住**：`TapBody` 只在 `Poll::Ready(None)` 上报 body，
-  而 hyper 会在 `is_end_stream()` 为真时**直接判定结束、不再 poll** ⇒ 这类 body
-  **完全不进捕获**（不是 gRPC 专属，是「某些 body 看不到」的根因）。
-  **尝试的修法有害且已回退**：在 `is_end_stream()` 里同时上报，会在其中取前缀缓冲的锁，
-  导致 `test_h1_concurrent_connections` **无限挂起**（bisect 证据：仅回退该方法，
-  该测试从「挂死」变为 0.21s 通过）。因此**该位置必须是纯查询**，正确修法需要
-  不取锁的上报路径（或用另一个完成信号），尚未设计。
-  结论：**在解决这一点之前，不得宣称「捕获里能看到 gRPC 消息」**。
+  捕获侧：`TapBody` 此前只在 `Poll::Ready(None)` 上报，而 hyper 在 `is_end_stream()` 为真时不再 poll
+  ⇒ 定长 body（HTTP/1 常见）与未知长度的 h2 流都可能**完全不进捕获**。现改为**三个完成信号**
+  （`Ready(None)`、`size_hint()` 归零、`Drop`），且回调里只做 O(1) 的「移动 + 交接」，base64 与
+  framing 交给 runtime（原始字节走内部通道，**公开 SSE 契约不变**）。契约
+  `wire_matrix_grpc_body_is_captured_as_messages`（h2c 上的 gRPC 交换**两个方向**都捕获到 framing），
+  已双向验证。**该能力因此可以宣称。**
+  ⚠️ **更正**：本节原先记录的「在 `is_end_stream()` 里上报会取前缀缓冲的锁，导致
+  `test_h1_concurrent_connections` 无限挂起 ⇒ 该位置必须是纯查询、正确修法尚未设计」**已被证伪**。
+  真因是 `protocol_tests` 的辅助函数给 `handle_http_request` 一个**容量 10 且从不读取**的通道，
+  而该处用阻塞发送；基线刚好没填满十格，于是**任何多一条更新的正确实现**都会顶满它并挂住。
+  「丢唤醒」也是误读：阻塞在满通道上的 `await` 与空闲在 `kevent` 在栈上长得一样。
+  四次错误结论与两条教训的完整记录见
+  [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis。
 - ⬜ 请求方向的 trailers 未记录；RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断未做。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
@@ -1238,13 +1243,19 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.10 验证体系基线
 
-- **计数已过期（本节此前为 493/22）**：截至 2026-09-13 实测 `cargo test --workspace` 为
-  **661 passed / 0 failed**（测试属性计数 838）；`relay-core-lib/tests/` 中 socket 级 E2E
-  `wire_matrix.rs` 为 **27 个用例，0 个 `#[ignore]`**。
+- **计数已过期（本节此前为 493/22，后为 661/838）**：截至 **2026-10-11** 实测
+  `cargo test --workspace` 为 **896 passed / 0 failed / 0 ignored**（45 个套件）；
+  `relay-core-lib/tests/` 中 socket 级 E2E `wire_matrix.rs` 为 **32 个用例，0 个 `#[ignore]`**。
+  数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
-- 两个 UDP E2E 为 `#[cfg(not(target_os = "linux"))]`（`udp_integration_test.rs:45,101`）
-  ⇒ 在唯一的阻塞门禁 Linux 上被跳过
+- 整个 `udp_integration_test.rs` 由文件级 `#![cfg(not(target_os = "linux"))]` 门控（理由见文件头注释：
+  Linux 上该路径需要 `CAP_NET_ADMIN`，per-test 门控会让 imports/helpers 变成死代码并被 `-D warnings` 拦下），
+  ⇒ **在唯一的阻塞门禁平台（Linux）上这些用例一个都不跑**。
+  根因（已复核）：`UdpProxy` 在 Linux 上**无条件**为每个会话调用
+  `LinuxTproxy::create_transparent_udp_socket`（`relay-core-lib/src/capture/udp.rs:107-114`），
+  于是连「带显式 `remote_addr` 的普通 UDP 转发」也需要 `CAP_NET_ADMIN` + iptables 规则。
+  把该调用限定到透明路径，即可让这些用例在 Linux 上无需特权而可测。
 - ✅ **依赖审计已接入 CI**（2026-09-13）：新增 `deny.toml` 与 `audit` job，licences/bans 为**阻塞门禁**
   （实测通过），advisories 先作为追踪项。首次运行即暴露存量漏洞，其中最严重的是
   **`rustls-webpki 0.101.7` 的 3 条证书校验漏洞**与 **`h2 0.4.15` 的 DoS**——两者都在本引擎的
@@ -1255,13 +1266,20 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ **差分套件现在会真的失败**：新增 `differential` job（安装 mitmproxy + `REQUIRE_MITMPROXY=1`）。
   在此之前没有任何 workflow 设置该变量，3 个 fixture 在 CI 上恒为 `ok` 且什么都没比较。
 - ⬜ CI 仍无 soak、无 fuzz、coverage 无阈值、macOS/Windows 仅构建不测试。
-  **mitmproxy differential 更严重：没有任何 workflow 设置 `REQUIRE_MITMPROXY`，也不安装 mitmproxy，
-  而该套件在工具缺失时打印 skip 后返回成功 ⇒ 3 个 fixture 在 CI 上恒为 ok 且什么都没比较。**
-- **HTTP/2 无任何线路用例**：唯一 H2 测试是一次单请求且断言与版本无关；`wire_matrix.rs` 全为 H1 socket
+  （**本行此前还写着「没有任何 workflow 设置 `REQUIRE_MITMPROXY`，也不安装 mitmproxy ⇒ 差分恒为 ok」——
+  该陈述已被上方同节的 `differential` job 条目推翻，属实现追赶文档后的残留，2026-10-11 删除。**）
+- **HTTP/2 线路用例已不止一处**（本节此前写「**无任何线路用例**」，与 §24.9 自相矛盾，已更正）：
+  `wire_matrix_h2c_ingress_is_captured_and_forwarded`（明文 h2c 入站）、
+  `wire_matrix_h2c_inside_a_connect_tunnel_is_captured`（CONNECT 隧道内 h2c）、
+  `wire_matrix_h2c_upstream_is_reachable`（h2c-only 上游 + trailer 端到端）、
+  `test_https_mitm_h2`（TLS 后两并发 stream + 规则改写 + 版本）。
+  **仍缺**：RST_STREAM/GOAWAY/取消的语义断言。
 - 透明捕获三个平台 provider（`linux_tproxy.rs` / `macos_pf.rs` / `windows.rs`）**各有 0 个测试**，
   测试全部基于 mock ⇒ 「Linux/macOS 可用」目前没有平台级证据
-- **MCP 资源不可订阅却在推送**：capabilities 未声明 `subscribe`，`subscribe` 方法未实现
-  ⇒ 通知发给无法合法订阅的客户端
+- ✅ **MCP 资源订阅已实现**（本节此前写「不可订阅却在推送」，已过期）：
+  `relay-core-probe/src/server.rs` 现声明 `resources.subscribe` 并提供 `subscribe`/`unsubscribe`，
+  且有一条测试断言「被推送的 URI 就是可订阅的 URI」。
+  （决策与实现见提交 `d4b3689 feat(probe): make MCP subscriptions real, and stop serving credentials by default`。）
 
 **载荷生成器上限（重要）**
 
@@ -1269,9 +1287,14 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （oha 报 `Can't assign requested address (os error 49)` 数万次），成功率塌陷到 0–30%。
   这是**压测客户端**的限制，不是代理回归。harness 现已识别该特征并把该轮标记为
   `INVALID` 而非 `FAIL`，避免产生假回归信号。
-- 根因是代理响应携带 `Connection: close`，使 oha 无法复用连接；每次请求都要新端口。
-  根治需单独决策（是否让代理默认 keep-alive 或改用 keep-alive 压测模式）。
-  当前 baseline 以 `CONNECTIONS=25` 采集，并在报告 methodology 中记录。
+- ⚠️ **归因已作废**（2026-10-11 更正）：此前记「根因是代理响应携带 `Connection: close`，使 oha 无法复用
+  连接」。**该归因不成立**——新增线路用例
+  `wire_matrix_client_connection_is_reused_for_a_second_request` 在同一客户端连接上连续发两个请求并都成功
+  （上游未声明 close 时），代理是**忠实转发上游的关闭语义**；当年症状来自当时的默认 Python 上游
+  （`echo_server.py` 未设 `protocol_version`，即 HTTP/1.0，每次响应即关）。同一更正已写入
+  [`engine-capability-status.md`](./engine-capability-status.md) §2.5，此处是补记。
+  当前 baseline 仍以 `CONNECTIONS=25` 采集，但**理由改为「代理在该并发下的容量上限 + 熔断放大」**
+  （见 [`decisions/0005`](./decisions/0005-circuit-breaker-defaults.md)）。
 
 **已知的待办与代价（A5b）**
 
