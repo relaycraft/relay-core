@@ -384,9 +384,17 @@ pub enum Commands {
     },
     /// Get Core Metrics
     Metrics {
-        /// Proxy URL (where the metrics endpoint is exposed)
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
-        proxy_url: String,
+        /// Control API base URL. Discovered from the running daemon when omitted.
+        #[arg(long, conflicts_with = "proxy_url")]
+        api_url: Option<String>,
+
+        /// Proxy listener URL, to read `/_relay/metrics` from the proxy's own endpoint.
+        ///
+        /// The engine exposes metrics on both surfaces on purpose: the proxy's copy needs no
+        /// credential and can be scraped directly, the control API's also works while the proxy is
+        /// stopped. Prefer the daemon; reach for this only when no daemon manifest is available.
+        #[arg(long)]
+        proxy_url: Option<String>,
 
         /// Output format (table, json)
         #[arg(long, default_value = "table")]
@@ -478,9 +486,9 @@ pub enum RulesAction {
     },
     /// List currently active rules from a running proxy via HTTP API
     List {
-        /// API base URL (default: http://127.0.0.1:18082)
-        #[arg(long, default_value = "http://127.0.0.1:18082")]
-        api_url: String,
+        /// Control API base URL. Discovered from the running daemon when omitted.
+        #[arg(long)]
+        api_url: Option<String>,
     },
 }
 

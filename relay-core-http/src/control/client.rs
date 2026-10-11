@@ -196,6 +196,14 @@ impl ControlClient {
         self.get_json("/api/v1/metrics").await
     }
 
+    /// The rules the engine currently holds, as the API represents them.
+    ///
+    /// Deliberately untyped values: a caller that renders a rule table reads exactly the fields the
+    /// API sent, so routing this through the control client cannot change what a command prints.
+    pub async fn rules(&self) -> Result<Vec<serde_json::Value>, ControlClientError> {
+        self.get_json("/api/v1/rules").await
+    }
+
     /// Full lifecycle state of the proxy the daemon owns.
     pub async fn proxy_lifecycle(&self) -> Result<RuntimeLifecycle, ControlClientError> {
         self.get_json("/api/v1/proxy/status").await

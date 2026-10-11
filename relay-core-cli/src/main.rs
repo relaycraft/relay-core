@@ -238,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Rules { action } => {
-            commands::rules::execute(action)?;
+            commands::rules::execute(action).await?;
         }
         #[cfg(feature = "script")]
         Commands::Scripts { action } => {
@@ -277,8 +277,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
         }
-        Commands::Metrics { proxy_url, output } => {
-            commands::metrics::execute(proxy_url, output).await?;
+        Commands::Metrics {
+            api_url,
+            proxy_url,
+            output,
+        } => {
+            commands::metrics::execute(api_url, proxy_url, output).await?;
         }
         Commands::Analyze {
             file,

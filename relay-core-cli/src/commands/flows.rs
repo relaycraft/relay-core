@@ -1,11 +1,10 @@
 use crate::sse_client;
 use anyhow::{Context, Result, bail};
-use relay_core_api::CLI_COMMAND;
 use relay_core_api::modification::{FlowQuery, FlowSummary, parse_flow_filter};
-use relay_core_http::control::{DaemonStatus, connect};
-use relay_core_runtime::paths;
 use serde::Deserialize;
 use tracing::info;
+
+use super::daemon_client::{ResolvedDaemon, resolve_daemon};
 
 #[derive(Debug, Deserialize)]
 struct FlowSearchResponse {
@@ -47,44 +46,6 @@ pub async fn execute(opts: FlowsOptions) -> Result<()> {
     }
 
     execute_search(opts, &daemon).await
-}
-
-/// Where the daemon is, and how to authenticate to it.
-///
-/// Discovered rather than defaulted: a daemon that fell back to an ephemeral port would make a
-/// hard-coded `127.0.0.1:8082` connect to something else, or to nothing.
-struct ResolvedDaemon {
-    base_url: String,
-    token: Option<String>,
-}
-
-async fn resolve_daemon(explicit: Option<&str>) -> Result<ResolvedDaemon> {
-    if let Some(url) = explicit {
-        return Ok(ResolvedDaemon {
-            base_url: url.trim_end_matches('/').to_string(),
-            token: std::env::var("RELAY_API_TOKEN").ok(),
-        });
-    }
-
-    let data_dir = paths::resolve_data_dir();
-    match connect(&data_dir).await {
-        DaemonStatus::Running { manifest, .. } => Ok(ResolvedDaemon {
-            base_url: manifest.control_base_url(),
-            token: manifest.token.clone(),
-        }),
-        DaemonStatus::NotRunning => bail!(
-            "no RelayCore daemon is running in {}. Start one with `{CLI_COMMAND} start`, or pass --api-url.",
-            data_dir.display()
-        ),
-        DaemonStatus::Unresponsive { manifest, reason } => bail!(
-            "the RelayCore daemon (pid {}) failed the control handshake at {} ({reason})",
-            manifest.pid,
-            manifest.control_base_url()
-        ),
-        DaemonStatus::Incompatible { found, expected } => bail!(
-            "the running RelayCore daemon speaks control protocol {found}, this build speaks {expected}"
-        ),
-    }
 }
 
 impl FlowsOptions {

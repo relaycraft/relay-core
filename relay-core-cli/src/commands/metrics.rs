@@ -1,20 +1,35 @@
-use anyhow::Result;
-use relay_core_runtime::CoreMetrics;
-use reqwest::Client;
+use super::daemon_client::resolve_daemon;
+use anyhow::{Context, Result};
 
-pub async fn execute(proxy_url: String, output: String) -> Result<()> {
-    let url = format!("{}/_relay/metrics", proxy_url.trim_end_matches('/'));
-    // Never use system proxy settings — connecting to proxy port directly.
-    // On Windows with system proxy configured, reqwest would otherwise route
-    // the metrics request through the proxy itself, causing a loop (os error 10013).
-    let client = Client::builder().no_proxy().build()?;
-    let resp = client.get(&url).send().await?;
-
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("Failed to get metrics: {}", resp.status()));
-    }
-
-    let metrics: CoreMetrics = resp.json().await?;
+/// Print the engine's runtime metrics.
+///
+/// The engine exposes the same `CoreMetrics` on **two** surfaces, and both are deliberate:
+///
+/// * the proxy listener answers `GET /_relay/metrics` (and `/_relay/metrics/prometheus`) from
+///   `MetricsInterceptor`, so a load balancer, a Prometheus scrape or a scheduler can read metrics
+///   without a credential;
+/// * the control API answers `GET /api/v1/metrics`, which additionally works while the proxy is
+///   stopped and is covered by the daemon's bearer token.
+///
+/// `relay-core metrics` reached only the first, through a `--proxy-url` whose default was the proxy's
+/// default port — so it worked against a proxy on 8080 and against nothing else. It now prefers the
+/// daemon (discovered, like every other command) and keeps `--proxy-url` for the case the daemon
+/// cannot answer: reading a proxy that this CLI has no manifest for.
+pub async fn execute(
+    api_url: Option<String>,
+    proxy_url: Option<String>,
+    output: String,
+) -> Result<()> {
+    let metrics = match proxy_url {
+        Some(proxy_url) => from_proxy(&proxy_url).await?,
+        None => {
+            resolve_daemon(api_url.as_deref())
+                .await?
+                .client("cli:relay metrics")
+                .metrics()
+                .await?
+        }
+    };
 
     if output == "json" {
         println!("{}", serde_json::to_string_pretty(&metrics)?);
@@ -74,4 +89,29 @@ pub async fn execute(proxy_url: String, output: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Read the proxy's own metrics endpoint.
+///
+/// Never use the system proxy settings: this call is aimed *at* the proxy's loopback listener, and
+/// on Windows a configured system proxy would send it back through the proxy itself (os error 10013).
+async fn from_proxy(proxy_url: &str) -> Result<relay_core_runtime::CoreMetrics> {
+    let url = format!("{}/_relay/metrics", proxy_url.trim_end_matches('/'));
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()?
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("no proxy answered at {url}"))?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "{url} answered {} instead of metrics",
+            response.status()
+        ));
+    }
+    response
+        .json()
+        .await
+        .with_context(|| format!("{url} did not answer with metrics JSON"))
 }

@@ -2,7 +2,9 @@ use crate::args::RulesAction;
 use crate::utils::{load_flow, load_rules};
 use anyhow::{Context, Result};
 
-pub fn execute(action: RulesAction) -> Result<()> {
+use super::daemon_client::resolve_daemon;
+
+pub async fn execute(action: RulesAction) -> Result<()> {
     match action {
         RulesAction::Validate { file } => match load_rules(&file) {
             Ok(rules) => println!("Valid rule set: {} rules found.", rules.len()),
@@ -52,19 +54,13 @@ pub fn execute(action: RulesAction) -> Result<()> {
             }
         }
         RulesAction::List { api_url } => {
-            let url = format!("{}/api/v1/rules", api_url.trim_end_matches('/'));
-            let resp = ureq::get(&url).call().context(format!(
-                "Failed to connect to API at {}. Is the proxy running?",
-                url
-            ))?;
-            let body = resp.into_string().context("Failed to read API response")?;
-            let parsed: serde_json::Value =
-                serde_json::from_str(&body).context("Failed to parse rules JSON")?;
-            let items: &Vec<serde_json::Value> = parsed
-                .get("items")
-                .and_then(|v| v.as_array())
-                .or_else(|| parsed.as_array())
-                .context("Unexpected API response format")?;
+            // Two defects hid behind one default. The URL defaulted to `127.0.0.1:18082`, a port no
+            // daemon binds (the control API defaults to 8082), and the request carried no
+            // credential, which a token-protected daemon rejects. Either one alone made this
+            // command fail against every live engine. Resolve the daemon and go through the shared
+            // control client instead, as `flows` already did.
+            let daemon = resolve_daemon(api_url.as_deref()).await?;
+            let items = daemon.client("cli:relay rules list").rules().await?;
             if items.is_empty() {
                 println!("No rules loaded.");
             } else {

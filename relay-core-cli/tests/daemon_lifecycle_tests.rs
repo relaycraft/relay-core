@@ -658,6 +658,65 @@ fn listing_and_following_are_distinct() {
     );
 }
 
+/// Reading live engine state must reach the daemon that is actually running.
+///
+/// Both commands used to carry their own idea of where the engine is, and both ideas were wrong in a
+/// way that only shows up against a real daemon: `rules list` defaulted to `127.0.0.1:18082` (the
+/// control API defaults to 8082) *and* sent no credential, and `metrics` defaulted to the proxy's
+/// default port. With no flags and a daemon on an ephemeral port — exactly this harness — they could
+/// not succeed, so the assertions below are the regression: no flags, no token, and the daemon still
+/// answers.
+#[test]
+fn live_state_commands_reach_the_running_daemon() {
+    let harness = Harness::new();
+    harness.start();
+
+    let metrics = harness.relay(&["metrics", "--output", "json"]);
+    assert!(
+        metrics.status.success(),
+        "`metrics` must discover the daemon, not guess a port: {}",
+        stderr(&metrics)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&metrics.stdout).expect("metrics --output json must print JSON");
+    // A freshly started harness daemon has captured nothing, and its own control-plane traffic is
+    // excluded from capture. So a non-zero count here means the command read *some other* engine —
+    // which is exactly what a default port does when a developer already has a proxy on it.
+    assert_eq!(
+        parsed["flows_total"], 0,
+        "metrics must be this daemon's numbers, not another engine's: {parsed}"
+    );
+
+    // No auth is set up here on purpose: the daemon publishes its token in the manifest it leaves in
+    // the data directory, and resolving the daemon is what has to pick it up.
+    let rules = harness.relay(&["rules", "list"]);
+    assert!(
+        rules.status.success(),
+        "`rules list` must reach the daemon without a hand-supplied token: {}",
+        stderr(&rules)
+    );
+    assert!(String::from_utf8_lossy(&rules.stdout).contains("No rules loaded"));
+}
+
+/// The proxy's own metrics endpoint stays reachable, because it is a capability in its own right: it
+/// needs no credential, so a scrape can read it without the daemon's token.
+#[test]
+fn metrics_can_still_be_read_from_the_proxy_endpoint() {
+    let harness = Harness::new();
+    harness.start();
+
+    let proxy_url = format!("http://127.0.0.1:{}", harness.proxy_port());
+    let metrics = harness.relay(&["metrics", "--proxy-url", &proxy_url, "--output", "json"]);
+    assert!(
+        metrics.status.success(),
+        "the proxy's `/_relay/metrics` must keep working: {}",
+        stderr(&metrics)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&metrics.stdout).expect("metrics --output json must print JSON");
+    assert!(parsed.get("flows_total").is_some(), "got {parsed}");
+}
+
 /// "Who started this proxy" must outlive the command that asked: the audit trail records the actor
 /// and the client's own label, and `status` surfaces them.
 #[test]
