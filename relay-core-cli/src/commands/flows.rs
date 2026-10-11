@@ -27,6 +27,8 @@ pub struct FlowsOptions {
     pub has_error: bool,
     /// Only WebSocket flows, and search rather than stream.
     pub websocket: bool,
+    /// Also list the CONNECT flows that opened tunnels.
+    pub include_connect: bool,
     pub limit: usize,
 }
 
@@ -88,6 +90,7 @@ impl FlowsOptions {
         if self.websocket {
             query.is_websocket = Some(true);
         }
+        query.include_connect = self.include_connect;
         query.limit = Some(self.limit.clamp(1, 200));
         query.offset = Some(0);
         (query, parsed.text_tokens)

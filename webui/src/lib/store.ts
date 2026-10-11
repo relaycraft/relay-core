@@ -1,5 +1,6 @@
 import { createStore, produce } from 'solid-js/store';
 import { grpcOutcome } from '@/lib/flowSummary';
+import { isTunnel } from '@/lib/tunnels';
 import type { FlowSummary, CoreMetrics, CoreStatusSnapshot, InterceptItem, Rule } from '@/types/api';
 
 export type ViewId = 'flows' | 'workshop' | 'rules' | 'scripts' | 'settings';
@@ -25,6 +26,8 @@ export interface AppState {
   showHelp: boolean;
   flowDetailGeneration: number;
   bodyBudgetExceeded: Set<string>;
+  /** Bumped when the list must be refetched, e.g. after asking to see tunnels again. */
+  flowReloadGeneration: number;
 }
 
 export function createAppStore() {
@@ -44,7 +47,39 @@ export function createAppStore() {
     showHelp: false,
     flowDetailGeneration: 0,
     bodyBudgetExceeded: new Set<string>(),
+    flowReloadGeneration: 0,
   });
+
+  /**
+   * Drop the CONNECT flows from the list, because the reader just asked not to see them.
+   *
+   * Flipping the setting the other way needs a reload instead: the rows are not in the client any
+   * more once they are gone, so only the server can supply them — and it will, for the same reason
+   * `tunnels.ts` sends the flag rather than filtering a page locally.
+   */
+  function hideTunnels() {
+    setState(
+      produce((s) => {
+        const hidden = s.flowOrder.filter((id) => {
+          const flow = s.flows.get(id);
+          return flow ? isTunnel(flow) : false;
+        });
+        for (const id of hidden) {
+          s.flows.delete(id);
+        }
+        s.flowOrder = s.flowOrder.filter((id) => !hidden.includes(id));
+        if (s.selectedFlowId && hidden.includes(s.selectedFlowId)) {
+          s.selectedFlowId = null;
+        }
+        s.flowDetailGeneration++;
+      }),
+    );
+  }
+
+  /** Ask for the list to be refetched. See `views/Settings.tsx` for why showing tunnels needs it. */
+  function requestFlowReload() {
+    setState('flowReloadGeneration', (n) => n + 1);
+  }
 
   function upsertFlow(summary: FlowSummary) {
     setState(
@@ -185,6 +220,8 @@ export function createAppStore() {
     setState,
     upsertFlow,
     syncFlows,
+    hideTunnels,
+    requestFlowReload,
     clearFlows,
     setActiveView,
     selectFlow,

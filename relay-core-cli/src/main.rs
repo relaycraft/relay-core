@@ -259,6 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             status_max,
             has_error,
             websocket,
+            include_connect,
             limit,
         } => {
             commands::flows::execute(commands::flows::FlowsOptions {
@@ -273,6 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 status_max,
                 has_error,
                 websocket,
+                include_connect,
                 limit,
             })
             .await?;

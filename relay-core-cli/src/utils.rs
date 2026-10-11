@@ -228,6 +228,9 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                 resilience_trace: None,
                 rule_variables: std::collections::HashMap::new(),
                 matched_rules: vec![],
+                connection_id: None,
+                parent_flow_id: None,
+                protocol_stack: vec![],
             };
             Some(flow)
         })

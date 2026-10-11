@@ -1,6 +1,7 @@
 import { createSignal, createEffect, Show } from 'solid-js';
 import { store } from '@/lib/store';
 import { getPolicy, patchPolicy } from '@/lib/api';
+import { showTunnels, setShowTunnels } from '@/lib/tunnels';
 import type { ProxyPolicy } from '@/types/api';
 
 /** Bytes the way a person reads them: `10485760 bytes` is `10 MiB`. */
@@ -26,6 +27,7 @@ function formatMillis(ms: number): string {
 }
 
 export default function SettingsView() {
+  const [tunnels, setTunnels] = createSignal(showTunnels());
   const [policy, setPolicy] = createSignal<ProxyPolicy | null>(null);
   const [error, setError] = createSignal('');
   const [saved, setSaved] = createSignal(false);
@@ -46,6 +48,25 @@ export default function SettingsView() {
       setError(String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  /**
+   * Show or hide the CONNECT flows that opened tunnels.
+   *
+   * Hiding is local — the rows are dropped from the list. Showing needs the server, because the rows
+   * are not in the client any more; `location.reload()` is deliberately not used, so the reader
+   * keeps their place in the app while the list catches up.
+   */
+  function toggleTunnels() {
+    const next = !tunnels();
+    setTunnels(next);
+    setShowTunnels(next);
+    if (next) {
+      // The flags ride on the list request, so a reload of the page's flows is what surfaces them.
+      store.requestFlowReload();
+    } else {
+      store.hideTunnels();
     }
   }
 
@@ -112,6 +133,27 @@ export default function SettingsView() {
                   />
                   <span>Redact request/response bodies</span>
                 </label>
+                </div>
+              </section>
+
+              <section class="border border-border/60 rounded-md overflow-hidden">
+                <h3 class="px-2 py-1 text-[12px] font-bold text-text-dim uppercase tracking-wide bg-surface-alt border-b border-border/60">
+                  Flow list
+                </h3>
+                <div class="p-3 space-y-2">
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="accent-accent w-3.5 h-3.5"
+                      checked={tunnels()}
+                      onChange={toggleTunnels}
+                    />
+                    <span>Show CONNECT tunnels</span>
+                  </label>
+                  <p class="text-text-dim text-[12px]">
+                    A tunnel is recorded either way — the requests inside it point back at it — but
+                    one row per HTTPS destination is left out of the list unless asked for.
+                  </p>
                 </div>
               </section>
 

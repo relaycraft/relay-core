@@ -159,3 +159,30 @@ describe('flow order', () => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+describe('hideTunnels', () => {
+  it('drops the CONNECT flows and keeps the requests', () => {
+    const app = createAppStore();
+    app.upsertFlow(makeSummary('req-1', 1000));
+    app.upsertFlow({ ...makeSummary('tunnel-1', 2000), method: 'CONNECT', tags: ['connect'] });
+    app.upsertFlow(makeSummary('req-2', 3000));
+
+    expect(app.state.flowOrder).toHaveLength(3);
+
+    app.hideTunnels();
+
+    expect(app.state.flowOrder).toHaveLength(2);
+    expect(app.state.flows.has('tunnel-1')).toBe(false);
+    expect(app.state.flowOrder.slice().sort()).toEqual(['req-1', 'req-2']);
+  });
+
+  it('clears the selection when the selected flow was a tunnel', () => {
+    const app = createAppStore();
+    app.upsertFlow({ ...makeSummary('tunnel-1', 1000), method: 'CONNECT', tags: ['connect'] });
+    app.setState('selectedFlowId', 'tunnel-1');
+
+    app.hideTunnels();
+
+    expect(app.state.selectedFlowId).toBeNull();
+  });
+});

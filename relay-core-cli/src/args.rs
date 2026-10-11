@@ -379,6 +379,14 @@ pub enum Commands {
         #[arg(long)]
         websocket: bool,
 
+        /// Also list the CONNECT flows that opened tunnels
+        ///
+        /// Tunnels are recorded but left out of a listing unless asked for; one row per HTTPS
+        /// destination is noise in a list of requests. Asking for `--method CONNECT` also includes
+        /// them.
+        #[arg(long)]
+        include_connect: bool,
+
         #[arg(long, default_value = "50")]
         limit: usize,
     },

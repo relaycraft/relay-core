@@ -1,9 +1,10 @@
-import { onMount, onCleanup } from 'solid-js';
+import { onMount, onCleanup, createEffect } from 'solid-js';
 import { connectSse } from '@/lib/sse';
 import { flowToSummary } from '@/lib/flowSummary';
 import { createFlowBatcher } from '@/lib/flowQueue';
 import { store } from '@/lib/store';
 import { searchFlows, getMetrics, getStatus, listRules, listIntercepts } from '@/lib/api';
+import { showTunnels, tunnelQuery } from '@/lib/tunnels';
 import Layout from '@/components/Layout';
 
 export default function App() {
@@ -13,7 +14,7 @@ export default function App() {
   async function fullSync() {
     try {
       const [page, metrics, status, rules, interceptSnapshot] = await Promise.all([
-        searchFlows({ limit: '200' }),
+        searchFlows({ limit: '200', ...tunnelQuery(showTunnels()) }),
         getMetrics(),
         getStatus(),
         listRules(),
@@ -39,6 +40,12 @@ export default function App() {
   const flows = createFlowBatcher({
     apply: (flow) => store.upsertFlow(flowToSummary(flow)),
     resync: () => void fullSync(),
+  });
+
+  // Showing tunnels again needs the server's rows, because hiding removed them from the client.
+  createEffect(() => {
+    const generation = store.state.flowReloadGeneration;
+    if (generation > 0) void fullSync();
   });
 
   async function refreshMetrics() {

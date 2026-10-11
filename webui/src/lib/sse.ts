@@ -1,4 +1,5 @@
 import type { Flow, CoreStatusSnapshot, AuditEvent } from '@/types/api';
+import { isTunnel, showTunnels } from '@/lib/tunnels';
 
 export type SseEvent =
   | { type: 'flow'; data: Flow }
@@ -36,7 +37,12 @@ export function connectSse(handler: SseEventHandler, options?: SseConnectOptions
 
     es.addEventListener('flow', (e) => {
       try {
-        handler({ type: 'flow', data: JSON.parse(e.data) });
+        const flow = JSON.parse(e.data);
+        // The live stream carries every capture, including the CONNECT instruction of a tunnel the
+        // reader asked not to see. Filtering here (rather than in the list) keeps the store honest:
+        // what is in it is what the list shows.
+        if (!showTunnels() && isTunnel(flow)) return;
+        handler({ type: 'flow', data: flow });
       } catch {}
     });
 
