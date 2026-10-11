@@ -1,5 +1,5 @@
 pub use crate::flow_query::{
-    FlowFilter, flow_matches_filter, flow_matches_query, parse_flow_filter,
+    FlowFilter, flow_matches_filter, flow_matches_query, parse_flow_filter, wants_connect,
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,17 @@ pub struct FlowQuery {
     pub has_error: Option<bool>,
     /// 仅返回 WebSocket 流量
     pub is_websocket: Option<bool>,
+    /// Include the CONNECT instruction flows that opened tunnels.
+    ///
+    /// Defaults to `false`, and the default is the point: a tunnel is recorded so its exchanges can
+    /// be related to it (roadmap §4-1), but a list of requests that mixes in one row per HTTPS
+    /// destination is noise — Fiddler is asked how to turn that off. So the *recording* is
+    /// unconditional and the *listing* is opt-in. Naming a CONNECT method explicitly counts as
+    /// opting in, because a caller who asked for CONNECT and got an empty list would be reading a
+    /// filter that silently contradicted the request.
+    #[serde(default)]
+    pub include_connect: bool,
+
     /// 返回条数上限，默认 50
     pub limit: Option<usize>,
     /// 结果偏移量，默认 0

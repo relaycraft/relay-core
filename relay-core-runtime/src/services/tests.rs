@@ -72,6 +72,9 @@ fn sample_flow(host: &str, path: &str) -> Flow {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     }
 }
 

@@ -3,8 +3,8 @@ use crate::intercept::types::{
     BoxError, HttpBody, InterceptionResult, Interceptor, RequestAction, WebSocketMessageAction,
 };
 use crate::proxy::http_utils::{
-    coalesce_cookie_headers, create_error_response, create_initial_flow, mock_to_response,
-    parse_request_meta, update_flow_with_response_headers,
+    ExchangeOrigin, coalesce_cookie_headers, create_error_response, create_initial_flow,
+    mock_to_response, parse_request_meta, update_flow_with_response_headers,
 };
 use crate::proxy::outbound::OutboundConnector;
 use chrono::Utc;
@@ -69,6 +69,7 @@ fn validate_ws_strict_handshake<B>(
 pub async fn handle_websocket_handshake<B>(
     req: Request<B>,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
@@ -92,7 +93,7 @@ where
     }
 
     // Create Initial Flow for WebSocket Handshake
-    let mut flow = create_initial_flow(meta.clone(), None, client_addr, is_mitm, true);
+    let mut flow = create_initial_flow(meta.clone(), None, client_addr, is_mitm, true, &origin);
 
     // INTERCEPT HEADERS (Handshake)
     match interceptor.on_request_headers(&mut flow).await {

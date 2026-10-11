@@ -2,7 +2,7 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
 use rcgen::generate_simple_self_signed;
-use relay_core_api::flow::FlowUpdate;
+use relay_core_api::flow::{CONNECT_TAG, FlowUpdate};
 use relay_core_api::policy::ProxyPolicy;
 use relay_core_lib::capture::TcpCaptureSource;
 use relay_core_lib::interceptor::NoOpInterceptor;
@@ -491,10 +491,19 @@ async fn test_https_mitm_h2() {
 
     // 6. Verify Interception Flow: both streams are recorded, and the Flow states the protocol the
     // client actually spoke rather than the builder's H1 default.
+    //
+    // The CONNECT instruction is a flow of its own now (roadmap §4-1), and it arrives first: it is
+    // what the tunnel's exchanges point back at. It is tagged, so a consumer that wants requests
+    // rather than tunnels can say so — which is what this loop does.
     let mut versions = Vec::new();
+    let mut connect_flows = 0;
     loop {
         match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(Some(FlowUpdate::Full(flow))) => {
+                if flow.tags.iter().any(|tag| tag == CONNECT_TAG) {
+                    connect_flows += 1;
+                    continue;
+                }
                 if let relay_core_api::flow::Layer::Http(http) = flow.layer
                     && http.request.url.as_str().contains("https")
                 {
@@ -513,6 +522,10 @@ async fn test_https_mitm_h2() {
         }
     }
 
+    assert_eq!(
+        connect_flows, 1,
+        "the CONNECT the client opened must be recorded exactly once"
+    );
     assert_eq!(versions.len(), 2, "both H2 streams must be recorded");
     assert!(
         versions.iter().all(|v| v == "HTTP/2.0"),

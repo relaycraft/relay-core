@@ -235,6 +235,9 @@ impl UdpSessionManager {
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec!["udp".to_string()],
         }
     }
 }
@@ -386,6 +389,9 @@ impl UdpProxy {
                                     resilience_trace: None,
                                     rule_variables: HashMap::new(),
                                     matched_rules: vec![],
+                                    connection_id: None,
+                                    parent_flow_id: None,
+                                    protocol_stack: vec!["udp".to_string()],
                                 };
                                 if !self.check_udp_session(&mut flow).await {
                                     continue;
@@ -501,6 +507,9 @@ impl UdpProxy {
                         resilience_trace: None,
                         rule_variables: HashMap::new(),
                         matched_rules: vec![],
+                        connection_id: None,
+                        parent_flow_id: None,
+                        protocol_stack: vec!["udp".to_string()],
                     };
                     if !self.check_udp_session(&mut flow).await {
                         continue;
@@ -748,6 +757,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec!["udp".to_string()],
         };
         assert!(
             opening.end_time.is_none(),
@@ -817,6 +829,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec!["udp".to_string()],
         }
     }
 

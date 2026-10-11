@@ -12,7 +12,7 @@ use crate::proxy::body_plan::{
 };
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http_utils::{
-    body_data_to_bytes, build_client_response_head, build_forward_request,
+    ExchangeOrigin, body_data_to_bytes, build_client_response_head, build_forward_request,
     build_request_body_from_flow, create_error_response, create_initial_flow, mock_to_response,
     parse_request_meta, reframe_response_headers_for_replaced_body, request_body_from_flow_len,
     update_flow_with_response_headers,
@@ -27,14 +27,20 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use relay_core_api::event::CloseReason;
-use relay_core_api::flow::{Direction, FlowUpdate, Layer, ResilienceTrace};
+use relay_core_api::flow::{
+    CONNECT_TAG, Direction, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse, Layer,
+    NetworkInfo, ResilienceTrace, ResponseTiming, TransportProtocol, http_protocol_stack,
+};
 use relay_core_api::policy::ProxyPolicy;
+use url::Url;
+use uuid::Uuid;
 
 /// Main entry point for HTTP Proxy handling
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_request(
     req: Request<Incoming>,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     on_flow: Sender<FlowUpdate>,
     ca: Arc<CertificateAuthority>,
     connector: Arc<dyn OutboundConnector>,
@@ -65,32 +71,65 @@ pub async fn handle_request(
             ));
         }
 
+        // The CONNECT instruction is an exchange in its own right: it is recorded, so that the
+        // requests inside the tunnel can point back at it (`parent_flow_id`) and so that the tunnel's
+        // own lifetime, target and outcome are in the capture. It carries [`CONNECT_TAG`], which is
+        // the key a host filters on — recording it and listing it in a request list are separate
+        // decisions (see `docs/decisions/0010`).
+        let mut connect = connect_flow(&req, &host, client_addr, origin.connection_id);
+        let tunnel_origin = origin.inside_tunnel(connect.id);
+        let finish_on = on_flow.clone();
+        if let Err(e) = on_flow
+            .send(FlowUpdate::Full(Box::new(connect.clone())))
+            .await
+        {
+            tracing::warn!("Could not publish the CONNECT flow: {e}");
+        }
+
         let loop_detector = loop_detector.clone();
         let policy_rx = policy_rx.clone();
 
         tokio::task::spawn(async move {
-            match hyper::upgrade::on(req).await {
-                Ok(upgraded) => {
-                    if let Err(e) = tunnel::handle_tunnel(
-                        upgraded,
-                        host,
-                        client_addr,
-                        ca,
-                        on_flow,
-                        connector,
-                        interceptor,
-                        policy_rx,
-                        target_addr,
-                        loop_detector,
-                        circuit_breaker,
-                    )
-                    .await
-                    {
-                        tracing::error!("Tunnel error: {}", e);
+            let outcome = match hyper::upgrade::on(req).await {
+                Ok(upgraded) => tunnel::handle_tunnel(
+                    upgraded,
+                    host,
+                    client_addr,
+                    tunnel_origin,
+                    ca,
+                    on_flow,
+                    connector,
+                    interceptor,
+                    policy_rx,
+                    target_addr,
+                    loop_detector,
+                    circuit_breaker,
+                )
+                .await
+                .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+
+            // The tunnel has ended, so the CONNECT flow can be closed with a real duration and a
+            // reason. Until this landed there was nowhere for a tunnel's outcome to be recorded at
+            // all: it is not a request/response pair, and nothing else outlives `handle_tunnel`.
+            match &outcome {
+                Ok(()) => {
+                    connect.end_time = Some(chrono::Utc::now());
+                    connect.close_reason = Some(CloseReason::Completed);
+                }
+                Err(reason) => {
+                    tracing::error!("Tunnel error: {reason}");
+                    connect.end_time = Some(chrono::Utc::now());
+                    connect.close_reason = Some(CloseReason::ParserError {
+                        detail: reason.clone(),
+                    });
+                    if let Layer::Http(http) = &mut connect.layer {
+                        http.error = Some(reason.clone());
                     }
                 }
-                Err(e) => tracing::error!("Upgrade error: {}", e),
             }
+            let _ = finish_on.send(FlowUpdate::Full(Box::new(connect))).await;
         });
         return Ok(Response::new(
             Full::new(Bytes::new()).map_err(|e| e.into()).boxed(),
@@ -101,6 +140,7 @@ pub async fn handle_request(
     handle_http_request(
         req,
         client_addr,
+        origin,
         on_flow,
         connector,
         interceptor,
@@ -111,6 +151,107 @@ pub async fn handle_request(
         circuit_breaker,
     )
     .await
+}
+
+/// Build the flow for one CONNECT instruction.
+///
+/// A tunnel is an exchange in its own right, and recording it is what lets the requests inside it
+/// say which tunnel they came out of. The peers that model this agree on the shape and differ only in
+/// presentation: mitmproxy creates an `HTTPFlow` for CONNECT and raises `http_connect` for it, and
+/// Proxyman keeps connection detail in a panel of its own; Fiddler lists the tunnel as an ordinary
+/// row and is asked how to turn that off. So this flow is tagged [`CONNECT_TAG`] — the engine records
+/// the fact, and a host decides whether it belongs in a request list.
+///
+/// The CONNECT line carries no scheme, because establishing it is the whole point of the tunnel; the
+/// target is therefore recorded with the scheme its own port implies, as mitmproxy represents a
+/// client's `CONNECT example.com:443` as an https target. What was actually spoken appears on the
+/// flows *inside* the tunnel, which observe the wire.
+fn connect_flow(
+    req: &Request<Incoming>,
+    host: &str,
+    client_addr: SocketAddr,
+    connection_id: Uuid,
+) -> Flow {
+    let scheme = if host.ends_with(":80") {
+        "http"
+    } else {
+        "https"
+    };
+    let url = Url::parse(&format!("{scheme}://{host}"))
+        .unwrap_or_else(|_| Url::parse("http://unknown").unwrap());
+    let version = format!("{:?}", req.version());
+
+    let network = NetworkInfo {
+        client_ip: client_addr.ip().to_string(),
+        client_port: client_addr.port(),
+        server_ip: "0.0.0.0".to_string(), // unknown: this engine does not dial on the client's behalf
+        server_port: 0,
+        server_host: Some(host.to_string()),
+        protocol: TransportProtocol::TCP,
+        // The CONNECT request itself is not TLS; the tunnel it opens may be, and the flows inside
+        // record that for themselves.
+        tls: false,
+        tls_version: None,
+        sni: None,
+    };
+
+    let request = HttpRequest {
+        method: "CONNECT".to_string(),
+        url,
+        version: version.clone(),
+        headers: req
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    value.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect(),
+        cookies: Vec::new(),
+        query: Vec::new(),
+        body: None,
+    };
+
+    Flow {
+        id: Uuid::new_v4(),
+        start_time: chrono::Utc::now(),
+        // The tunnel is still open; both are set when it ends.
+        end_time: None,
+        close_reason: None,
+        network,
+        layer: Layer::Http(HttpLayer {
+            request,
+            // `200 Connection Established` is the answer the client is given below, and it is the
+            // reason the tunnel exists at all.
+            response: Some(HttpResponse {
+                status: 200,
+                status_text: "Connection Established".to_string(),
+                version,
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: None,
+                trailers: Vec::new(),
+                timing: ResponseTiming {
+                    time_to_first_byte: None,
+                    time_to_last_byte: None,
+                    connect_time_ms: None,
+                    ssl_time_ms: None,
+                },
+            }),
+            error: None,
+        }),
+        tags: vec![CONNECT_TAG.to_string()],
+        meta: std::collections::HashMap::new(),
+        resilience_trace: None,
+        rule_variables: std::collections::HashMap::new(),
+        matched_rules: Vec::new(),
+        connection_id: Some(connection_id.to_string()),
+        // A CONNECT has no parent: it *is* the parent.
+        parent_flow_id: None,
+        protocol_stack: http_protocol_stack(false, &format!("{:?}", req.version())),
+    }
 }
 
 /// Frame observed bodies and report them, away from the connection task.
@@ -151,6 +292,7 @@ fn spawn_observed_body_reporter(
 pub(crate) async fn handle_http_request<B>(
     req: Request<B>,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
@@ -183,7 +325,7 @@ where
     let meta = parse_request_meta(&req, is_mitm);
 
     // Note: We don't read body here for streaming support
-    let mut flow = create_initial_flow(meta, None, client_addr, is_mitm, false);
+    let mut flow = create_initial_flow(meta, None, client_addr, is_mitm, false, &origin);
 
     // P1a: Mark budget exceeded for oversized requests
     if request_budget_exceeded {
@@ -199,6 +341,7 @@ where
         return handle_websocket_handshake(
             req,
             client_addr,
+            origin,
             on_flow,
             connector,
             interceptor,

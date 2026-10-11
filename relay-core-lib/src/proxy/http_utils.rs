@@ -17,6 +17,8 @@ use relay_core_api::flow::{
 };
 use relay_core_api::policy::ProxyPolicy;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use url::Url;
 use uuid::Uuid;
 
@@ -137,15 +139,62 @@ pub fn coalesce_cookie_headers(headers: &[(String, String)]) -> Vec<(String, Str
     out
 }
 
+/// Which client connection an exchange arrived on, and which tunnel it came out of.
+///
+/// It travels down from the accept loop because that is the only place that knows the connection:
+/// the service hyper calls is built per connection, so the identity has to be carried with it.
+#[derive(Debug, Clone)]
+pub struct ExchangeOrigin {
+    /// The accepted client connection (roadmap §4-1 `connection_id`).
+    pub connection_id: Uuid,
+    /// The CONNECT flow this exchange arrived inside, when it arrived through a tunnel.
+    pub parent_flow_id: Option<Uuid>,
+    /// How many flows this connection has produced.
+    ///
+    /// Counted where flows are built rather than at the accept loop, because one accepted connection
+    /// yields flows on several paths (a plain exchange, a WebSocket handshake, and every exchange
+    /// inside a CONNECT tunnel). It is the number `on_disconnect` reports as `flows_count`, which
+    /// used to be a hard-coded zero.
+    pub flows: Arc<AtomicU64>,
+}
+
+impl ExchangeOrigin {
+    pub fn new(connection_id: Uuid) -> Self {
+        Self {
+            connection_id,
+            parent_flow_id: None,
+            flows: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// The origin of an exchange inside this connection's CONNECT tunnel.
+    pub fn inside_tunnel(&self, connect_flow_id: Uuid) -> Self {
+        Self {
+            connection_id: self.connection_id,
+            parent_flow_id: Some(connect_flow_id),
+            flows: self.flows.clone(),
+        }
+    }
+}
+
+/// Build the flow for one HTTP exchange (roadmap §4-1 relationship fields included).
 pub fn create_initial_flow(
     meta: RequestMeta,
     req_body: Option<BodyData>,
     client_addr: SocketAddr,
     is_mitm: bool,
     is_websocket: bool,
+    origin: &ExchangeOrigin,
 ) -> Flow {
     let flow_id = Uuid::new_v4();
     let start_time = Utc::now();
+
+    // The protocols this exchange travelled over, from facts observed here rather than assumed: the
+    // transport we accepted, whether we terminated TLS, and the version hyper parsed the request as.
+    let protocol_stack = relay_core_api::flow::http_protocol_stack(is_mitm, &meta.version);
+    origin
+        .flows
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Parsed once, because both the network info and the request need it.
     let url = Url::parse(&meta.url_str).unwrap_or_else(|_| Url::parse("http://unknown").unwrap());
@@ -215,6 +264,9 @@ pub fn create_initial_flow(
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: Some(origin.connection_id.to_string()),
+            parent_flow_id: origin.parent_flow_id,
+            protocol_stack,
         }
     } else {
         Flow {
@@ -233,6 +285,9 @@ pub fn create_initial_flow(
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: Some(origin.connection_id.to_string()),
+            parent_flow_id: origin.parent_flow_id,
+            protocol_stack,
         }
     };
 
@@ -992,6 +1047,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 
@@ -1015,6 +1073,7 @@ mod tests {
             "127.0.0.1:12345".parse().expect("addr"),
             false,
             false,
+            &super::ExchangeOrigin::new(uuid::Uuid::new_v4()),
         );
 
         assert_eq!(
@@ -1040,6 +1099,7 @@ mod tests {
             "127.0.0.1:12345".parse().expect("addr"),
             true,
             false,
+            &super::ExchangeOrigin::new(uuid::Uuid::new_v4()),
         );
         assert_eq!(
             flow.network.server_host.as_deref(),

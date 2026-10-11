@@ -10,9 +10,25 @@ pub struct FlowFilter {
     pub text_tokens: Vec<String>,
 }
 
+/// Should CONNECT instruction flows appear in this result set?
+///
+/// Opt-in, unless the caller named CONNECT as the method — that is an explicit request for exactly
+/// these flows, and answering it with an empty list would be a filter contradicting its input.
+pub fn wants_connect(query: &FlowQuery) -> bool {
+    query.include_connect
+        || query
+            .method
+            .as_deref()
+            .is_some_and(|method| method.eq_ignore_ascii_case("CONNECT"))
+}
+
 /// Returns true when `flow` satisfies all set fields in `query` (AND semantics).
 pub fn flow_matches_query(flow: &Flow, query: &FlowQuery) -> bool {
     let (host_str, path_str, method_str, status, is_ws) = flow_layer_fields(flow);
+
+    if !wants_connect(query) && flow.tags.iter().any(|tag| tag == crate::flow::CONNECT_TAG) {
+        return false;
+    }
 
     if let Some(h) = &query.host
         && !host_str
@@ -264,6 +280,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 
@@ -474,5 +493,124 @@ mod tests {
         let flow = http_flow("http://api.example.com/missing", "GET", Some(404));
         assert!(!crate::flow::flow_is_error(&flow));
         assert!(!flow_matches_filter(&flow, &parse_flow_filter("err")));
+    }
+}
+
+#[cfg(test)]
+mod connect_visibility_tests {
+    use super::*;
+    use crate::flow::CONNECT_TAG;
+    use crate::modification::FlowQuery;
+
+    fn connect_flow() -> Flow {
+        let mut flow = http_flow_placeholder();
+        flow.tags.push(CONNECT_TAG.to_string());
+        // A real CONNECT flow carries the method it was: the tag and the method say the same thing,
+        // which is what makes "asked for CONNECT" and "asked for tunnels" the same question.
+        if let crate::flow::Layer::Http(http) = &mut flow.layer {
+            http.request.method = "CONNECT".to_string();
+        }
+        flow
+    }
+
+    fn http_flow_placeholder() -> Flow {
+        use crate::flow::{
+            HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo, ResponseTiming,
+            TransportProtocol,
+        };
+        use std::collections::HashMap;
+        Flow {
+            id: uuid::Uuid::new_v4(),
+            start_time: chrono::Utc::now(),
+            end_time: None,
+            close_reason: None,
+            network: NetworkInfo {
+                client_ip: "127.0.0.1".into(),
+                client_port: 1,
+                server_ip: "127.0.0.1".into(),
+                server_port: 443,
+                server_host: None,
+                protocol: TransportProtocol::TCP,
+                tls: false,
+                tls_version: None,
+                sni: None,
+            },
+            layer: Layer::Http(HttpLayer {
+                request: HttpRequest {
+                    method: "GET".into(),
+                    url: url::Url::parse("https://example.com/a").expect("url"),
+                    version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    cookies: vec![],
+                    query: vec![],
+                    body: None,
+                },
+                response: Some(HttpResponse {
+                    status: 200,
+                    status_text: "OK".into(),
+                    version: "HTTP/1.1".into(),
+                    headers: vec![],
+                    cookies: vec![],
+                    body: None,
+                    trailers: vec![],
+                    timing: ResponseTiming {
+                        time_to_first_byte: None,
+                        time_to_last_byte: None,
+                        connect_time_ms: None,
+                        ssl_time_ms: None,
+                    },
+                }),
+                error: None,
+            }),
+            tags: vec![],
+            meta: HashMap::new(),
+            resilience_trace: None,
+            rule_variables: HashMap::new(),
+            matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
+        }
+    }
+
+    /// A tunnel is recorded, but a list of requests does not include it unless asked.
+    #[test]
+    fn a_connect_flow_is_left_out_of_a_list_unless_asked_for() {
+        let flow = connect_flow();
+
+        assert!(
+            !flow_matches_query(&flow, &FlowQuery::default()),
+            "the default answer to \"which requests happened\" excludes the tunnels between them"
+        );
+
+        let asked = FlowQuery {
+            include_connect: true,
+            ..FlowQuery::default()
+        };
+        assert!(
+            flow_matches_query(&flow, &asked),
+            "an explicit opt-in must reach them"
+        );
+    }
+
+    /// Asking for CONNECT by method and being handed nothing would be a filter contradicting its
+    /// own input, so that spelling counts as asking.
+    #[test]
+    fn naming_connect_as_the_method_is_itself_an_opt_in() {
+        let flow = connect_flow();
+        let query = FlowQuery {
+            method: Some("connect".to_string()),
+            ..FlowQuery::default()
+        };
+        assert!(flow_matches_query(&flow, &query));
+    }
+
+    /// The exclusion must not touch ordinary traffic.
+    #[test]
+    fn an_ordinary_flow_is_unaffected() {
+        assert!(flow_matches_query(
+            &http_flow_placeholder(),
+            &FlowQuery::default()
+        ));
     }
 }

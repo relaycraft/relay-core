@@ -24,6 +24,7 @@ pub fn search_flows_schema() -> Tool {
                 "status_max":    { "type": "integer", "description": "Maximum HTTP status code (inclusive)" },
                 "has_error":     { "type": "boolean", "description": "If true, only return flows with 5xx or error tags" },
                 "is_websocket":  { "type": "boolean", "description": "If true, only return WebSocket flows" },
+                "include_connect": { "type": "boolean", "description": "Include the CONNECT flows that opened tunnels. Tunnels are recorded but left out of a request list unless asked for; naming method CONNECT also includes them." },
                 "limit":         { "type": "integer", "description": "Max results to return (default 50, max 200)" },
                 "offset":        { "type": "integer", "description": "Result offset for pagination (default 0)" }
             }
@@ -83,6 +84,10 @@ pub async fn search_flows(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOu
             .map(|v| v as u16),
         has_error: args.get("has_error").and_then(Value::as_bool),
         is_websocket: args.get("is_websocket").and_then(Value::as_bool),
+        include_connect: args
+            .get("include_connect")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         limit: args
             .get("limit")
             .and_then(Value::as_u64)

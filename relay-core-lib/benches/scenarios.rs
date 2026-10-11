@@ -69,6 +69,9 @@ fn make_flow(url: &str) -> Flow {
             }),
             error: None,
         }),
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     }
 }
 

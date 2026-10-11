@@ -14,7 +14,7 @@ use crate::capture::loop_detection::LoopDetector;
 use crate::interceptor::{ConnectAction, ConnectionInfo, ENGINE_INDEX, Interceptor};
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_request;
-use crate::proxy::http_utils::HttpsClient;
+use crate::proxy::http_utils::{ExchangeOrigin, HttpsClient};
 use crate::proxy::outbound::{
     DirectConnector, HttpUpstreamConnector, HttpsUpstreamConnector, OutboundConnector,
 };
@@ -210,6 +210,11 @@ where
                 resilience_trace: None,
                 rule_variables: HashMap::new(),
                 matched_rules: vec![],
+                // The Connect stage runs against a flow built for the connection itself, so it is
+                // this connection's — and this is a TCP accept, nothing above it yet.
+                connection_id: Some(conn_id.to_string()),
+                parent_flow_id: None,
+                protocol_stack: vec!["tcp".to_string()],
             };
             let ctx = engine.execute(RuleStage::Connect, &mut flow).await;
             if ctx.is_terminated() {
@@ -291,6 +296,8 @@ where
                 .header_read_timeout(Duration::from_secs(10))
                 .preserve_header_case(true)
                 .title_case_headers(true);
+            let origin = ExchangeOrigin::new(conn_id);
+            let flows = origin.flows.clone();
             let result = builder
                 .serve_connection_with_upgrades(
                     io,
@@ -299,6 +306,7 @@ where
                         handle_request(
                             req,
                             client_addr,
+                            origin.clone(),
                             on_flow.clone(),
                             ca.clone(),
                             connector,
@@ -316,7 +324,7 @@ where
                 duration_ms: conn_start.elapsed().as_millis() as u64,
                 bytes_sent: conn_meter.snapshot_bytes_sent(),
                 bytes_received: conn_meter.snapshot_bytes_recv(),
-                flows_count: 0,
+                flows_count: flows.load(Ordering::Relaxed),
             };
             interceptor_2.on_disconnect(&conn_info_2, &stats).await;
 

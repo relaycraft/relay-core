@@ -690,6 +690,9 @@ mod intercept_resolution_tests {
             resilience_trace: None,
             rule_variables: Default::default(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 
@@ -894,6 +897,9 @@ mod body_budget_skip_tests {
             resilience_trace: None,
             rule_variables: HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 

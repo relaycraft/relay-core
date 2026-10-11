@@ -156,6 +156,9 @@ fn dummy_flow() -> Flow {
         resilience_trace: None,
         rule_variables: HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     }
 }
 

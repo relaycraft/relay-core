@@ -2483,6 +2483,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 
@@ -2561,6 +2564,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: std::collections::HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 
@@ -3715,6 +3721,7 @@ mod tests {
                     status_max: None,
                     has_error: None,
                     is_websocket: None,
+                    include_connect: false,
                     limit: Some(3),
                     offset: Some(0),
                 })
@@ -3735,6 +3742,7 @@ mod tests {
                 status_max: None,
                 has_error: None,
                 is_websocket: None,
+                include_connect: false,
                 limit: Some(1),
                 offset: Some(1),
             })

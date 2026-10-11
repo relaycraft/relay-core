@@ -33,6 +33,8 @@ pub struct FlowQueryParams {
     pub status_max: Option<u16>,
     pub has_error: Option<bool>,
     pub is_websocket: Option<bool>,
+    /// Include the CONNECT instruction flows that opened tunnels. Off unless asked for.
+    pub include_connect: Option<bool>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
@@ -59,6 +61,7 @@ async fn search_flows(
         status_max: params.status_max,
         has_error: params.has_error,
         is_websocket: params.is_websocket,
+        include_connect: params.include_connect.unwrap_or(false),
         limit: Some(limit),
         offset: Some(offset),
     };
@@ -181,6 +184,7 @@ async fn export_har(
         status_max: params.status_max,
         has_error: params.has_error,
         is_websocket: params.is_websocket,
+        include_connect: params.include_connect.unwrap_or(false),
         limit: Some(limit),
         offset: params.offset,
     };

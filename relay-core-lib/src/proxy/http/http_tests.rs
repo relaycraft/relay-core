@@ -47,6 +47,9 @@ fn create_test_flow() -> Flow {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     }
 }
 
@@ -91,6 +94,7 @@ async fn test_request_timeout() {
     let resp = handle_http_request(
         req,
         "127.0.0.1:12345".parse().unwrap(),
+        ExchangeOrigin::new(Uuid::new_v4()),
         tx,
         create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
@@ -243,6 +247,7 @@ async fn test_timeout_sets_trace_timeout_type() {
     let resp = handle_http_request(
         req,
         "127.0.0.1:12345".parse().unwrap(),
+        ExchangeOrigin::new(Uuid::new_v4()),
         tx,
         create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
@@ -319,6 +324,7 @@ async fn test_circuit_breaker_sets_trace() {
     let resp = handle_http_request(
         req,
         "127.0.0.1:12345".parse().unwrap(),
+        ExchangeOrigin::new(Uuid::new_v4()),
         tx,
         create_dummy_connector(),
         Arc::new(crate::interceptor::NoOpInterceptor),
@@ -395,6 +401,7 @@ async fn test_throttle_wires_into_http_pipeline() {
     let resp = handle_http_request(
         req,
         "127.0.0.1:12345".parse().unwrap(),
+        ExchangeOrigin::new(Uuid::new_v4()),
         tx,
         create_dummy_connector(),
         throttle_interceptor,

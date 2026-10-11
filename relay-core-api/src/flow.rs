@@ -179,6 +179,79 @@ pub struct Flow {
     /// only the first is known is what made errors indistinguishable from successes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<crate::event::CloseReason>,
+
+    /// Which client connection this exchange ran on (roadmap §4-1).
+    ///
+    /// One id per accepted connection, shared by every exchange multiplexed over it — which is what
+    /// makes HTTP/2 streams groupable and what lets a consumer answer "what else happened on this
+    /// connection" after the fact. It is an id this engine assigns, not a wire value: the peers that
+    /// model this (mitmproxy's `Connection.id`, HAR's `entry.connection`, Envoy's `%CONNECTION_ID%`)
+    /// all do the same, and mitmproxy records the reason — object identity is enough while a flow is
+    /// live, but a *recorded* flow still has to express it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+
+    /// The CONNECT flow this exchange arrived inside, when it arrived through a tunnel (roadmap §4-1).
+    ///
+    /// A client that sends `CONNECT example.com:443` produces one flow for the instruction itself and
+    /// then one flow per request inside the tunnel; without this pointer the two are only related by
+    /// the connection id, and "which tunnel did this request come out of" cannot be asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_flow_id: Option<Uuid>,
+
+    /// The protocols this exchange actually travelled over, outermost first (roadmap §4-1).
+    ///
+    /// Observed facts, not configuration: e.g. `["tcp", "tls", "h2"]` for HTTP/2 inside a MITM'd
+    /// tunnel, `["tcp", "h2c"]` for prior-knowledge HTTP/2 in the clear, `["udp"]` for a datagram
+    /// session. mitmproxy keeps the same facts (`transport_protocol`, `tls`, `tls_version`, `alpn`)
+    /// and Proxyman shows the negotiated protocol; recording them as one stack is what makes
+    /// "gRPC spoke h2 over TLS here and h2c there" answerable from the capture alone.
+    ///
+    /// This is *not* ALPN: the application protocol below is the version hyper parsed, so a
+    /// connection whose ALPN negotiated `h2` but which then spoke HTTP/1.1 is recorded as `h1`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocol_stack: Vec<String>,
+}
+
+/// Tag on the CONNECT instruction flow itself.
+///
+/// A tunnel is a real exchange and is recorded as one, but it is not a request a person is
+/// inspecting: the peers that record it treat it as something other than an ordinary transaction
+/// (mitmproxy raises `http_connect` and documents that CONNECT produces none of the usual handler
+/// events; Proxyman puts connection detail in a panel of its own). The tag is the key a host filters
+/// on, so "we recorded it" and "we show it in the request list" stay independent decisions.
+pub const CONNECT_TAG: &str = "connect";
+
+/// The protocol stack of an HTTP exchange: the outermost layer first.
+///
+/// Derived from facts this engine observed — the transport it accepted, whether it terminated TLS,
+/// and the HTTP version the request was parsed as. It is deliberately not the ALPN result: ALPN is
+/// what was *offered and negotiated*, which is a different fact, so a connection that negotiated
+/// `h2` and then spoke HTTP/1.1 is recorded as `h1` rather than as `h2`.
+pub fn http_protocol_stack(tls_terminated: bool, http_version: &str) -> Vec<String> {
+    let mut stack = vec!["tcp".to_string()];
+    if tls_terminated {
+        stack.push("tls".to_string());
+    }
+    // `HTTP/2` and `HTTP/2.0` both appear: the version is carried as a string in the capture, and
+    // hyper's `{:?}` and `Display` forms differ.
+    let application = if http_version.starts_with("HTTP/2") {
+        // `h2c` is HTTP/2 over cleartext, and it is reachable here without any TLS at all — through
+        // the plaintext listener's preface sniff or a CONNECT tunnel to a plaintext gRPC target.
+        Some(if tls_terminated { "h2" } else { "h2c" })
+    } else if http_version.starts_with("HTTP/3") {
+        Some("h3")
+    } else if http_version.starts_with("HTTP/1") {
+        Some("h1")
+    } else {
+        // An unrecognised version is not worth guessing at: a stack that stops after the layers we
+        // actually observed is more useful than one that names a protocol we inferred.
+        None
+    };
+    if let Some(application) = application {
+        stack.push(application.to_string());
+    }
+    stack
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,6 +503,9 @@ mod tests {
             resilience_trace: None,
             rule_variables: HashMap::new(),
             matched_rules: vec![],
+            connection_id: None,
+            parent_flow_id: None,
+            protocol_stack: vec![],
         }
     }
 

@@ -74,6 +74,9 @@ fn test_flow_to_flow_index_conversion() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     // 2. Convert to FlowIndex
@@ -252,6 +255,9 @@ fn test_websocket_flow_to_detail_conversion() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let detail = FlowDetail::from(flow);
@@ -330,6 +336,9 @@ fn test_flow_to_flow_index_without_response_defaults() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let index: FlowIndex = FlowIndex::from(flow);
@@ -412,6 +421,9 @@ fn test_flow_detail_http_har_compat_fields() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let detail = FlowDetail::from(flow);
@@ -489,6 +501,9 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let detail = FlowDetail::from(flow);
@@ -538,6 +553,9 @@ fn test_flow_detail_request_query_string_uses_struct_field() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let detail = FlowDetail::from(flow);
@@ -598,6 +616,9 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let detail = FlowDetail::from(flow);
@@ -692,6 +713,9 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     };
 
     let index = FlowIndex::from(flow);
@@ -752,6 +776,9 @@ fn http_flow(status: Option<u16>, error: Option<&str>, start_offset_ms: i64) -> 
         resilience_trace: None,
         rule_variables: std::collections::HashMap::new(),
         matched_rules: vec![],
+        connection_id: None,
+        parent_flow_id: None,
+        protocol_stack: vec![],
     }
 }
 

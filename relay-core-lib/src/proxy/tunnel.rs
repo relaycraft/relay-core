@@ -1,6 +1,7 @@
 use crate::interceptor::Interceptor;
 use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::http::handle_http_request;
+use crate::proxy::http_utils::ExchangeOrigin;
 use crate::proxy::outbound::OutboundConnector;
 use crate::tls::CertificateAuthority;
 use hyper::service::service_fn;
@@ -130,6 +131,7 @@ pub async fn handle_tunnel(
     upgraded: Upgraded,
     host: String,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     ca: Arc<CertificateAuthority>,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
@@ -162,6 +164,7 @@ pub async fn handle_tunnel(
                 stream,
                 host,
                 client_addr,
+                origin,
                 ca,
                 on_flow,
                 connector,
@@ -184,6 +187,7 @@ pub async fn handle_tunnel(
                 host,
                 scheme,
                 client_addr,
+                origin,
                 on_flow,
                 connector,
                 interceptor,
@@ -240,6 +244,7 @@ async fn serve_tls_tunnel(
     stream: PrefixedStream<TokioIo<Upgraded>>,
     host: String,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     ca: Arc<CertificateAuthority>,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
@@ -278,6 +283,7 @@ async fn serve_tls_tunnel(
                 "https",
                 true,
                 client_addr,
+                origin,
                 on_flow,
                 connector,
                 interceptor,
@@ -305,6 +311,7 @@ async fn serve_plaintext_tunnel(
     host: String,
     scheme: &'static str,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
@@ -323,6 +330,7 @@ async fn serve_plaintext_tunnel(
                 // No TLS was terminated, so the Flow must not claim there was any.
                 false,
                 client_addr,
+                origin,
                 on_flow,
                 connector,
                 interceptor,
@@ -382,6 +390,7 @@ fn request_service(
     scheme: &'static str,
     is_mitm: bool,
     client_addr: SocketAddr,
+    origin: ExchangeOrigin,
     on_flow: Sender<FlowUpdate>,
     connector: Arc<dyn OutboundConnector>,
     interceptor: Arc<dyn Interceptor>,
@@ -392,6 +401,7 @@ fn request_service(
 ) -> impl Fn(hyper::Request<hyper::body::Incoming>) -> TunnelFuture + Clone + Send + 'static {
     move |req| {
         let host = host.clone();
+        let origin = origin.clone();
         let on_flow = on_flow.clone();
         let connector = connector.clone();
         let interceptor = interceptor.clone();
@@ -419,6 +429,7 @@ fn request_service(
             handle_http_request(
                 req,
                 client_addr,
+                origin,
                 on_flow,
                 connector,
                 interceptor,
