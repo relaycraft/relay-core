@@ -1267,9 +1267,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.10 验证体系基线
 
-- **计数已过期（本节此前为 493/22，后为 661/838）**：截至 **2026-10-11** 实测
-  `cargo test --workspace` 为 **898 passed / 0 failed / 0 ignored**（45 个套件）；
-  `relay-core-lib/tests/` 中 socket 级 E2E `wire_matrix.rs` 为 **32 个用例，0 个 `#[ignore]`**。
+- **计数已过期（本节此前为 493/22，后为 661/838，再后为 898）**：截至 **2026-10-11** 实测
+  `cargo test --workspace` 为 **908 passed / 0 failed / 0 ignored**（45 个套件），
+  Web UI 侧 `webui` 为 **81 passed**；`relay-core-lib/tests/` 中 socket 级 E2E 为
+  `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个用例**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
