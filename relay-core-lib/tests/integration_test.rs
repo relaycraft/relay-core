@@ -101,18 +101,44 @@ async fn test_proxy_basic_http_request() {
     assert_eq!(body, "Hello World!");
 
     // 4. Verify Flow Capture
-    // We expect at least one FlowUpdate
-    let update = rx.recv().await.expect("Should receive flow update");
-    match update {
-        FlowUpdate::Full(flow) => {
-            if let relay_core_api::flow::Layer::Http(http) = flow.layer {
-                assert_eq!(http.request.method, "GET");
-            } else {
-                panic!("Expected HTTP Layer");
+    // The exchange declares its stages before the first snapshot (roadmap §4-4), so the snapshot is
+    // no longer the first thing on the channel — but it must still arrive, and the declarations must
+    // still be there: a proxy that stopped declaring them would leave `Started`/`HeadersReceived`
+    // without the producer this asserts.
+    let mut declared = Vec::new();
+    let mut snapshot_seen = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline && !snapshot_seen {
+        let Ok(Some(update)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        else {
+            continue;
+        };
+        match update {
+            FlowUpdate::Stage { stage, .. } => declared.push(stage),
+            FlowUpdate::Full(flow) => {
+                match flow.layer {
+                    relay_core_api::flow::Layer::Http(http) => {
+                        assert_eq!(http.request.method, "GET");
+                    }
+                    _ => panic!("Expected HTTP Layer"),
+                }
+                snapshot_seen = true;
             }
+            _ => {}
         }
-        _ => panic!("Expected Full Flow update initially"),
     }
+    assert!(snapshot_seen, "the exchange's snapshot must arrive");
+
+    use relay_core_api::flow::ExchangeStage;
+    assert!(
+        declared.contains(&ExchangeStage::Started),
+        "the exchange must declare that it started: {declared:?}"
+    );
+    assert!(
+        declared.contains(&ExchangeStage::RequestHeaders),
+        "the request head is known when the flow exists: {declared:?}"
+    );
 }
 
 #[tokio::test]

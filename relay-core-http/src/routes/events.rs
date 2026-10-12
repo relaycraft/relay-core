@@ -220,6 +220,7 @@ mod tests {
         tx.send(FlowUpdate::HttpBody {
             flow_id: "flow-1".to_string(),
             direction: Direction::ServerToClient,
+            truncated: false,
             body: BodyData {
                 encoding: "utf-8".to_string(),
                 content: "hello from upstream".to_string(),

@@ -68,6 +68,7 @@ impl<R: Runtime> TauriFlowSink<R> {
                     flow_id,
                     direction,
                     body,
+                    truncated,
                 } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]
@@ -75,14 +76,37 @@ impl<R: Runtime> TauriFlowSink<R> {
                         flow_id: String,
                         direction: Direction,
                         body: BodyData,
+                        /// Whether the body is a bounded prefix, so the pane can say so instead of
+                        /// rendering a truncated payload as if it were the whole thing.
+                        truncated: bool,
                     }
                     let event = HttpBodyEvent {
                         flow_id,
                         direction,
                         body,
+                        truncated,
                     };
                     if let Err(e) = self.app_handle.emit("flow-body-update", event) {
                         eprintln!("Failed to emit flow-body-update event: {}", e);
+                    }
+                }
+                FlowUpdate::Stage { flow_id, stage, at } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct StageEvent {
+                        flow_id: String,
+                        stage: relay_core_api::flow::ExchangeStage,
+                        /// RFC 3339 rather than the crate's own type: this adapter does not depend on
+                        /// `chrono` directly, and a frontend reads a timestamp string anyway.
+                        at: String,
+                    }
+                    let event = StageEvent {
+                        flow_id,
+                        stage,
+                        at: at.to_rfc3339(),
+                    };
+                    if let Err(e) = self.app_handle.emit("flow-stage-update", event) {
+                        eprintln!("Failed to emit flow-stage-update event: {}", e);
                     }
                 }
                 FlowUpdate::SseEvent { flow_id, event } => {

@@ -17,9 +17,27 @@ use hyper::upgrade::Upgraded;
 use hyper::{Request, Response, StatusCode};
 use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{
-    BodyData, Direction, Flow, FlowUpdate, HttpResponse, Layer, WebSocketMessage,
+    BodyData, Direction, ExchangeStage, Flow, FlowUpdate, HttpResponse, Layer, WebSocketMessage,
 };
 use relay_core_api::policy::ProxyPolicy;
+
+/// Declare one stage of the handshake's life, from the place that reached it (roadmap §4-4).
+async fn declare_stage(
+    on_flow: &tokio::sync::mpsc::Sender<FlowUpdate>,
+    flow: &Flow,
+    stage: ExchangeStage,
+) {
+    if let Err(e) = on_flow
+        .send(FlowUpdate::Stage {
+            flow_id: flow.id.to_string(),
+            stage,
+            at: Utc::now(),
+        })
+        .await
+    {
+        tracing::debug!("could not declare stage {stage:?} for {}: {e}", flow.id);
+    }
+}
 
 /// Tag placed on a WebSocket flow whose extension offer was removed.
 pub const WS_EXTENSIONS_STRIPPED_TAG: &str = "ws-extensions-stripped";
@@ -107,6 +125,11 @@ where
 
     // Create Initial Flow for WebSocket Handshake
     let mut flow = create_initial_flow(meta.clone(), None, client_addr, is_mitm, true, &origin);
+
+    // The handshake's request head is known here, and the 101 below is this engine's answer, so both
+    // stages are declared from this path rather than inferred from the flow's snapshots.
+    declare_stage(&on_flow, &flow, ExchangeStage::Started).await;
+    declare_stage(&on_flow, &flow, ExchangeStage::RequestHeaders).await;
 
     // INTERCEPT HEADERS (Handshake)
     match interceptor.on_request_headers(&mut flow).await {
@@ -352,6 +375,7 @@ where
                     parts.version,
                     &parts.headers,
                 );
+                declare_stage(&on_flow, &flow, ExchangeStage::ResponseHeaders).await;
 
                 match interceptor.on_response_headers(&mut flow).await {
                     InterceptionResult::Drop => {

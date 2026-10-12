@@ -1901,6 +1901,7 @@ impl CoreState {
                     | FlowUpdate::BodyBudgetExceeded { flow_id, .. }
                     | FlowUpdate::ResponseTrailers { flow_id, .. }
                     | FlowUpdate::SseEvent { flow_id, .. }
+                    | FlowUpdate::Stage { flow_id, .. }
                     | FlowUpdate::StreamReset { flow_id, .. } => {
                         uuid::Uuid::parse_str(flow_id).ok()
                     }
@@ -1924,19 +1925,60 @@ impl CoreState {
                     FlowUpdate::WebSocketMessage { flow_id, message } => {
                         state.append_ws_message(flow_id, message);
                     }
-                    FlowUpdate::HttpBody {
-                        flow_id,
-                        direction,
-                        body,
-                    } => {
-                        state.update_http_body(flow_id, body, direction);
-                    }
                     FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
                         // P1: Tag the flow as budget-exceeded and update resilience trace
                         state.tag_flow_budget_exceeded(flow_id, direction);
                     }
                     FlowUpdate::ResponseTrailers { flow_id, trailers } => {
                         state.set_response_trailers(flow_id, trailers);
+                    }
+                    FlowUpdate::Stage { flow_id, stage, at } => {
+                        // The proxy declares the stage where it reaches it; this is a translation, not
+                        // an inference. Deriving the same facts from successive snapshots is what
+                        // §24.8 rules out, and it is why the proxy sends this at all.
+                        if let Ok(id) = uuid::Uuid::parse_str(&flow_id) {
+                            let event = match stage {
+                                relay_core_api::flow::ExchangeStage::Started => {
+                                    relay_core_api::event::FlowEvent::Started { flow_id: id, at }
+                                }
+                                relay_core_api::flow::ExchangeStage::RequestHeaders
+                                | relay_core_api::flow::ExchangeStage::ResponseHeaders => {
+                                    relay_core_api::event::FlowEvent::HeadersReceived {
+                                        flow_id: id,
+                                        direction: match stage {
+                                            relay_core_api::flow::ExchangeStage::RequestHeaders => {
+                                                relay_core_api::flow::Direction::ClientToServer
+                                            }
+                                            _ => relay_core_api::flow::Direction::ServerToClient,
+                                        },
+                                    }
+                                }
+                            };
+                            state.publish_flow_event(event);
+                        }
+                    }
+                    FlowUpdate::HttpBody {
+                        flow_id,
+                        direction,
+                        body,
+                        truncated,
+                    } => {
+                        // The body update *is* the declared fact "a bounded chunk is available", and
+                        // it now declares whether it is a prefix — so this is a translation, like the
+                        // stage above, rather than a snapshot comparison.
+                        // An empty body is not a chunk. Emitting one would put a zero-byte "chunk" in
+                        // the lifecycle of every request that has no body, which is most of them.
+                        if body.size > 0
+                            && let Ok(id) = uuid::Uuid::parse_str(&flow_id)
+                        {
+                            state.publish_flow_event(relay_core_api::event::FlowEvent::BodyChunk {
+                                flow_id: id,
+                                direction: direction.clone(),
+                                observed_bytes: body.size,
+                                truncated,
+                            });
+                        }
+                        state.update_http_body(flow_id, body, direction);
                     }
                     FlowUpdate::SseEvent { flow_id, event } => {
                         // An event stream's events are the "Message" level of roadmap §4-2, and this
@@ -2119,14 +2161,18 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
             flow_id,
             direction,
             body,
+            truncated,
         } => FlowUpdate::HttpBody {
             flow_id,
             direction,
             body: redact_body(body, redaction),
+            truncated,
         },
         FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
             FlowUpdate::BodyBudgetExceeded { flow_id, direction }
         }
+        // A stage names a moment, carries no content, and needs no screening.
+        FlowUpdate::Stage { flow_id, stage, at } => FlowUpdate::Stage { flow_id, stage, at },
         // An event's `data` is a payload, so it follows the body rule rather than the header rule:
         // `event` and `id` are metadata (like a header name) and stay readable, which is what makes a
         // redacted capture still useful for "what happened, and what did it carry".
@@ -3966,6 +4012,7 @@ mod tests {
                 size: 12,
                 grpc: None,
             },
+            truncated: false,
         };
         let redacted = state.redact_flow_update_for_output(update);
         match redacted {

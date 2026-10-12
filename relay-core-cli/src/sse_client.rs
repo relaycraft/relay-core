@@ -215,6 +215,7 @@ data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_
         let http_body = FlowUpdate::HttpBody {
             flow_id: "flow-body".to_string(),
             direction: relay_core_api::flow::Direction::ServerToClient,
+            truncated: false,
             body: relay_core_api::flow::BodyData {
                 encoding: "utf-8".to_string(),
                 content: "streamed".to_string(),
@@ -239,6 +240,7 @@ data: {"type":"Full","data":{"id":"00000000-0000-0000-0000-000000000002","start_
                 flow_id,
                 direction,
                 body,
+                truncated: false,
             }) => {
                 assert_eq!(flow_id, "flow-body");
                 assert_eq!(direction, relay_core_api::flow::Direction::ServerToClient);

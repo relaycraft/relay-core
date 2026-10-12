@@ -208,6 +208,7 @@ impl ProbeServer {
                         | Ok(FlowUpdate::ResponseTrailers { flow_id, .. })
                         | Ok(FlowUpdate::BodyBudgetExceeded { flow_id, .. })
                         | Ok(FlowUpdate::SseEvent { flow_id, .. })
+                        | Ok(FlowUpdate::Stage { flow_id, .. })
                         | Ok(FlowUpdate::StreamReset { flow_id, .. }) => {
                             let _ = peer.notify_resource_updated(
                                 ResourceUpdatedNotificationParam::new(

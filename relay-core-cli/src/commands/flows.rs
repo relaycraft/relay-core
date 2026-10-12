@@ -256,11 +256,23 @@ fn print_update(update: &relay_core_api::flow::FlowUpdate) {
             flow_id,
             direction,
             body,
+            truncated,
         } => {
-            info!("[Body] [{}] {:?} {} bytes", flow_id, direction, body.size);
+            // Say when the recorded body is a prefix: printing a truncated payload as if it were the
+            // whole body is the misreading this flag exists to prevent.
+            info!(
+                "[Body] [{}] {:?} {} bytes{}",
+                flow_id,
+                direction,
+                body.size,
+                if *truncated { " (truncated)" } else { "" }
+            );
         }
         FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
             info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
+        }
+        FlowUpdate::Stage { flow_id, stage, .. } => {
+            info!("[Stage] [{}] {:?}", flow_id, stage);
         }
         FlowUpdate::SseEvent { flow_id, event } => {
             // Enough to follow a stream live without printing payloads into a terminal: the event

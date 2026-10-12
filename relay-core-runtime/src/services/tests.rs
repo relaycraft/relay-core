@@ -152,6 +152,7 @@ async fn flow_event_hub_trait_dispatches_redact() {
             size: 6,
             grpc: None,
         },
+        truncated: false,
     };
     let redacted = hub.redact_flow_update_for_output(update);
     match redacted {

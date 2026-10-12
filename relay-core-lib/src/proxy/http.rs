@@ -28,8 +28,8 @@ use hyper::body::{Body, Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
 use relay_core_api::event::CloseReason;
 use relay_core_api::flow::{
-    CONNECT_TAG, Direction, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse, Layer,
-    NetworkInfo, ResilienceTrace, ResponseTiming, TransportProtocol, http_protocol_stack,
+    CONNECT_TAG, Direction, ExchangeStage, Flow, FlowUpdate, HttpLayer, HttpRequest, HttpResponse,
+    Layer, NetworkInfo, ResilienceTrace, ResponseTiming, TransportProtocol, http_protocol_stack,
 };
 use relay_core_api::policy::ProxyPolicy;
 use url::Url;
@@ -151,6 +151,27 @@ pub async fn handle_request(
         circuit_breaker,
     )
     .await
+}
+
+/// Declare one stage of an exchange's life, from the place that reached it.
+///
+/// A declaration rather than an inference (roadmap §4-4, §24.8): the typed event model exists so a
+/// consumer stops working out what happened from which fields are populated, and synthesising these
+/// from successive snapshots would put the guesswork straight back. `at` is the moment the proxy
+/// reached the stage, so a consumer timing header arrival is not measuring its own latency.
+async fn declare_stage(on_flow: &Sender<FlowUpdate>, flow: &Flow, stage: ExchangeStage) {
+    if let Err(e) = on_flow
+        .send(FlowUpdate::Stage {
+            flow_id: flow.id.to_string(),
+            stage,
+            at: chrono::Utc::now(),
+        })
+        .await
+    {
+        // Not fatal: the snapshot stream still carries the exchange itself, and a consumer of stages
+        // is a reader, not a participant.
+        tracing::debug!("could not declare stage {stage:?} for {}: {e}", flow.id);
+    }
 }
 
 /// Build the flow for one CONNECT instruction.
@@ -275,6 +296,9 @@ fn spawn_observed_body_reporter(
                 flow_id: observed.flow_id.clone(),
                 direction: observed.direction.clone(),
                 body,
+                // Carried through from the observer, which is the only place that knows whether the
+                // recorded prefix is all of it.
+                truncated: observed.truncated,
             });
             if observed.truncated {
                 crate::metrics::inc_proxy_body_degraded();
@@ -352,6 +376,12 @@ where
         )
         .await;
     }
+
+    // Declare the two stages the request head establishes (roadmap §4-4). Declared from here because
+    // this is the only place that knows the head was parsed: a consumer must not have to work out
+    // "it started" from a field being non-empty, and §24.8 rules out synthesising it from snapshots.
+    declare_stage(&on_flow, &flow, ExchangeStage::Started).await;
+    declare_stage(&on_flow, &flow, ExchangeStage::RequestHeaders).await;
 
     if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
         tracing::error!("Failed to send flow update: {}", e);
@@ -628,6 +658,7 @@ where
         res_parts.version,
         &res_parts.headers,
     );
+    declare_stage(&on_flow, &flow, ExchangeStage::ResponseHeaders).await;
 
     // Decide the response body's plan from two explicit inputs: whether a stage will inspect it
     // (declared by the rule engine during the request phase, because at this header moment it is too

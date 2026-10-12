@@ -35,6 +35,8 @@ pub mod event_name {
     pub const STREAM_RESET: &str = "stream-reset";
     /// One event parsed out of a proxied `text/event-stream` response.
     pub const SSE_EVENT: &str = "sse-event";
+    /// A stage of an exchange, as declared by the proxy.
+    pub const STAGE: &str = "stage";
 }
 
 /// One SSE frame: the `event:` name plus its `data:` payload, already serialised.
@@ -86,6 +88,12 @@ pub struct HttpBodyFrame {
     pub direction: Direction,
     /// The body, already redacted by the adapter when a redaction policy is active.
     pub body: BodyData,
+    /// Whether the recorded body is a bounded prefix.
+    ///
+    /// Defaulted so a client built before this field still parses the frame — §4-5 keeps these
+    /// additions additive.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Payload of `event: response-trailers`.
@@ -95,6 +103,17 @@ pub struct ResponseTrailersFrame {
     pub flow_id: String,
     /// The trailers, in the order they arrived.
     pub trailers: Vec<(String, String)>,
+}
+
+/// Payload of `event: stage`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageFrame {
+    /// Flow the stage belongs to.
+    pub flow_id: String,
+    /// Which stage was reached.
+    pub stage: crate::flow::ExchangeStage,
+    /// When the proxy reached it.
+    pub at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Payload of `event: sse-event`.
@@ -152,12 +171,14 @@ impl FlowUpdate {
                 flow_id,
                 direction,
                 body,
+                truncated,
             } => encode(
                 event_name::HTTP_BODY,
                 &HttpBodyFrame {
                     flow_id: flow_id.clone(),
                     direction: direction.clone(),
                     body: body.clone(),
+                    truncated: *truncated,
                 },
             ),
             FlowUpdate::ResponseTrailers { flow_id, trailers } => encode(
@@ -165,6 +186,14 @@ impl FlowUpdate {
                 &ResponseTrailersFrame {
                     flow_id: flow_id.clone(),
                     trailers: trailers.clone(),
+                },
+            ),
+            FlowUpdate::Stage { flow_id, stage, at } => encode(
+                event_name::STAGE,
+                &StageFrame {
+                    flow_id: flow_id.clone(),
+                    stage: *stage,
+                    at: *at,
                 },
             ),
             FlowUpdate::SseEvent { flow_id, event } => encode(
@@ -221,6 +250,7 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
                 flow_id: frame.flow_id,
                 direction: frame.direction,
                 body: frame.body,
+                truncated: frame.truncated,
             })
         }
         event_name::RESPONSE_TRAILERS => {
@@ -228,6 +258,14 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
             Some(FlowUpdate::ResponseTrailers {
                 flow_id: frame.flow_id,
                 trailers: frame.trailers,
+            })
+        }
+        event_name::STAGE => {
+            let frame: StageFrame = serde_json::from_str(data).ok()?;
+            Some(FlowUpdate::Stage {
+                flow_id: frame.flow_id,
+                stage: frame.stage,
+                at: frame.at,
             })
         }
         event_name::SSE_EVENT => {
@@ -330,6 +368,7 @@ mod tests {
                 flow_id: "flow-body".to_string(),
                 direction: Direction::ServerToClient,
                 body: body("hello"),
+                truncated: false,
             },
             FlowUpdate::BodyBudgetExceeded {
                 flow_id: "flow-budget".to_string(),
@@ -345,6 +384,11 @@ mod tests {
             FlowUpdate::StreamReset {
                 flow_id: "flow-reset".to_string(),
                 detail: "stream error: CANCEL".to_string(),
+            },
+            FlowUpdate::Stage {
+                flow_id: "flow-stage".to_string(),
+                stage: crate::flow::ExchangeStage::ResponseHeaders,
+                at: chrono::Utc::now(),
             },
             FlowUpdate::SseEvent {
                 flow_id: "flow-sse".to_string(),
@@ -388,6 +432,7 @@ mod tests {
             flow_id: "flow-body".to_string(),
             direction: Direction::ServerToClient,
             body: body("upstream payload"),
+            truncated: false,
         }
         .to_sse()
         .expect("update should encode");

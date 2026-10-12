@@ -142,6 +142,7 @@ impl TapBody {
             flow_id: self.flow_id.clone(),
             direction: self.direction.clone(),
             body: body_data,
+            truncated: false,
         });
 
         // P1: Notify budget exceeded for streaming-first pipeline
@@ -188,6 +189,7 @@ impl TapBody {
         let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
             flow_id: self.flow_id.clone(),
             direction: self.direction.clone(),
+            truncated: snapshot.truncated,
             body: BodyData {
                 encoding,
                 content,
@@ -208,6 +210,7 @@ impl TapBody {
                 let _ = self.on_flow.try_send(FlowUpdate::HttpBody {
                     flow_id: self.flow_id.clone(),
                     direction: self.direction.clone(),
+                    truncated: snapshot.truncated,
                     body: BodyData {
                         encoding,
                         content,

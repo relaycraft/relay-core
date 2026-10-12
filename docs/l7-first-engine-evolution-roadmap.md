@@ -244,14 +244,14 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    - parser error
    - TLS error
 
-4. **类型化事件模型**
-   - `FlowStarted`
-   - `HeadersReceived`
-   - `BodyAvailable/BodyChunk`
-   - `MessageReceived`
-   - `MutationApplied`
-   - `InterceptPaused/Resolved`
-   - `FlowCompleted/Errored`
+4. **类型化事件模型** —— ✅ **全部 9 个变体都有生产者**（2026-10-12）
+   - `FlowStarted` ✅（`FlowUpdate::Stage{Started}`，在请求头解析处声明）
+   - `HeadersReceived` ✅（`Stage{RequestHeaders}` / `Stage{ResponseHeaders}`，按方向）
+   - `BodyAvailable/BodyChunk` ✅（`FlowUpdate::HttpBody`，`observed_bytes` 与 `truncated` 都由观察者声明）
+   - `MessageReceived` ✅（被代理 SSE 事件，见 §7.2）
+   - `MutationApplied` ✅
+   - `InterceptPaused/Resolved` ✅
+   - `FlowCompleted/Errored` ✅（由 Flow 记录的关闭原因发出）
 
 5. **保持 adapter 稳定**
    - 现有 Flow JSON 在兼容窗口内只做加法
@@ -1191,9 +1191,20 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   不是从字段是否被填充猜出来的——按 `end_time.is_some()` 推断会把每一次上游失败与策略丢弃
   都报成成功。契约由一个**真实起代理**的集成测试锁定
   （`a_flow_that_recorded_its_ending_publishes_a_terminal_event`）。
-- 🟡 **事件模型仍不完整（不得据此宣称 §4-4 完成）**：`MessageReceived` **已有真实生产者**
-  （2026-10-11：被代理 SSE 流解析出的每个事件，`runtime/src/lib.rs` 的 `SseEvent` 分支，
-  见 §7.2）；`Started`、`HeadersReceived`、`BodyChunk` **仍无生产者**。它们需要在代理的握手/帧路径上新增生产者；
+- ✅ **事件模型已补齐（§4-4 的全部 9 个变体都有生产者）**（2026-10-12）：
+  - `MessageReceived` ← 被代理 SSE 流解析出的每个事件（§7.2）；
+  - `Started` / `HeadersReceived` ← **代理声明的阶段**：新增 `FlowUpdate::Stage`，
+    在**请求头解析完成处**（`handle_http_request`、WS 握手、CONNECT）声明 `Started` + `RequestHeaders`，
+    在**响应头确立处**声明 `ResponseHeaders`；runtime 只做翻译。
+  - `BodyChunk` ← `FlowUpdate::HttpBody`（这**就是**「有界 body 片段可用」的声明），
+    其 `observed_bytes` 与 `truncated` 都来自**观察者**：`truncated` 是 `HttpBody` 上的新增字段
+    （`BodyData` 只带传输大小，下游无法区分「完整的 4 KiB」与「4 MiB 的前 4 KiB」，
+    所以不许猜）。**空 body 不发事件**：否则每个无 body 的请求都会在生命周期里多一个 0 字节 chunk。
+  - 契约：`an_exchange_declares_its_stages_and_its_body`（真实代理 + 真实事件订阅），
+    **已双向验证**：把 `declare_stage` 改成空操作后，该测试即以
+    「one exchange must declare that it started exactly once」失败（只剩 `Completed` 与 `BodyChunk`）。
+  - **为什么不是快照 diff**：本节此前的要求是「在代理的握手/帧路径上新增生产者」，
+    实现严格照此办理——runtime 的每一次映射都对应代理的一次**声明**，没有一处是从字段是否被填充推出来的。它们需要在代理的握手/帧路径上新增生产者；
   由快照 diff 合成正是本模型要消除的推断，因此**明确不做**。
 - ✅ **迁移机制已建立**：`Store` 现使用 `PRAGMA user_version` + `SCHEMA_VERSION` + 有序
   `apply_migration`。此前所有语句都是 `IF NOT EXISTS`，老库**永远升不上去**且没有任何版本记录；

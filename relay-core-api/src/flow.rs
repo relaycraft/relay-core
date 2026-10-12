@@ -432,6 +432,23 @@ pub struct BodyData {
     pub grpc: Option<crate::grpc::GrpcBody>,
 }
 
+/// A point in an exchange's life that the proxy declares (roadmap §4-4).
+///
+/// Three stages rather than one "started" flag because the facts differ in *when* they become true:
+/// the first two are both established once the request head has been parsed, and the third only when
+/// an upstream has answered. A consumer that only wants "is this flow alive" reads `Started`; one
+/// that wants to time header arrival reads the other two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExchangeStage {
+    /// The exchange exists and its request metadata is known.
+    Started,
+    /// The client-direction headers are known.
+    RequestHeaders,
+    /// The upstream-direction headers are known.
+    ResponseHeaders,
+}
+
 /// Enum for Incremental Flow Updates to avoid cloning the entire Flow object
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -448,6 +465,14 @@ pub enum FlowUpdate {
         flow_id: String,
         direction: Direction,
         body: BodyData,
+        /// Whether the recorded body is a bounded prefix rather than all of it.
+        ///
+        /// Declared by the observer, which is the only place that knows: `BodyData` carries the
+        /// observed *transfer* size, so nothing downstream can tell a complete 4 KiB body from the
+        /// first 4 KiB of a 4 MiB one. Inferring it would put a guess into the typed event that the
+        /// model exists to keep guesses out of.
+        #[serde(default)]
+        truncated: bool,
     },
     /// P1: Body budget exceeded notification
     BodyBudgetExceeded {
@@ -463,6 +488,19 @@ pub enum FlowUpdate {
     ResponseTrailers {
         flow_id: String,
         trailers: Vec<(String, String)>,
+    },
+    /// A stage of the exchange was reached, declared where it was reached.
+    ///
+    /// This exists because three typed events (roadmap §4-4) had no producer, and the roadmap is
+    /// explicit about how they must get one: *on the proxy's own handshake path*, not by comparing
+    /// successive snapshots — the whole point of the typed model is that a consumer stops inferring
+    /// what happened. So the proxy says it: this is sent at the moment the request head has been
+    /// parsed, and again when the response head has been established.
+    Stage {
+        flow_id: String,
+        stage: ExchangeStage,
+        /// When the proxy reached this stage — the fact's own time, not when a consumer read it.
+        at: DateTime<Utc>,
     },
     /// One event parsed out of a `text/event-stream` response (roadmap §7.2 / §4-2 "Message").
     ///

@@ -1317,3 +1317,138 @@ async fn a_grpc_status_trailer_is_on_the_summary() {
     assert_eq!(summary.grpc_message.as_deref(), Some("unavailable now"));
     assert!(summary.has_error);
 }
+
+/// The three typed events that had no producer (roadmap §4-4) are now declared by the proxy and
+/// translated by the runtime.
+///
+/// The distinction this test protects is *who establishes the fact*. The proxy declares a stage where
+/// it reaches it and the runtime translates that declaration; §24.8 forbids the alternative — reading
+/// "it started" or "headers arrived" out of which fields a later snapshot happens to have populated,
+/// which is exactly the inference the typed model exists to remove. So a proxy that stopped declaring
+/// stages must make this test fail rather than have the events quietly resume being derived.
+#[tokio::test]
+async fn an_exchange_declares_its_stages_and_its_body() {
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::flow::{Direction, FlowUpdate};
+
+    init_crypto();
+
+    let state = Arc::new(CoreState::new(None).await);
+    let mut events = state.subscribe_flow_events();
+
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = upstream.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                if stream.read(&mut buf).await.is_ok() {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                }
+            });
+        }
+    });
+
+    let dir = std::env::temp_dir().join(format!("relay-core-stages-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve port");
+    let port = reserved.local_addr().expect("port").port();
+    drop(reserved);
+
+    let mut config =
+        relay_core_runtime::ProxyConfig::new(0, dir.join("ca.pem"), dir.join("ca.key"));
+    config.port = port;
+
+    let (sink, mut sink_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    state
+        .spawn_proxy(config, sink, None)
+        .expect("the proxy should start");
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut client = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .expect("connect proxy");
+    let request =
+        format!("GET http://{upstream_addr}/probe HTTP/1.1\r\nHost: {upstream_addr}\r\n\r\n");
+    client
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut buf = vec![0u8; 4096];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf)).await;
+
+    // Drain the flow channel so the pump keeps running, and give the events a moment to arrive.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut observed: Vec<FlowEvent> = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        while let Ok(update) = sink_rx.try_recv() {
+            let _ = update;
+        }
+        while let Ok(event) = events.try_recv() {
+            observed.push(event);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let started = observed
+        .iter()
+        .filter(|e| matches!(e, FlowEvent::Started { .. }))
+        .count();
+    assert_eq!(
+        started, 1,
+        "one exchange must declare that it started exactly once: {observed:?}"
+    );
+
+    let directions: Vec<Direction> = observed
+        .iter()
+        .filter_map(|e| match e {
+            FlowEvent::HeadersReceived { direction, .. } => Some(direction.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        directions.contains(&Direction::ClientToServer),
+        "the request head is known as soon as the flow exists: {observed:?}"
+    );
+    assert!(
+        directions.contains(&Direction::ServerToClient),
+        "the response head is a separate stage, declared when the upstream answered: {observed:?}"
+    );
+
+    let bodies: Vec<(Direction, u64, bool)> = observed
+        .iter()
+        .filter_map(|e| match e {
+            FlowEvent::BodyChunk {
+                direction,
+                observed_bytes,
+                truncated,
+                ..
+            } => Some((direction.clone(), *observed_bytes, *truncated)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !bodies.is_empty(),
+        "the response body is a declared fact, so a chunk event must follow it: {observed:?}"
+    );
+    assert!(
+        bodies.iter().all(|(_, bytes, _)| *bytes > 0),
+        "a chunk event must carry the observed size, not a placeholder: {bodies:?}"
+    );
+
+    // And the chain still ends where it did before: adding stages must not disturb the terminal event.
+    assert!(
+        observed.iter().any(|e| e.is_terminal()),
+        "the terminal event must still be published: {observed:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
