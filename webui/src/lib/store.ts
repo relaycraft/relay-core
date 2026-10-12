@@ -1,6 +1,12 @@
 import { createStore, produce } from 'solid-js/store';
 import { grpcOutcome } from '@/lib/flowSummary';
 import { isTunnel } from '@/lib/tunnels';
+import {
+  applyNotice,
+  createFlowEventState,
+  describeFlowEvent,
+  type FlowEventNotice,
+} from '@/lib/flowEvents';
 import type { FlowSummary, CoreMetrics, CoreStatusSnapshot, InterceptItem, Rule } from '@/types/api';
 
 export type ViewId = 'flows' | 'workshop' | 'rules' | 'scripts' | 'settings';
@@ -28,6 +34,10 @@ export interface AppState {
   bodyBudgetExceeded: Set<string>;
   /** Bumped when the list must be refetched, e.g. after asking to see tunnels again. */
   flowReloadGeneration: number;
+  /** Flows currently paused by a breakpoint, in pause order. */
+  pausedFlowIds: string[];
+  /** Lifecycle notices per flow, newest last. */
+  flowNotices: Map<string, FlowEventNotice[]>;
 }
 
 export function createAppStore() {
@@ -48,7 +58,13 @@ export function createAppStore() {
     flowDetailGeneration: 0,
     bodyBudgetExceeded: new Set<string>(),
     flowReloadGeneration: 0,
+    pausedFlowIds: [],
+    flowNotices: new Map(),
   });
+
+  // The aggregate lives outside the reactive store and is copied in on change: folding an event into
+  // a Map in place would mutate state Solid cannot see.
+  const flowEvents = createFlowEventState();
 
   /**
    * Drop the CONNECT flows from the list, because the reader just asked not to see them.
@@ -74,6 +90,32 @@ export function createAppStore() {
         s.flowDetailGeneration++;
       }),
     );
+  }
+
+  /**
+   * Apply one typed lifecycle event.
+   *
+   * Returns whether it was understood: an unknown variant is dropped here, in one place, rather than
+   * being given an invented meaning by a caller that happens to pattern-match on the raw payload.
+   */
+  function applyFlowEvent(raw: unknown): boolean {
+    const notice = describeFlowEvent(raw);
+    if (!notice) return false;
+
+    applyNotice(flowEvents, notice);
+    setState(
+      produce((s) => {
+        s.pausedFlowIds = [...flowEvents.paused];
+        s.flowNotices = new Map(flowEvents.notices);
+      }),
+    );
+    return true;
+  }
+
+  /** Notices recorded for one flow, newest first. */
+  function noticesFor(flowId: string | null): FlowEventNotice[] {
+    if (!flowId) return [];
+    return [...(state.flowNotices.get(flowId) ?? [])].reverse();
   }
 
   /** Ask for the list to be refetched. See `views/Settings.tsx` for why showing tunnels needs it. */
@@ -221,6 +263,8 @@ export function createAppStore() {
     upsertFlow,
     syncFlows,
     hideTunnels,
+    applyFlowEvent,
+    noticesFor,
     requestFlowReload,
     clearFlows,
     setActiveView,

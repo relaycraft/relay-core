@@ -654,6 +654,11 @@ function MessagesView(props: { flow: Flow }) {
 }
 
 function TraceView(props: { flow: Flow }) {
+  // The typed lifecycle events for this flow, newest first. This is the answer to "who changed this,
+  // and why": `MutationApplied` carries the actor and the field names, and until this list existed
+  // the interface had no way to show either.
+  const notices = createMemo(() => store.noticesFor(props.flow.id));
+
   // Read through `flowTrace` rather than off the flow: the API omits `matched_rules` and
   // `rule_variables` entirely when they are empty, and reading them directly threw on every flow no
   // rule had touched. See `lib/flowTrace.ts`.
@@ -661,11 +666,27 @@ function TraceView(props: { flow: Flow }) {
 
   return (
     <div class="text-xs">
+      <Show when={notices().length > 0}>
+        <h3 class="text-accent text-[13px] font-bold mb-1">Lifecycle</h3>
+        <For each={notices()}>
+          {(notice) => (
+            <div class="flex gap-2 px-1 py-0.5">
+              <span class="text-text-dim w-20 shrink-0">{notice.kind}</span>
+              <span class="text-text">{notice.summary}</span>
+            </div>
+          )}
+        </For>
+      </Show>
+
       <Show
         when={trace().matchedRules.length > 0}
-        fallback={<div class="text-text-dim">No rules matched</div>}
+        fallback={
+          <div class="text-text-dim">
+            {notices().length > 0 ? '' : 'No rules matched'}
+          </div>
+        }
       >
-        <h3 class="text-accent text-[13px] font-bold mb-1">Matched Rules</h3>
+        <h3 class="text-accent text-[13px] font-bold mt-3 mb-1">Matched Rules</h3>
         <For each={trace().matchedRules}>
           {(ruleId) => (
             <div class="text-text px-1 py-0.5">{ruleId}</div>

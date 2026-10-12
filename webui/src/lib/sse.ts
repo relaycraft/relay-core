@@ -8,6 +8,10 @@ export type SseEvent =
   | { type: 'body-budget-exceeded'; data: { flow_id: string } }
   | { type: 'response-trailers'; data: { flow_id: string; trailers: [string, string][] } }
   | { type: 'stream-reset'; data: { flow_id: string; detail: string } }
+  /* A typed lifecycle transition, `{"event": "...", "flow_id": "..."}`. Deliberately `unknown`:
+     the shape is the engine's, and `describeFlowEvent` is the one place that reads it, so a variant
+     this build does not know is skipped there rather than typed into existence here. */
+  | { type: 'flow-event'; data: unknown }
   | { type: 'audit'; data: AuditEvent }
   | { type: 'lifecycle'; data: CoreStatusSnapshot }
   | { type: 'lagged'; data: string }
@@ -55,6 +59,12 @@ export function connectSse(handler: SseEventHandler, options?: SseConnectOptions
     es.addEventListener('http-body', (e) => {
       try {
         handler({ type: 'http-body', data: JSON.parse(e.data) });
+      } catch {}
+    });
+
+    es.addEventListener('flow-event', (e) => {
+      try {
+        handler({ type: 'flow-event', data: JSON.parse(e.data) });
       } catch {}
     });
 

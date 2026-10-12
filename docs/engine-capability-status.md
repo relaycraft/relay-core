@@ -41,7 +41,7 @@
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
 | §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手都可观测；`permessage-deflate` 现为**显式降级**（双向剥离 + `ws-extensions-stripped` 标签 + 指标），不再是静默破坏 | 帧级修改仍无线路断言；Socket.IO/帧级双视图未做 |
-| §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | 事件不落盘（有意：body 已是有界持久记录）；Web UI 详情面板尚未展示 SSE 事件；`Last-Event-ID` 辅助分析未做 |
+| §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | 事件不落盘（有意：body 已是有界持久记录）；`Last-Event-ID` 辅助分析未做；`event: sse-event` 已上线路，但详情页的 Messages 面板仍只画 WebSocket |
 | §8 TLS / PKI | **Partial** | CA 生成/加载/按主机签发、MITM 端到端可用，CA 错误处理严格 | **无「按 host 决定 MITM/passthrough」策略** ⇒ 做 pinning 的客户端只能失败；SNI/ALPN 永不记录；叶证书对 IP 字面量发的是 DNS SAN |
 | §9 代理模式与捕获 | **Partial** | 正向代理默认稳定；透明模式 Linux/macOS/Windows 都有代码 | 透明捕获**零平台级测试**（三个 provider 文件 0 个测试）；reverse/多监听被生命周期**主动拒绝** |
 | §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话 | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource` |
@@ -198,7 +198,13 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 - `publish.yml` / `publish-npm.yml` / `release.yml` / `RELEASE.md` / `scripts/release-preflight.sh` / `scripts/sync-npm-version.py`。
 
 具体缺口：
-- **Web UI 不消费 `flow-event`**：`webui/src/lib/sse.ts` 监听 8 个 SSE 事件，但不含本轮新加的 `flow-event` ⇒ 桌面/网页 UI 看不到暂停与改动归因。
+- ✅ **Web UI 已消费 `flow-event`**（2026-10-11 修复；此前它监听 8 个 SSE 事件却不含 `flow-event`，
+  ⇒ 暂停与改动归因在界面上完全不可见）。现在：`lib/flowEvents.ts` 把线上 payload 归约为可读句子
+  （`MutationApplied` 会说出**是谁改了哪些字段**，这正是该变体存在的理由）；
+  `store.applyFlowEvent` 折叠为「哪些 flow 正在等 Breakpoint」+ 每 flow 有界的事件列表；
+  列表行对等待中的 flow 显示 `PAUSED` 徽标，详情页 Trace 标签新增 Lifecycle 段落。
+  **未知变体一律忽略**（返回 `null`）而不是猜一个含义或抛错——后者正是 Trace 页卡死那一类缺陷。
+  契约：`webui/src/lib/flowEvents.test.ts`（10 个）。
 - **CLI 有两套控制面**：`src/server.rs` 的旧 WebSocket/`/api/intercept/*`（自带 `AtomicBool` 状态）与共享 HTTP adapter 并存。
   `rules list` 默认打到无人启动的 18082（控制 API 默认 8082），且**不带任何凭证** ⇒ 面对一个正常运行的 daemon 也失败，两处独立原因。
   `metrics` 的缺陷方向相反：它**能跑，但读的是默认端口上恰好存在的那个引擎**（§5 第 3 条有实测证据），

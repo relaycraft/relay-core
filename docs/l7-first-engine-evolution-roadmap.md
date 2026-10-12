@@ -1169,6 +1169,10 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `every_update_round_trips_through_its_frame` 覆盖全部变体防止再次漂移。
   双向验证：还原解码器 → `ws-message frame should decode, got None`；还原写入器 → 帧字面为
   `data: {"flow_id":"flow-1"}`。SSE 断言读取的是**渲染后的线上文本**（经真实路由 + 真实 SSE 序列化）。
+- ✅ **Web UI 已消费 `flow-event`**（2026-10-11）：`webui/src/lib/flowEvents.ts` 是唯一读取该 payload
+  形状的地方；它把每个变体归约为一句人话（`MutationApplied` → 「rule:x changed a, b」），
+  未知变体返回 `null` 被丢弃。store 由此得到「哪些 flow 正在等 Breakpoint」与每 flow 有界的事件列表，
+  列表行显示 `PAUSED` 徽标、Trace 页显示 Lifecycle 段落。此前该事件只在引擎侧产生，界面侧无人消费。
 - ✅ **类型化事件已接线**（§4-4/§4-5，决策见 [`decisions/0003`](./decisions/0003-typed-events-alongside-flow-snapshots.md)）：
   `FlowEvent` 此前**只有类型和单测**，无生产者、无消费者，因此 §4-4 并不成立。现新增独立广播通道
   （`FlowEventHub` / `FlowEventSink`），并在**拥有结构化取值处**产生事件：

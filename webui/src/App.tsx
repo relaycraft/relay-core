@@ -7,6 +7,12 @@ import { searchFlows, getMetrics, getStatus, listRules, listIntercepts } from '@
 import { showTunnels, tunnelQuery } from '@/lib/tunnels';
 import Layout from '@/components/Layout';
 
+/** The flow an event is about, for the refresh that follows it. */
+function flowIdOf(raw: unknown): string {
+  const payload = raw as { flow_id?: unknown } | null;
+  return typeof payload?.flow_id === 'string' ? payload.flow_id : '';
+}
+
 export default function App() {
   let disconnectSse: (() => void) | null = null;
   let metricsTimer: ReturnType<typeof setInterval> | null = null;
@@ -98,6 +104,14 @@ export default function App() {
             break;
           case 'body-budget-exceeded':
             store.markBodyBudgetExceeded(event.data.flow_id);
+            break;
+          case 'flow-event':
+            // A pause or a mutation changes what the reader should see *now*, so the open pane is
+            // refreshed too: `MutationApplied` names who changed which fields, and it is worth
+            // nothing if the pane showing them is a poll cycle behind.
+            if (store.applyFlowEvent(event.data)) {
+              store.notifyFlowChanged(flowIdOf(event.data));
+            }
             break;
           case 'ws-message':
             if (store.state.selectedFlowId === event.data.flow_id) {

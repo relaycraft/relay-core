@@ -235,6 +235,11 @@ export default function FlowsView() {
                       <span class="ml-1 text-error text-[12px]">ERR</span>
                     )}
                     {flow.is_websocket && <span class="ml-1 text-info text-[12px]">WS</span>}
+                    {/* Paused by a breakpoint, from the live event stream rather than a poll: a flow
+                        waiting on the reader is the one row that must not need a refresh to notice. */}
+                    {store.state.pausedFlowIds.includes(flow.id) && (
+                      <span class="ml-1 text-accent text-[12px] font-bold">PAUSED</span>
+                    )}
                   </div>
                 );
               }}
