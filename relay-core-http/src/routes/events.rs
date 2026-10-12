@@ -193,7 +193,7 @@ mod tests {
     async fn next_frame(stream: &mut Wire) -> String {
         let mut buffered = Vec::new();
         loop {
-            let chunk = timeout(Duration::from_millis(500), stream.next())
+            let chunk = timeout(FRAME_DEADLINE, stream.next())
                 .await
                 .expect("an SSE frame should arrive in time")
                 .expect("the stream should still be open")
@@ -276,7 +276,7 @@ mod tests {
         let ctx = Arc::new(HttpApiContext::new(state.clone()));
         let mut stream = pin!(event_stream(ctx));
 
-        let first = timeout(Duration::from_millis(300), stream.next())
+        let first = timeout(FRAME_DEADLINE, stream.next())
             .await
             .expect("initial event should arrive in time");
         assert!(
@@ -290,7 +290,7 @@ mod tests {
             ProxyPolicy::default(),
         );
 
-        let second = timeout(Duration::from_millis(300), stream.next())
+        let second = timeout(FRAME_DEADLINE, stream.next())
             .await
             .expect("audit event should arrive in time");
         assert!(
@@ -302,6 +302,15 @@ mod tests {
     /// Typed lifecycle transitions must reach consumers on their own frame, so a UI or agent can
     /// react to "this exchange is paused" without diffing snapshots. `event: intercept` was
     /// documented for exactly this and never emitted.
+    /// How long a frame may take to arrive before the test calls it a failure.
+    ///
+    /// Generous on purpose. These assertions are about *whether* an event arrives, not about how fast
+    /// the actor that produces it is: a few hundred milliseconds is enough on an idle machine and not
+    /// enough on a loaded one, and the pre-push hook runs this suite beside a Web UI build. A gate that
+    /// fails because the machine was busy teaches people to re-run it rather than to read it — the same
+    /// lesson the CLI lifecycle tests learned about colliding ports.
+    const FRAME_DEADLINE: Duration = Duration::from_secs(5);
+
     #[tokio::test]
     async fn sse_flow_event_frame_carries_the_typed_transition() {
         let (tx, _) = broadcast::channel(16);
