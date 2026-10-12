@@ -51,3 +51,41 @@ export function parseSseEvent(raw: unknown): SseEventRecord | null {
   }
   return record;
 }
+
+/** Which list a panel should draw, and what to call it. */
+export interface SseEventSelection {
+  /** `live` while the stream is running, `recorded` once it has ended. */
+  source: 'live' | 'recorded';
+  /** Newest first. */
+  events: SseEventRecord[];
+  /**
+   * How many events the other source holds that this one does not show.
+   *
+   * A tab that connects to a stream already in progress sees only what arrives after it; a stream
+   * that has ended has a complete recorded list. Either way a reader looking at four rows should be
+   * able to tell whether that is everything the stream sent, so the count is reported rather than
+   * left to be inferred from a number that looks authoritative.
+   */
+  hidden: number;
+}
+
+/**
+ * Choose between the live and the recorded lists by the stream's own state.
+ *
+ * Not by which list is longer: while a stream is running the point of watching it is the events
+ * arriving now, and once it has ended the recorded list is the complete one. Deciding by length would
+ * flip the panel's meaning as a stream grew, which is exactly the kind of silent change of subject
+ * this codebase keeps finding.
+ */
+export function selectSseEvents(input: {
+  ended: boolean;
+  live: SseEventRecord[];
+  recorded: SseEventRecord[];
+}): SseEventSelection {
+  const { ended, live, recorded } = input;
+  const preferLive = ended ? live.length > 0 && recorded.length === 0 : live.length > 0;
+  const source = preferLive ? 'live' : 'recorded';
+  const events = [...(source === 'live' ? live : recorded)].reverse();
+  const other = source === 'live' ? recorded : live;
+  return { source, events, hidden: Math.max(0, other.length - events.length) };
+}

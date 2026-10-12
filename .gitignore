@@ -93,6 +93,10 @@ benchmarks/bench_*
 # baseline_*, so they stay tracked.
 benchmarks/**/release_*
 benchmarks/**/ramp_*
+# The soak writes stability_* reports, one per run. Committed reports are named differently (the
+# benchmark baselines), so these stay artifacts — and a soak run must never be committed by a
+# `git add -A` after someone ran one locally.
+benchmarks/**/stability_*
 benchmarks/*.csv
 benchmarks/.bench_ca_cert.*
 benchmarks/.bench_ca_key.pem

@@ -35,3 +35,4 @@
 | [0008](./0008-bounded-flow-retention.md) | 流量历史默认有界 | Accepted |
 | [0009](./0009-daemon-observes-body-prefix.md) | Daemon 保留 body 前缀 | Accepted |
 | [0010](./0010-connect-tunnels-recorded-not-listed.md) | CONNECT 隧道：记录，但不默认进请求列表 | Accepted |
+| [0011](./0011-soak-and-fuzz-ci-promise.md) | soak 与 fuzz 的 CI 承诺 | Accepted |

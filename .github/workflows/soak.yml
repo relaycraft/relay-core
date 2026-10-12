@@ -1,0 +1,90 @@
+name: Soak
+
+# A soak is the only check that sees what an hour of traffic does to the process: the leak, the
+# slowly growing queue, the counter that never resets. It cannot run on a pull request, so it runs on
+# a schedule and publishes what it found.
+#
+# It was previously not wired to anything at all (`benchmarks/stability_test.sh` existed and nothing
+# invoked it), and while unwired it had drifted into measuring the wrong thing: its upstream was
+# `echo_server.py`, which saturates near 2.7k req/s, so the proxy was never under sustained load.
+# That is fixed in the script, which now uses the same native upstream the benchmark harness does and
+# says so in its report when it has to fall back.
+#
+# The duration is 20 minutes rather than the script's 2-hour default: this is the signal that fits a
+# weekly job, and the RSS thresholds it asserts (a 50% rise fails) are about a trend, not about
+# reaching a particular hour. A longer run stays available by hand — `--duration 12`.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Soak length in minutes"
+        required: false
+        default: "20"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install load generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 bc
+          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64 -o /usr/local/bin/oha
+          chmod +x /usr/local/bin/oha
+
+      # relay-core-http's build script embeds the Web UI assets, so they have to exist before the CLI
+      # can be built — the same ordering `ci.yml` and `benchmark-smoke.yml` need.
+      - name: Build webui assets (embedded by relay-core-http)
+        shell: bash
+        run: ./scripts/webui-build.sh
+
+      - name: Build release CLI and the native upstream
+        run: |
+          cargo build --release --package relay-core-cli
+          rustc -O -o target/release/rust_echo_server benchmarks/rust_echo_server.rs
+
+      # The script's own verdict is the gate: it fails on a panic or on RSS growth above 50%, and
+      # warns past 20%. A soak that only printed numbers would be the decoration this job is meant to
+      # replace — the reason it exists is that "nothing failed" must mean something.
+      - name: Soak
+        env:
+          UPSTREAM_BIN: ${{ github.workspace }}/target/release/rust_echo_server
+        run: |
+          chmod +x ./benchmarks/stability_test.sh
+          ./benchmarks/stability_test.sh --minutes ${{ github.event.inputs.minutes || 20 }}
+
+      - name: Publish the summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(ls -1t benchmarks/results/stability_*.md 2>/dev/null | head -n1 || true)"
+          if [[ -z "$latest" ]]; then
+            echo "no soak report was produced" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat "$latest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-results
+          path: |
+            benchmarks/results/stability_*.md
+            benchmarks/results/stability_*.csv
+          if-no-files-found: warn

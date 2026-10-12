@@ -396,6 +396,7 @@ impl UdpProxy {
                                 if !self.check_udp_session(&mut flow).await {
                                     continue;
                                 }
+                                declare_session_started(&on_flow, session.flow_id);
                                 if on_flow.try_send(FlowUpdate::Full(Box::new(flow))).is_err() {
                                     crate::metrics::inc_flows_dropped();
                                 }
@@ -514,6 +515,7 @@ impl UdpProxy {
                     if !self.check_udp_session(&mut flow).await {
                         continue;
                     }
+                    declare_session_started(&flow_tx, session.flow_id);
                     let _ = flow_tx
                         .try_send(FlowUpdate::Full(Box::new(flow)))
                         .inspect_err(|_| {
@@ -608,6 +610,29 @@ fn resolve_udp_dst(
 /// Neither Flow is updated in place: a consumer wanting live counters during a long-lived session
 /// still needs a periodic update, which does not exist yet.
 pub const SESSION_FLOW_IS_EMIT_TWICE: () = ();
+
+/// Declare that a datagram session began.
+///
+/// A datagram session is an exchange, so it makes the same declaration the HTTP and WebSocket
+/// paths make, and `FlowEvent::Started` gets a producer here too.
+///
+/// Deliberately no header stage: UDP has no headers, and declaring a stage that cannot be true
+/// would put a fact in the event stream that never happened. `HeadersReceived` stays HTTP's.
+///
+/// Both session-opening paths call this — the transparent one and the explicit-`remote_addr`
+/// one — so a change to the declaration cannot land in only one of them.
+fn declare_session_started(on_flow: &Sender<FlowUpdate>, flow_id: Uuid) {
+    if on_flow
+        .try_send(FlowUpdate::Stage {
+            flow_id: flow_id.to_string(),
+            stage: relay_core_api::flow::ExchangeStage::Started,
+            at: Utc::now(),
+        })
+        .is_err()
+    {
+        crate::metrics::inc_flows_dropped();
+    }
+}
 
 #[cfg(test)]
 mod tests {

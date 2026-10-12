@@ -143,12 +143,50 @@ async fn test_udp_proxy_allow_all() {
     let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     client.send_to(b"hello", proxy_addr).await.unwrap();
 
-    // Expect a Full flow update
-    let update = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+    // A datagram session declares that it began, and then publishes its flow. The declaration comes
+    // first on purpose — it is what the runtime turns into `FlowEvent::Started`, and a consumer that
+    // may only see the first few updates must learn the session started rather than infer it.
+    //
+    // Run locally (`#![cfg(not(target_os = "linux"))]` at the top of this file gates the whole file
+    // off in CI, because the Linux path needs CAP_NET_ADMIN — see the file header).
+    let mut declared_started = false;
+    let mut saw_flow = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline && !saw_flow {
+        let Ok(Some(update)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        else {
+            continue;
+        };
+        match update {
+            FlowUpdate::Stage { stage, .. } => {
+                assert_eq!(
+                    stage,
+                    relay_core_api::flow::ExchangeStage::Started,
+                    "a datagram session declares started, and nothing else: UDP has no headers, so                      there is no header stage to declare"
+                );
+                declared_started = true;
+            }
+            FlowUpdate::Full(flow) => {
+                assert!(
+                    matches!(flow.layer, relay_core_api::flow::Layer::Udp(_)),
+                    "the emitted flow must be a UDP layer flow"
+                );
+                assert_eq!(
+                    flow.protocol_stack,
+                    vec!["udp".to_string()],
+                    "the stack records the transport it actually was"
+                );
+                saw_flow = true;
+            }
+            _ => {}
+        }
+    }
     assert!(
-        update.is_ok() && update.unwrap().is_some(),
-        "expected UDP flow to be emitted"
+        declared_started,
+        "the session must declare that it started, not only publish its flow"
     );
+    assert!(saw_flow, "expected UDP flow to be emitted");
 
     let _ = stop_tx.send(false);
 }

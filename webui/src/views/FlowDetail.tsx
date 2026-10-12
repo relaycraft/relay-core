@@ -6,7 +6,7 @@ import { flowTrace } from '@/lib/flowTrace';
 import { grpcOutcome } from '@/lib/flowSummary';
 import { store } from '@/lib/store';
 import type { Flow, HttpLayer, HttpResponse, BodyData } from '@/types/api';
-import { parseSseEvent, type SseEventRecord } from '@/lib/sseEvents';
+import { parseSseEvent, selectSseEvents, type SseEventRecord } from '@/lib/sseEvents';
 
 type DetailTab = 'headers' | 'payload' | 'timing' | 'messages' | 'trace';
 
@@ -648,12 +648,16 @@ function MessagesView(props: { flow: Flow }) {
       .map(parseSseEvent)
       .filter((event): event is SseEventRecord => event !== null);
   });
-  const events = createMemo(() => {
-    const recorded = recordedEvents();
-    return recorded.length > 0 ? [...recorded].reverse() : store.sseEventsFor(props.flow.id);
-  });
-  /** Whether anything at all is known about this stream's events. */
-  const eventsRecorded = createMemo(() => recordedEvents().length > 0);
+  // Which list is on screen is decided by the stream's state, not by which list happens to be longer;
+  // `selectSseEvents` is where that rule lives, with its tests.
+  const selection = createMemo(() =>
+    selectSseEvents({
+      ended: props.flow.end_time != null,
+      live: store.sseEventsFor(props.flow.id),
+      recorded: recordedEvents(),
+    }),
+  );
+  const events = createMemo(() => selection().events);
   const isEventStream = createMemo(
     () =>
       events().length > 0 ||
@@ -698,11 +702,15 @@ function MessagesView(props: { flow: Flow }) {
         <div class="text-xs">
           <div class="text-text-dim mb-1">
             {events().length} event{events().length === 1 ? '' : 's'}
-            {eventsRecorded()
-              ? ', newest first'
-              : events().length > 0
+            {events().length > 0
+              ? selection().source === 'live'
                 ? ', newest first, live'
-                : ' so far'}
+                : ', newest first, from the capture'
+              : ' so far'}
+            <Show when={selection().hidden > 0}>
+              {/* The shown list is not the whole stream: name the part it does not cover. */}
+              <span> — the {selection().source === 'live' ? 'capture' : 'live stream'} holds {selection().hidden} more</span>
+            </Show>
           </div>
           <Show
             when={events().length > 0}

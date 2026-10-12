@@ -1358,7 +1358,16 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   **advisories 不阻塞发布**，且「CI 绿」不代表无已知漏洞。
 - ✅ **差分套件现在会真的失败**：新增 `differential` job（安装 mitmproxy + `REQUIRE_MITMPROXY=1`）。
   在此之前没有任何 workflow 设置该变量，3 个 fixture 在 CI 上恒为 `ok` 且什么都没比较。
-- ⬜ CI 仍无 soak、无 fuzz、coverage 无阈值、macOS/Windows 仅构建不测试。
+- ✅ **coverage 阈值已设**（2026-10-11）：`--fail-under-lines 75`，取自首次真实测量（78.95% 行），
+  并加 `set -o pipefail`——否则管道状态是 `tee` 的，阈值失败会被报成通过。
+- ✅ **soak 已接入 CI**（2026-10-12，决策 [`0011`](./decisions/0011-soak-and-fuzz-ci-promise.md)）：
+  `.github/workflows/soak.yml` 每周日跑 20 分钟，**判据是脚本自己的 verdict**（panic 或 RSS 增长 > 50% 即 FAIL）。
+  接线时发现它在未接线期间**已漂移到测错对象**：上游是饱和于 ~2.7k req/s 的 Python echo server，
+  代理从未进入持续负载。现已改用与性能 harness 相同的 Rust 上游，并在报告里写明上游是谁。
+- ⬜ **fuzz 明确不承诺**（同决策）：`cargo-fuzz` 需要 nightly + 独立 fuzz 目标 + 语料库，
+  而当前对已知对抗面的保证是**确定性用例**（`content_encoding.rs` 6 个、`rule/engine/loader.rs` 5 个）。
+  这一条从「未做」改为「不承诺」，以免被读成「已 fuzz 过」。
+- ⬜ CI 仍无 fuzz、macOS/Windows 仅构建不测试。
   （**本行此前还写着「没有任何 workflow 设置 `REQUIRE_MITMPROXY`，也不安装 mitmproxy ⇒ 差分恒为 ok」——
   该陈述已被上方同节的 `differential` job 条目推翻，属实现追赶文档后的残留，2026-10-11 删除。**）
 - **HTTP/2 线路用例已不止一处**（本节此前写「**无任何线路用例**」，与 §24.9 自相矛盾，已更正）：
