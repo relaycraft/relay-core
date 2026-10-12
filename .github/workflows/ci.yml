@@ -118,13 +118,19 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      # No `--fail-under-lines` yet, on purpose: a threshold has to come from a real measurement and
-      # nobody has taken one (cargo-llvm-cov is not installed in the dev environment this was written
-      # in). Picking a number blind would either fail on arrival or be meaningless. The summary is
-      # published below so the next run yields a baseline; then add
-      # `--fail-under-lines <a few points below that baseline>` and this job becomes a gate.
+      # The threshold is a gate now, and it comes from a measurement rather than a guess: the first
+      # run of this job reported 78.95% lines / 77.38% regions / 77.81% functions (2026-10-11,
+      # run 38135659249). 75% is a few points below that — close enough that a real loss of coverage
+      # fails here instead of being noticed later, loose enough that it does not fail on the normal
+      # churn of adding code whose tests land in the same commit.
+      #
+      # `set -o pipefail` is not decoration: without it the pipeline's status is `tee`'s, which
+      # succeeds, so a threshold that failed under `--fail-under-lines` would be reported as a pass.
       - name: Run coverage
-        run: cargo llvm-cov --workspace --summary-only | tee coverage-summary.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo llvm-cov --workspace --summary-only --fail-under-lines 75 | tee coverage-summary.txt
 
       - name: Publish coverage summary
         if: always()

@@ -370,16 +370,49 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 - 客户端/服务端 replay
 - WebSocket 故障注入
 
-### 7.2 SSE
+### 7.2 SSE（**已从 Absent 落地为 Working**，2026-10-11）
 
-#### 必做（M1）
+> 此前引擎只把 SSE 当作**自己 API 的传输**，完全不识别被代理的 `text/event-stream`。
+> 现在按 WHATWG event-stream 规则解析**流经代理的**事件流。解析器与被代理流量共用一份实现：
+> `relay-core-api/src/sse_stream.rs`。**这与 `relay-core-api/src/sse.rs` 是两件事**——
+> 后者是本引擎对客户端的 `/api/v1/events` 契约，前者是别人的事件流路过这里。
 
-- 识别 `text/event-stream`
-- 增量解析 `event/id/retry/data`
-- 跨 chunk UTF-8 和行边界处理
-- bounded buffer 和 dropped count
-- event-level 实时推送
-- stream close/disconnect 的正确状态
+#### 必做（M1）—— 全部交付
+
+- ✅ **识别 `text/event-stream`**：`TapBody::tap_event_stream()` 只在**响应方向**且对端声明的
+  media type 恰好是 `text/event-stream`（允许带参数如 `; charset=utf-8`）时装配解析器；
+  其他 content type 完全不走这条路径（契约：
+  `a_body_that_is_not_an_event_stream_produces_no_events`）。
+- ✅ **增量解析 `event` / `id` / `retry` / `data`**：`event`、`data`（多行以 `\n` 连接、派发时去掉末尾换行）、
+  `id`（含 NUL 则整个忽略，不截断）、`retry`（必须全为数字）；`id`/`retry` 是**流状态**，
+  会带在此后派发的每个事件上；未知字段忽略（这正是格式可演进的依据）。
+- ✅ **跨 chunk 的 UTF-8 与行边界**：行分隔按**字节**做，只在整行完整后才解码，因此跨 chunk 的多字节字符
+  不会被破坏；`\r\n` 算一个终止符，孤立 `\r` 也算一个；**结尾的 `\r` 必须等下一个字节或流结束才能定性**
+  ——提前猜会多派发一个空事件或吞掉本该派发事件的那个空行（契约：
+  `a_multi_byte_character_split_across_chunks_survives`、`a_crlf_split_across_chunks_is_one_terminator`、
+  `a_trailing_cr_is_resolved_by_the_end_of_the_stream`）。
+- ✅ **bounded buffer 与 dropped count**：单事件 payload 上限 1 MiB（**每事件**，不是每流，
+  所以长流不受影响）；超限的事件**整条丢弃并计数**，绝不截断后当完整事件派发——
+  截断的 payload 与短事件在消费侧无法区分。永不结束的行同样有上限并计入
+  `unterminated_line`。指标：`relay_core_proxy_sse_streams_total` / `..._events_total` /
+  `..._events_dropped_total` / `..._truncated_total`（四者有各自不同的含义，故分开计数）。
+- ✅ **event-level 实时推送**：`FlowUpdate::SseEvent` → SSE 帧 `event: sse-event`
+  （经 `sse.rs` 的同一编解码与 round-trip 锁定）+ Tauri `flow-sse-update` + MCP 资源更新 +
+  CLI `[SSE]` 行。**关键契约是「流还在跑就推送」**：测试让上游在两条事件之间**阻塞**，
+  只有第一条事件已上报后才放行，因此这不是靠 sleep 猜的时序断言
+  （`a_proxied_event_stream_is_parsed_as_it_runs`，已双向验证：关掉 `.tap_event_stream()` 该测试必失败）。
+- ✅ **流结束/断开的正确状态**：`finish()` 按规范**丢弃**没有收尾空行的末尾事件（客户端也没收到，
+  报成事件就是编造），但记入 `truncated_at_end`：一条在事件中间被截断的流，正是排查断连时要看到的话。
+  同时该事件为 `FlowEvent::MessageReceived` 提供了**第一个真实生产者**（§24.8）。
+
+#### 可演进（E）
+
+- SSE event 持久化与按序回放（**当前刻意不做**：body 已是有界且持久的记录，
+  再存一份逐事件副本会让「唯一可能跑数小时」的那种 body 付双份成本）
+- event 级规则和脚本
+- 重连/Last-Event-ID 辅助分析
+- SSE mock/replay server
+- Web UI 详情面板展示事件（目前只在流里推送，UI 的 Messages 面板仍只画 WebSocket）
 
 #### 可演进（E）
 
@@ -1140,8 +1173,9 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   不是从字段是否被填充猜出来的——按 `end_time.is_some()` 推断会把每一次上游失败与策略丢弃
   都报成成功。契约由一个**真实起代理**的集成测试锁定
   （`a_flow_that_recorded_its_ending_publishes_a_terminal_event`）。
-- ⬜ **事件模型仍不完整（不得据此宣称 §4-4 完成）**：`Started`、`HeadersReceived`、`BodyChunk`、
-  `MessageReceived` **仍无生产者**。它们需要在代理的握手/帧路径上新增生产者；
+- 🟡 **事件模型仍不完整（不得据此宣称 §4-4 完成）**：`MessageReceived` **已有真实生产者**
+  （2026-10-11：被代理 SSE 流解析出的每个事件，`runtime/src/lib.rs` 的 `SseEvent` 分支，
+  见 §7.2）；`Started`、`HeadersReceived`、`BodyChunk` **仍无生产者**。它们需要在代理的握手/帧路径上新增生产者；
   由快照 diff 合成正是本模型要消除的推断，因此**明确不做**。
 - ✅ **迁移机制已建立**：`Store` 现使用 `PRAGMA user_version` + `SCHEMA_VERSION` + 有序
   `apply_migration`。此前所有语句都是 `IF NOT EXISTS`，老库**永远升不上去**且没有任何版本记录；
