@@ -105,6 +105,12 @@ export default function App() {
           case 'body-budget-exceeded':
             store.markBodyBudgetExceeded(event.data.flow_id);
             break;
+          case 'sse-event':
+            // The parsed event goes straight into the store: this pane is not refetched per event,
+            // which for a busy stream would be one API round trip per tick. The store validates the
+            // payload; nothing is asserted about its shape here.
+            store.applySseEvent(event.data.flow_id, event.data.event);
+            break;
           case 'flow-event':
             // A pause or a mutation changes what the reader should see *now*, so the open pane is
             // refreshed too: `MutationApplied` names who changed which fields, and it is worth

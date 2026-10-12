@@ -66,6 +66,7 @@ pub fn apply_flow_modification(
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             Layer::WebSocket(ws) => ws.handshake_response.clone(),
             _ => return InterceptionResult::Continue,
@@ -199,6 +200,7 @@ mod tests {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             });
         }
         flow
@@ -245,6 +247,7 @@ mod tests {
                         ssl_time_ms: None,
                     },
                     cookies: vec![],
+                    sse_events: vec![],
                 },
                 messages: vec![],
                 closed: false,

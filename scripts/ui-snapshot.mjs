@@ -582,6 +582,10 @@ async function readFlowRows() {
         return {
           id: row.getAttribute('data-flow-id'),
           status: col(2),
+          // Read but deliberately not part of the signature: it is the one field that legitimately
+          // differs between an in-flight capture and a settled one, so it decides comparability
+          // instead of being compared. Empty means the exchange has no end_time yet.
+          duration: col(4),
           sig: [col(0), col(1), col(2), col(3), cells.slice(5).map((c) => c.textContent.trim()).join('+')].join(' | '),
         };
       });
@@ -650,16 +654,27 @@ async function checkLiveVersusRefreshed() {
   await clickByTitle('Flows');
   const refreshed = new Map((await readFlowRows()).map((r) => [r.id, r]));
 
-  // A row whose response arrived between the two readings cannot be compared: one side legitimately
-  // has no status yet. Both sides showing `---` is a *comparable* row — an upstream failure never
-  // gets a status — and skipping those would skip exactly the error rows, which is how the first
-  // version of this check missed the error badge.
+  // Only *settled* rows can be compared, and the two readings are a reload apart, so "settled" has to
+  // be decided per row rather than by skipping a shape of row.
+  //
+  // A row is comparable once its exchange has *finished*, and the row itself says when that is: an
+  // exchange with no duration has no `end_time` yet, so an outcome landing between the two readings
+  // legitimately differs. That is the exact discriminator — not "no status", which an upstream failure
+  // never has either, and skipping those would skip precisely the error rows this check exists for
+  // (the first version of it did, and missed the error badge). A failure *does* record its ending, so
+  // a failed row is settled and still compared, badge and all.
+  const inFlight = (row) => row.duration === '';
   const shared = live.filter((row) => {
     const other = refreshed.get(row.id);
     if (!other) return false;
+    if (inFlight(row) || inFlight(other)) return false;
     return !(row.status === '---' && other.status !== '---');
   });
-  console.log(`\n[live vs refreshed] ${shared.length} row(s) drawn twice (${live.length} live, ${refreshed.size} from the API)`);
+  const skipped = live.filter((row) => refreshed.has(row.id)).length - shared.length;
+  console.log(
+    `\n[live vs refreshed] ${shared.length} row(s) drawn twice (${live.length} live, ${refreshed.size} from the API, ` +
+      `${skipped} skipped as still in flight)`,
+  );
   if (shared.length === 0) {
     // Not a UI defect — a harness one: without fresh captures there is nothing to compare, and a
     // silent pass would read as "the two derivations agree".
@@ -851,6 +866,83 @@ await shot('15-binary-body-dark');
 await clickFlowMatching('/hello');
 await openPayloadTab();
 await shot('16-json-body-dark');
+
+// A proxied event stream: the one pane whose content arrives as parsed events rather than as a body.
+await checkEventStreamIsReadable();
+await shot('17-event-stream-dark');
+
+
+/**
+ * A proxied `text/event-stream` must be readable as events, not merely as a body.
+ *
+ * This is the one pane whose content is *not* on the flow snapshot: an SSE response may never end, so
+ * the engine pushes each parsed event as it parses it and the client accumulates them. That means
+ * three separate things have to line up for this pane to have anything in it — the engine's parser,
+ * the `sse-event` frame, and the client's listener — and a screenshot of an empty pane looks exactly
+ * like a stream that sent nothing. So the check drives the flow it knows emitted events and reads the
+ * rendered payload back.
+ *
+ * It is also the regression check for the failure mode this pane can have and the others cannot: a
+ * panel that renders *some* of the stream. Three named events and one unnamed one are sent, so
+ * dropping the unnamed event (the spec's default `message`) or collapsing them into one row is
+ * visible here.
+ */
+async function checkEventStreamIsReadable() {
+  await clickFlowMatching('/events');
+  await openMessagesTab();
+  const pane = await readDetailPaneText();
+  console.log(`\n[event stream] messages pane: "${(pane ?? '').slice(0, 90)}"`);
+
+  if (!pane) {
+    fault('the messages pane could not be read for the event-stream flow');
+    return;
+  }
+  for (const expected of ['第 0 条', '第 2 条', 'unnamed event']) {
+    if (!pane.includes(expected)) {
+      fault(`the messages pane does not show ${JSON.stringify(expected)}: "${pane.slice(0, 120)}"`);
+      return;
+    }
+  }
+  if (!pane.includes('tick')) {
+    fault(`the messages pane does not show the event name the stream set: "${pane.slice(0, 120)}"`);
+    return;
+  }
+  if (!pane.includes('message')) {
+    fault(
+      `the unnamed event is missing: an event with no \`event:\` field is the spec's \`message\`, ` +
+        `and it was sent: "${pane.slice(0, 120)}"`,
+    );
+    return;
+  }
+  console.log('  ok — every event the stream sent is on screen, named and unnamed');
+}
+
+/** Click the Messages tab by its label. */
+async function openMessagesTab() {
+  const ok = await evaluate(`
+    (() => {
+      const b = [...document.querySelectorAll('button')].find((n) => n.textContent.trim().toLowerCase() === 'messages');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+  if (!ok) throw new Error('no Messages tab in the detail pane');
+  await sleep(400);
+}
+
+/** The text of the detail pane, whichever tab is open. */
+async function readDetailPaneText() {
+  return evaluate(`
+    (() => {
+      const labels = ['headers', 'payload', 'timing', 'messages', 'trace'];
+      const buttons = [...document.querySelectorAll('button')].filter((b) =>
+        labels.includes(b.textContent.trim().toLowerCase())
+      );
+      if (buttons.length === 0) return null;
+      const pane = buttons[0].parentElement?.nextElementSibling;
+      return pane ? pane.textContent.replace(/\\s+/g, ' ').trim() : null;
+    })()`);
+}
 
 /**
  * The verdict, printed last so it is the thing left on screen.

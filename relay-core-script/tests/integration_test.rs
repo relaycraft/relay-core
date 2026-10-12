@@ -211,6 +211,7 @@ async fn test_deno_script_on_response() {
                 ssl_time_ms: None,
             },
             cookies: vec![],
+            sse_events: vec![],
         });
     }
 
@@ -1067,6 +1068,7 @@ async fn async_on_response_json_rewrite_replaces_the_body() {
                 ssl_time_ms: None,
             },
             cookies: vec![],
+            sse_events: vec![],
         });
     }
     let body = Full::new(Bytes::from_static(b"{\"n\":1}"))

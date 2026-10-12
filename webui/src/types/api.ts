@@ -91,6 +91,14 @@ export interface HttpResponse {
   body: BodyData | null;
   timing: ResponseTiming;
   trailers?: [string, string][];
+  /**
+   * Events parsed out of this response when it was a `text/event-stream`.
+   *
+   * Recorded so a capture opened after the stream ended still reads as events; the live path pushes
+   * each one as it is parsed, because a response that may never end cannot be waited for. Capped, and
+   * the flow is tagged `sse-events-capped` when the cap was reached.
+   */
+  sse_events?: SseStreamEvent[];
 }
 
 export interface HttpLayer {
@@ -287,6 +295,32 @@ export interface CoreStatusSnapshot {
 export interface FlowUpdateFull {
   type: 'Full';
   data: Flow;
+}
+
+/**
+ * One event parsed out of a *proxied* `text/event-stream`, as `event: sse-event` carries it.
+ *
+ * `event` is the SSE field the app set (`undefined` means the spec's unnamed `message` event), and
+ * `data` is the payload with the trailing newline stripped. This mirrors the engine's
+ * `SseEventFrame`; the fields are optional on the wire because the engine skips them when unset.
+ */
+export interface SseStreamEvent {
+  /** The `event:` field, absent for an unnamed event. */
+  event?: string;
+  /** The collected `data:` payload. */
+  data: string;
+  /** The last-event-id in effect when the event was dispatched. */
+  id?: string;
+  /** The reconnection time in effect, in milliseconds. */
+  retry?: number;
+}
+
+export interface FlowUpdateSseEvent {
+  type: 'SseEvent';
+  data: {
+    flow_id: string;
+    event: SseStreamEvent;
+  };
 }
 
 export interface FlowUpdateWsMsg {

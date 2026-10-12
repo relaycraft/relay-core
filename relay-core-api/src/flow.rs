@@ -355,7 +355,26 @@ pub struct HttpResponse {
     /// but not whether it succeeded. Empty means the response had none, which is the common case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trailers: Vec<(String, String)>,
+
+    /// Events parsed out of this response when it was a `text/event-stream` (roadmap §7.2).
+    ///
+    /// Two paths fill this and they answer different questions. While the stream is open, the events
+    /// are pushed one at a time (`FlowUpdate::SseEvent`) because the response may never end, so a
+    /// reader can watch it. Here they are recorded, so a capture opened *afterwards* still reads as
+    /// events — a pane that showed nothing for a finished stream could not tell "no events" from "not
+    /// recorded", which is the distinction this field exists to remove.
+    ///
+    /// Capped (see [`MAX_RECORDED_SSE_EVENTS`]); a stream longer than the cap says so on the flow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sse_events: Vec<crate::sse_stream::SseEvent>,
 }
+
+/// Most events recorded per response.
+///
+/// The body they come from is already bounded, but the event count is not the body size: a stream of
+/// tiny ticks is many events in few bytes. Bounded because a capture is kept for days and an
+/// unbounded per-response list is how one chatty stream becomes a storage problem.
+pub const MAX_RECORDED_SSE_EVENTS: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cookie {
@@ -572,6 +591,7 @@ mod tests {
                 connect_time_ms: None,
                 ssl_time_ms: None,
             },
+            sse_events: vec![],
         }
     }
 

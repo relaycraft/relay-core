@@ -509,6 +509,7 @@ where
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 };
 
                 if let Layer::WebSocket(ws) = &mut flow.layer {

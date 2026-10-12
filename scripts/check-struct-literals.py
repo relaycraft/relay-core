@@ -69,6 +69,12 @@ def rust_sources() -> list[Path]:
         parts = path.relative_to(ROOT).parts
         if "target" in parts or ".git" in parts:
             continue
+        # A nested checkout is a *different* source tree, not this one's code. `.kilo/worktrees/` holds
+        # another branch's copy, and reading it made this gate report literals that no longer exist
+        # here — a check that fails for a reason outside the change it is judging. The same reasoning
+        # excludes vendored copies: their structs are not the structs being edited.
+        if any(part in ("worktrees", "node_modules", "vendor") for part in parts):
+            continue
         files.append(path)
     return files
 

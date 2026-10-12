@@ -56,6 +56,7 @@ fn flow_with_timing(timing: ResponseTiming) -> Flow {
                 }),
                 trailers: vec![],
                 timing,
+                sse_events: vec![],
             }),
             error: None,
         }),

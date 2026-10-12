@@ -12,6 +12,9 @@ export type SseEvent =
      the shape is the engine's, and `describeFlowEvent` is the one place that reads it, so a variant
      this build does not know is skipped there rather than typed into existence here. */
   | { type: 'flow-event'; data: unknown }
+  /* One event parsed out of a proxied `text/event-stream`. Untyped data for the same reason as
+     `flow-event`: the shape is the engine's, and the store is where it is read. */
+  | { type: 'sse-event'; data: { flow_id: string; event: unknown } }
   | { type: 'audit'; data: AuditEvent }
   | { type: 'lifecycle'; data: CoreStatusSnapshot }
   | { type: 'lagged'; data: string }
@@ -59,6 +62,12 @@ export function connectSse(handler: SseEventHandler, options?: SseConnectOptions
     es.addEventListener('http-body', (e) => {
       try {
         handler({ type: 'http-body', data: JSON.parse(e.data) });
+      } catch {}
+    });
+
+    es.addEventListener('sse-event', (e) => {
+      try {
+        handler({ type: 'sse-event', data: JSON.parse(e.data) });
       } catch {}
     });
 

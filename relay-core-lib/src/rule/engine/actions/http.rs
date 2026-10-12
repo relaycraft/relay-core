@@ -133,6 +133,7 @@ pub async fn execute(
                     connect_time_ms: None,
                     ssl_time_ms: None,
                 },
+                sse_events: vec![],
             };
 
             if let Layer::Http(http) = &mut flow.layer {
@@ -284,6 +285,7 @@ pub async fn execute(
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 });
             } else if let Layer::WebSocket(ws) = &mut flow.layer {
                 let mut res_headers = Vec::new();
@@ -306,6 +308,7 @@ pub async fn execute(
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 };
             }
             ActionOutcome::Terminated(TerminalReason::Mock)
@@ -335,6 +338,7 @@ pub async fn execute(
                             connect_time_ms: None,
                             ssl_time_ms: None,
                         },
+                        sse_events: vec![],
                     });
                 }
                 ActionOutcome::Terminated(TerminalReason::Mock)

@@ -260,6 +260,7 @@ fn connect_flow(
                     connect_time_ms: None,
                     ssl_time_ms: None,
                 },
+                sse_events: vec![],
             }),
             error: None,
         }),

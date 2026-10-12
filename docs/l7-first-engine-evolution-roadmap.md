@@ -421,8 +421,12 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 
 #### 可演进（E）
 
-- SSE event 持久化与按序回放（**当前刻意不做**：body 已是有界且持久的记录，
-  再存一份逐事件副本会让「唯一可能跑数小时」的那种 body 付双份成本）
+- ✅ **事件并入捕获**（2026-10-11）：解析出的 `SseEvent` 记录进 `HttpResponse.sse_events`
+  （上限 500 条，超限打 `sse-events-capped` 标签），因此**事后打开一条已结束的事件流也能读到事件**；
+  此前只有实时推送，事后是一张空面板，而空面板分不清「没发」与「没记录」。
+  两条路的职责：实时推 `FlowUpdate::SseEvent`（流可能永不结束，等 body 就等于什么都看不到），
+  记录供回看（由 `report_once` 送出的**累计前缀**在 runtime 侧用同一个解析器解析，只有一份实现）
+- ⬜ SSE event 持久化与**按序回放**（记录已落地；回放/重放未做）
 - event 级规则和脚本
 - 重连/Last-Event-ID 辅助分析
 - SSE mock/replay server

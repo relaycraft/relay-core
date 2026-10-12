@@ -886,6 +886,7 @@ mod tests {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             })
         }
         async fn on_request(

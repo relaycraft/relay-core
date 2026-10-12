@@ -5,7 +5,8 @@ import { buildCurlCommand } from '@/lib/flowActions';
 import { flowTrace } from '@/lib/flowTrace';
 import { grpcOutcome } from '@/lib/flowSummary';
 import { store } from '@/lib/store';
-import type { Flow, HttpLayer, BodyData } from '@/types/api';
+import type { Flow, HttpLayer, HttpResponse, BodyData } from '@/types/api';
+import { parseSseEvent, type SseEventRecord } from '@/lib/sseEvents';
 
 type DetailTab = 'headers' | 'payload' | 'timing' | 'messages' | 'trace';
 
@@ -629,26 +630,116 @@ function MessagesView(props: { flow: Flow }) {
       ? (((props.flow.layer as { data: { messages?: unknown[] } }).data?.messages ?? []) as Message[])
       : [];
 
+  // A proxied event stream is the other thing that produces messages, and it has two sources, for
+  // two different questions. While the stream is *open* the engine pushes each event as it parses it
+  // (an SSE response may never end, so waiting for the body would mean showing nothing), and the
+  // store accumulates those. Once it has *ended*, the events are recorded on the response, which is
+  // what makes a capture opened afterwards readable — the live list is empty by then, and an empty
+  // list that means "not recorded" would be indistinguishable from "nothing happened".
+  //
+  // So the recorded list wins when it exists: it covers the whole stream, and the live list at that
+  // point is a subset of it.
+  const recordedEvents = createMemo<SseEventRecord[]>(() => {
+    const layer = props.flow.layer as { data?: { response?: HttpResponse } };
+    const raw = props.flow.layer.type === 'Http' ? (layer.data?.response?.sse_events ?? []) : [];
+    // Through the same validator as the live path: one shape for rendering, and the API's payload is
+    // checked rather than asserted, exactly as the frame's is.
+    return raw
+      .map(parseSseEvent)
+      .filter((event): event is SseEventRecord => event !== null);
+  });
+  const events = createMemo(() => {
+    const recorded = recordedEvents();
+    return recorded.length > 0 ? [...recorded].reverse() : store.sseEventsFor(props.flow.id);
+  });
+  /** Whether anything at all is known about this stream's events. */
+  const eventsRecorded = createMemo(() => recordedEvents().length > 0);
+  const isEventStream = createMemo(
+    () =>
+      events().length > 0 ||
+      // An event stream that has not emitted yet is still an event stream: saying "not a WebSocket"
+      // about it would be true and useless.
+      (props.flow.layer.type === 'Http' &&
+        ((props.flow.layer as { data: { response?: HttpResponse } }).data?.response?.headers ?? []).some(
+          ([name, value]) =>
+            name.toLowerCase() === 'content-type' &&
+            value.split(';')[0].trim().toLowerCase() === 'text/event-stream',
+        )),
+  );
+
   return (
     <Show
-      when={props.flow.layer.type === 'WebSocket'}
-      fallback={<div class="text-text-dim text-xs">Not a WebSocket connection</div>}
+      when={props.flow.layer.type === 'WebSocket' || isEventStream()}
+      fallback={
+        <div class="text-text-dim text-xs">
+          No messages: not a WebSocket connection, and no event stream was observed.
+        </div>
+      }
     >
-      <div class="text-xs">
-        <For each={messages()}>
-          {(msg) => (
-            <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
-              <span
-                class={`w-12 shrink-0 ${msg.direction === 'ClientToServer' ? 'text-accent' : 'text-warn'}`}
-              >
-                {msg.direction === 'ClientToServer' ? '→' : '←'}
-              </span>
-              <span class="w-12 shrink-0 text-text-dim">{msg.opcode}</span>
-              <pre class="flex-1 whitespace-pre-wrap break-all text-text">{msg.content?.content?.slice(0, 500) ?? ''}</pre>
-            </div>
-          )}
-        </For>
-      </div>
+      <Show when={props.flow.layer.type === 'WebSocket'}>
+        <div class="text-xs">
+          <For each={messages()}>
+            {(msg) => (
+              <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
+                <span
+                  class={`w-12 shrink-0 ${msg.direction === 'ClientToServer' ? 'text-accent' : 'text-warn'}`}
+                >
+                  {msg.direction === 'ClientToServer' ? '→' : '←'}
+                </span>
+                <span class="w-12 shrink-0 text-text-dim">{msg.opcode}</span>
+                <pre class="flex-1 whitespace-pre-wrap break-all text-text">{msg.content?.content?.slice(0, 500) ?? ''}</pre>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <Show when={props.flow.layer.type !== 'WebSocket' && isEventStream()}>
+        <div class="text-xs">
+          <div class="text-text-dim mb-1">
+            {events().length} event{events().length === 1 ? '' : 's'}
+            {eventsRecorded()
+              ? ', newest first'
+              : events().length > 0
+                ? ', newest first, live'
+                : ' so far'}
+          </div>
+          <Show
+            when={events().length > 0}
+            fallback={
+              // The honest distinction: a stream that is still open has genuinely emitted nothing
+              // yet, while a finished one whose events were not recorded is a gap in the capture —
+              // and saying "no event yet" about the second would be a lie.
+              <div class="text-text-dim">
+                {props.flow.end_time
+                  ? 'This event stream ended without any event being recorded.'
+                  : 'The response is an event stream, and no event has been emitted yet.'}
+              </div>
+            }
+          >
+            <For each={events()}>
+              {(event) => (
+                <div class="flex items-start gap-2 py-1 border-b border-border/20 text-[13px]">
+                  {/* Always the server's direction: an event stream only travels one way, and the
+                      engine parses only the response direction. */}
+                  <span class="w-12 shrink-0 text-warn">←</span>
+                  <span class="w-20 shrink-0 text-text-dim truncate" title={event.kind}>
+                    {event.kind}
+                  </span>
+                  <pre class="flex-1 whitespace-pre-wrap break-all text-text">
+                    {event.data.slice(0, 500)}
+                  </pre>
+                  <Show when={event.id}>
+                    <span class="shrink-0 text-text-dim" title="last-event-id">
+                      #{event.id}
+                    </span>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </Show>
+        </div>
+      </Show>
     </Show>
   );
 }

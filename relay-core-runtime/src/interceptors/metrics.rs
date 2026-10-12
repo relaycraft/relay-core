@@ -51,6 +51,7 @@ impl Interceptor for MetricsInterceptor {
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 };
 
                 return InterceptionResult::MockResponse(response);
@@ -84,6 +85,7 @@ impl Interceptor for MetricsInterceptor {
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 };
 
                 return InterceptionResult::MockResponse(response);

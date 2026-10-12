@@ -117,6 +117,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "未找到该资源"}, ensure_ascii=False).encode())
         elif path == "/boom":
             self._send(500, json.dumps({"error": "internal", "detail": "失败原因"}).encode())
+        elif path == "/events":
+            # A real `text/event-stream`: the engine parses it *as it streams*, which is the only way
+            # the Messages panel can have anything to draw. Flushed per event on purpose — an event
+            # held until the end of the response would still be parsed, but it would not exercise the
+            # streaming path that makes events visible while a long-lived stream is still open.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for i in range(3):
+                self.wfile.write(f"event: tick\ndata: 第 {i} 条\n\n".encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: unnamed event\n\n")
+            self.wfile.flush()
         elif path == "/slow":
             import time; time.sleep(2)
             self._send(200, b'{"slow":true}')
@@ -223,6 +237,7 @@ fetch() { curl -s -o /dev/null -x "$PROXY" --max-time 12 "$1" || true; }
 fetch "$U/hello"
 fetch "$U/hello?token=secret-value&q=中文"
 fetch "$U/big"
+fetch "$U/events"
 fetch "$U/gz"
 fetch "$U/png"
 fetch "$U/binary"

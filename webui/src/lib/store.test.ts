@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DETAIL_REFRESH_MS, createAppStore, MAX_FLOWS } from './store';
+import { DETAIL_REFRESH_MS, createAppStore, MAX_FLOWS, MAX_SSE_EVENTS_PER_FLOW } from './store';
 import type { FlowSummary } from '@/types/api';
 
 function makeSummary(id: string, startTimeMs = Date.now()): FlowSummary {
@@ -184,5 +184,41 @@ describe('hideTunnels', () => {
     app.hideTunnels();
 
     expect(app.state.selectedFlowId).toBeNull();
+  });
+});
+
+describe('applySseEvent', () => {
+  it('accumulates parsed events per flow, newest first', () => {
+    const app = createAppStore();
+    app.applySseEvent('flow-1', { event: 'tick', data: '1' });
+    app.applySseEvent('flow-1', { event: 'tick', data: '2' });
+    app.applySseEvent('flow-2', { event: 'other', data: 'x' });
+
+    expect(app.sseEventsFor('flow-1').map((e) => e.data)).toEqual(['2', '1']);
+    expect(app.sseEventsFor('flow-2').map((e) => e.data)).toEqual(['x']);
+  });
+
+  it('rejects a payload that is not an event, rather than storing undefined', () => {
+    const app = createAppStore();
+    expect(app.applySseEvent('flow-1', { event: 'tick' })).toBe(false);
+    expect(app.applySseEvent('flow-1', null)).toBe(false);
+    expect(app.sseEventsFor('flow-1')).toEqual([]);
+  });
+
+  it('is bounded per flow, because a stream can run for hours', () => {
+    const app = createAppStore();
+    for (let i = 0; i < MAX_SSE_EVENTS_PER_FLOW + 25; i++) {
+      app.applySseEvent('flow-1', { data: String(i) });
+    }
+    const kept = app.sseEventsFor('flow-1');
+    expect(kept.length).toBe(MAX_SSE_EVENTS_PER_FLOW);
+    // The newest survive and the oldest go: a reader watching a stream wants the end of it.
+    expect(kept[0].data).toBe(String(MAX_SSE_EVENTS_PER_FLOW + 24));
+  });
+
+  it('returns nothing for a flow with no events, or none selected', () => {
+    const app = createAppStore();
+    expect(app.sseEventsFor('unknown')).toEqual([]);
+    expect(app.sseEventsFor(null)).toEqual([]);
   });
 });

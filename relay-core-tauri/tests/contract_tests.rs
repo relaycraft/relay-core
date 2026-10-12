@@ -66,6 +66,7 @@ fn test_flow_to_flow_index_conversion() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: None,
         }),
@@ -221,6 +222,7 @@ fn test_websocket_flow_to_detail_conversion() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             },
             messages: vec![
                 WebSocketMessage {
@@ -413,6 +415,7 @@ fn test_flow_detail_http_har_compat_fields() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: None,
         }),
@@ -493,6 +496,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: None,
         }),
@@ -608,6 +612,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: None,
         }),
@@ -667,6 +672,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             },
             messages: vec![
                 WebSocketMessage {
@@ -768,6 +774,7 @@ fn http_flow(status: Option<u16>, error: Option<&str>, start_offset_ms: i64) -> 
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: error.map(str::to_string),
         }),

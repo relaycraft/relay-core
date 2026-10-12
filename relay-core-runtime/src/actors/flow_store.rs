@@ -166,6 +166,54 @@ impl FlowStoreActor {
                                     http.request.body = Some(body);
                                 }
                                 Direction::ServerToClient => {
+                                    // An event stream is recorded as events as well as bytes, so a
+                                    // capture opened *after* the stream ended still reads as events.
+                                    // The live path pushes each event as it is parsed; this is the
+                                    // path that makes the pane honest for a finished stream, where
+                                    // "nothing recorded" and "nothing happened" look identical.
+                                    let is_event_stream = http
+                                        .response
+                                        .as_ref()
+                                        .map(|r| {
+                                            r.headers.iter().any(|(name, value)| {
+                                                name.eq_ignore_ascii_case("content-type")
+                                                    && value
+                                                        .split(';')
+                                                        .next()
+                                                        .unwrap_or("")
+                                                        .trim()
+                                                        .eq_ignore_ascii_case("text/event-stream")
+                                            })
+                                        })
+                                        .unwrap_or(false);
+                                    if is_event_stream {
+                                        // The parser works on bytes, and a text body is stored as
+                                        // text: an encoding this does not understand is left alone
+                                        // rather than guessed at.
+                                        if body.encoding == "utf-8" {
+                                            let (events, _losses) =
+                                                relay_core_api::sse_stream::parse_all(
+                                                    body.content.as_bytes(),
+                                                    relay_core_api::flow::MAX_RECORDED_SSE_EVENTS,
+                                                );
+                                            if events.len()
+                                                >= relay_core_api::flow::MAX_RECORDED_SSE_EVENTS
+                                            {
+                                                // Say that the list is a prefix, rather than letting a
+                                                // capped list read as the whole stream.
+                                                if !flow
+                                                    .tags
+                                                    .iter()
+                                                    .any(|t| t == "sse-events-capped")
+                                                {
+                                                    flow.tags.push("sse-events-capped".to_string());
+                                                }
+                                            }
+                                            if let Some(res) = &mut http.response {
+                                                res.sse_events = events;
+                                            }
+                                        }
+                                    }
                                     if let Some(res) = &mut http.response {
                                         res.body = Some(body);
                                     }
@@ -414,6 +462,7 @@ mod tests {
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 }),
                 error: None,
             }),

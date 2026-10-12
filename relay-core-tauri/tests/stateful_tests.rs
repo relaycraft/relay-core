@@ -81,6 +81,7 @@ fn create_ws_flow(url: &str) -> Flow {
                 connect_time_ms: None,
                 ssl_time_ms: None,
             },
+            sse_events: vec![],
         },
         messages: vec![],
         closed: false,

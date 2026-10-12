@@ -7,7 +7,14 @@ import {
   describeFlowEvent,
   type FlowEventNotice,
 } from '@/lib/flowEvents';
-import type { FlowSummary, CoreMetrics, CoreStatusSnapshot, InterceptItem, Rule } from '@/types/api';
+import type {
+  FlowSummary,
+  CoreMetrics,
+  CoreStatusSnapshot,
+  InterceptItem,
+  Rule,
+} from '@/types/api';
+import { parseSseEvent, type SseEventRecord } from '@/lib/sseEvents';
 
 export type ViewId = 'flows' | 'workshop' | 'rules' | 'scripts' | 'settings';
 
@@ -15,6 +22,15 @@ export const MAX_FLOWS = 5000;
 
 /** How long changes to the open flow wait before one detail refresh. */
 export const DETAIL_REFRESH_MS = 200;
+
+/**
+ * How many parsed events to keep per flow.
+ *
+ * Bounded because an event stream is the one body shape that can run for hours: a server pushing a
+ * tick per second would otherwise grow this tab without limit, which is the same defect the capture
+ * queue had before it was bounded.
+ */
+export const MAX_SSE_EVENTS_PER_FLOW = 200;
 
 export interface AppState {
   activeView: ViewId;
@@ -38,6 +54,8 @@ export interface AppState {
   pausedFlowIds: string[];
   /** Lifecycle notices per flow, newest last. */
   flowNotices: Map<string, FlowEventNotice[]>;
+  /** Events parsed from a proxied `text/event-stream`, per flow, newest last. */
+  sseEvents: Map<string, SseEventRecord[]>;
 }
 
 export function createAppStore() {
@@ -60,6 +78,7 @@ export function createAppStore() {
     flowReloadGeneration: 0,
     pausedFlowIds: [],
     flowNotices: new Map(),
+    sseEvents: new Map(),
   });
 
   // The aggregate lives outside the reactive store and is copied in on change: folding an event into
@@ -110,6 +129,38 @@ export function createAppStore() {
       }),
     );
     return true;
+  }
+
+  /**
+   * Record one parsed event from a proxied event stream.
+   *
+   * These are not on the flow snapshot and cannot be: the engine records the response *body* (bounded
+   * by the body budget) and pushes the parsed events incrementally, because making a capture wait for
+   * a stream that may never end would mean showing nothing at all. So the client accumulates them,
+   * exactly as it does for WebSocket frames.
+   */
+  function applySseEvent(flowId: string, raw: unknown): boolean {
+    // Validated here, at the boundary where the wire enters: a cast at the call site would assert a
+    // shape the frame has not promised, and the panel renders whatever is in here.
+    const event = parseSseEvent(raw);
+    if (!flowId || !event) return false;
+    setState(
+      produce((s) => {
+        const existing = s.sseEvents.get(flowId) ?? [];
+        existing.push(event);
+        if (existing.length > MAX_SSE_EVENTS_PER_FLOW) {
+          existing.splice(0, existing.length - MAX_SSE_EVENTS_PER_FLOW);
+        }
+        s.sseEvents = new Map(s.sseEvents).set(flowId, [...existing]);
+      }),
+    );
+    return true;
+  }
+
+  /** Events recorded for one flow, newest first. */
+  function sseEventsFor(flowId: string | null): SseEventRecord[] {
+    if (!flowId) return [];
+    return [...(state.sseEvents.get(flowId) ?? [])].reverse();
   }
 
   /** Notices recorded for one flow, newest first. */
@@ -264,6 +315,8 @@ export function createAppStore() {
     syncFlows,
     hideTunnels,
     applyFlowEvent,
+    applySseEvent,
+    sseEventsFor,
     noticesFor,
     requestFlowReload,
     clearFlows,

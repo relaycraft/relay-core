@@ -41,7 +41,7 @@
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
 | §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手都可观测；`permessage-deflate` 现为**显式降级**（双向剥离 + `ws-extensions-stripped` 标签 + 指标），不再是静默破坏 | 帧级修改仍无线路断言；Socket.IO/帧级双视图未做 |
-| §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | 事件不落盘（有意：body 已是有界持久记录）；`Last-Event-ID` 辅助分析未做；`event: sse-event` 已上线路，但详情页的 Messages 面板仍只画 WebSocket |
+| §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | `Last-Event-ID` 辅助分析未做；事件**记录进响应**（`HttpResponse.sse_events`，上限 500）并在详情页 Messages 面板展示（实时 + 事后两条路都已通） |
 | §8 TLS / PKI | **Partial** | CA 生成/加载/按主机签发、MITM 端到端可用，CA 错误处理严格 | **无「按 host 决定 MITM/passthrough」策略** ⇒ 做 pinning 的客户端只能失败；SNI/ALPN 永不记录；叶证书对 IP 字面量发的是 DNS SAN |
 | §9 代理模式与捕获 | **Partial** | 正向代理默认稳定；透明模式 Linux/macOS/Windows 都有代码 | 透明捕获**零平台级测试**（三个 provider 文件 0 个测试）；reverse/多监听被生命周期**主动拒绝** |
 | §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话 | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource` |

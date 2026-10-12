@@ -310,6 +310,24 @@ fn find_line_end(buf: &[u8], at_eof: bool) -> Option<(usize, usize)> {
     None
 }
 
+/// Parse a complete, already-recorded body in one pass.
+///
+/// The same parser, for the same reason there is only one: a capture read back must agree with what a
+/// live reader saw, and two implementations would eventually disagree about a line ending.
+///
+/// Returns the events and what was lost, and stops at `max_events` so a chatty stream cannot grow a
+/// capture without bound. An empty body yields no events, not an error: a response that claimed to be
+/// an event stream and sent nothing is a fact about that response.
+pub fn parse_all(bytes: &[u8], max_events: usize) -> (Vec<SseEvent>, SseLosses) {
+    let mut parser = SseParser::default();
+    let mut events = parser.push(bytes);
+    parser.finish();
+    if events.len() > max_events {
+        events.truncate(max_events);
+    }
+    (events, parser.losses())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

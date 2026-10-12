@@ -255,6 +255,7 @@ pub fn create_initial_flow(
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 },
                 messages: vec![],
                 closed: false,
@@ -700,6 +701,7 @@ pub fn update_flow_with_response_headers(
             connect_time_ms: None,
             ssl_time_ms: None,
         },
+        sse_events: vec![],
     };
 
     match &mut flow.layer {
@@ -914,6 +916,7 @@ mod tests {
                 connect_time_ms: None,
                 ssl_time_ms: None,
             },
+            sse_events: vec![],
         }
     }
 
@@ -1039,6 +1042,7 @@ mod tests {
                         connect_time_ms: None,
                         ssl_time_ms: None,
                     },
+                    sse_events: vec![],
                 }),
                 error: None,
             }),

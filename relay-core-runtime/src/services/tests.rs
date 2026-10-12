@@ -64,6 +64,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
                     connect_time_ms: None,
                     ssl_time_ms: None,
                 },
+                sse_events: vec![],
             }),
             error: None,
         }),

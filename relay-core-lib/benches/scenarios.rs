@@ -66,6 +66,7 @@ fn make_flow(url: &str) -> Flow {
                     ssl_time_ms: None,
                 },
                 cookies: vec![],
+                sse_events: vec![],
             }),
             error: None,
         }),
