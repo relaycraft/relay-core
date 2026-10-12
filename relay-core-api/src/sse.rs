@@ -33,6 +33,8 @@ pub mod event_name {
     pub const RESPONSE_TRAILERS: &str = "response-trailers";
     /// An HTTP/2 stream reset, distinct from a body that ended short.
     pub const STREAM_RESET: &str = "stream-reset";
+    /// One event parsed out of a proxied `text/event-stream` response.
+    pub const SSE_EVENT: &str = "sse-event";
 }
 
 /// One SSE frame: the `event:` name plus its `data:` payload, already serialised.
@@ -93,6 +95,15 @@ pub struct ResponseTrailersFrame {
     pub flow_id: String,
     /// The trailers, in the order they arrived.
     pub trailers: Vec<(String, String)>,
+}
+
+/// Payload of `event: sse-event`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SseEventFrame {
+    /// Flow whose response carried the event.
+    pub flow_id: String,
+    /// The parsed event.
+    pub event: crate::sse_stream::SseEvent,
 }
 
 /// Payload of `event: stream-reset`.
@@ -156,6 +167,13 @@ impl FlowUpdate {
                     trailers: trailers.clone(),
                 },
             ),
+            FlowUpdate::SseEvent { flow_id, event } => encode(
+                event_name::SSE_EVENT,
+                &SseEventFrame {
+                    flow_id: flow_id.clone(),
+                    event: event.clone(),
+                },
+            ),
             FlowUpdate::StreamReset { flow_id, detail } => encode(
                 event_name::STREAM_RESET,
                 &StreamResetFrame {
@@ -210,6 +228,13 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
             Some(FlowUpdate::ResponseTrailers {
                 flow_id: frame.flow_id,
                 trailers: frame.trailers,
+            })
+        }
+        event_name::SSE_EVENT => {
+            let frame: SseEventFrame = serde_json::from_str(data).ok()?;
+            Some(FlowUpdate::SseEvent {
+                flow_id: frame.flow_id,
+                event: frame.event,
             })
         }
         event_name::STREAM_RESET => {
@@ -321,11 +346,24 @@ mod tests {
                 flow_id: "flow-reset".to_string(),
                 detail: "stream error: CANCEL".to_string(),
             },
+            FlowUpdate::SseEvent {
+                flow_id: "flow-sse".to_string(),
+                event: crate::sse_stream::SseEvent {
+                    event: Some("tick".to_string()),
+                    data: "42".to_string(),
+                    id: Some("7".to_string()),
+                    retry: Some(1500),
+                },
+            },
         ]
     }
 
     /// The lock that stops the two ends drifting: whatever an adapter writes, a client built on
     /// this module reads back as the same update.
+    ///
+    /// The list below is maintained by hand, so a new variant compiles (the encoder's `match` is
+    /// exhaustive and forces an arm) while this lock quietly ignores it. Adding a variant means
+    /// adding it here — that is the one step the compiler cannot nod at.
     #[test]
     fn every_update_round_trips_through_its_frame() {
         for update in every_variant() {

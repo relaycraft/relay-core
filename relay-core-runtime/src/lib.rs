@@ -116,6 +116,14 @@ pub struct CoreMetrics {
     pub proxy_flows_dropped_total: usize,
     /// O4: Total bodies processed in tap (streaming) mode
     pub proxy_stream_mode_tap_total: usize,
+    /// `text/event-stream` responses recognised and parsed (roadmap §7.2).
+    pub proxy_sse_streams_total: usize,
+    /// Events parsed out of proxied event streams.
+    pub proxy_sse_events_total: usize,
+    /// Events dropped because one event exceeded the payload budget.
+    pub proxy_sse_events_dropped_total: usize,
+    /// Event streams that ended in the middle of an event.
+    pub proxy_sse_truncated_total: usize,
     /// O4: Total bodies degraded from tap to pass-through
     pub proxy_stream_mode_degrade_total: usize,
     /// O4: Total bytes transmitted to upstream (client→proxy→server)
@@ -148,6 +156,10 @@ relay_core_proxy_invalid_status_total {}\n\
 relay_core_proxy_circuit_rejected_total {}\n\
 relay_core_proxy_flows_dropped_total {}\n\
 relay_core_proxy_stream_mode_tap_total {}\n\
+relay_core_proxy_sse_streams_total {}\n\
+relay_core_proxy_sse_events_total {}\n\
+relay_core_proxy_sse_events_dropped_total {}\n\
+relay_core_proxy_sse_truncated_total {}\n\
 relay_core_proxy_stream_mode_degrade_total {}\n\
 relay_core_proxy_bytes_sent_total {}\n\
 relay_core_proxy_bytes_recv_total {}\n",
@@ -170,6 +182,10 @@ relay_core_proxy_bytes_recv_total {}\n",
             self.proxy_circuit_rejected_total,
             self.proxy_flows_dropped_total,
             self.proxy_stream_mode_tap_total,
+            self.proxy_sse_streams_total,
+            self.proxy_sse_events_total,
+            self.proxy_sse_events_dropped_total,
+            self.proxy_sse_truncated_total,
             self.proxy_stream_mode_degrade_total,
             self.proxy_bytes_sent_total,
             self.proxy_bytes_recv_total,
@@ -506,6 +522,10 @@ impl CoreState {
             proxy_circuit_rejected_total: relay_core_lib::metrics::get_circuit_rejected(),
             proxy_flows_dropped_total: relay_core_lib::metrics::get_flows_dropped(),
             proxy_stream_mode_tap_total: relay_core_lib::metrics::get_proxy_stream_mode_tap(),
+            proxy_sse_streams_total: relay_core_lib::metrics::get_proxy_sse_streams(),
+            proxy_sse_events_total: relay_core_lib::metrics::get_proxy_sse_events(),
+            proxy_sse_events_dropped_total: relay_core_lib::metrics::get_proxy_sse_events_dropped(),
+            proxy_sse_truncated_total: relay_core_lib::metrics::get_proxy_sse_truncated(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(
             ),
             proxy_bytes_sent_total: relay_core_lib::metrics::get_bytes_sent(),
@@ -1874,6 +1894,7 @@ impl CoreState {
                     | FlowUpdate::HttpBody { flow_id, .. }
                     | FlowUpdate::BodyBudgetExceeded { flow_id, .. }
                     | FlowUpdate::ResponseTrailers { flow_id, .. }
+                    | FlowUpdate::SseEvent { flow_id, .. }
                     | FlowUpdate::StreamReset { flow_id, .. } => {
                         uuid::Uuid::parse_str(flow_id).ok()
                     }
@@ -1910,6 +1931,29 @@ impl CoreState {
                     }
                     FlowUpdate::ResponseTrailers { flow_id, trailers } => {
                         state.set_response_trailers(flow_id, trailers);
+                    }
+                    FlowUpdate::SseEvent { flow_id, event } => {
+                        // An event stream's events are the "Message" level of roadmap §4-2, and this
+                        // is where `FlowEvent::MessageReceived` finally has a producer: the event is
+                        // parsed from the wire, so nothing is inferred from a snapshot diff.
+                        //
+                        // Nothing is appended to the Flow on purpose. The body is already the
+                        // durable record of what the stream sent (bounded by the body budget), so
+                        // storing a second copy per event would double the cost of the one body
+                        // shape that can run for hours.
+                        if let Ok(id) = uuid::Uuid::parse_str(&flow_id) {
+                            state.publish_flow_event(
+                                relay_core_api::event::FlowEvent::MessageReceived {
+                                    flow_id: id,
+                                    direction: relay_core_api::flow::Direction::ServerToClient,
+                                },
+                            );
+                        }
+                        tracing::trace!(
+                            "sse event on {flow_id}: {} ({} bytes)",
+                            event.kind(),
+                            event.data.len()
+                        );
                     }
                     FlowUpdate::StreamReset { flow_id, detail } => {
                         state.note_stream_reset(flow_id, detail);
@@ -2076,6 +2120,15 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
         },
         FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
             FlowUpdate::BodyBudgetExceeded { flow_id, direction }
+        }
+        // An event's `data` is a payload, so it follows the body rule rather than the header rule:
+        // `event` and `id` are metadata (like a header name) and stay readable, which is what makes a
+        // redacted capture still useful for "what happened, and what did it carry".
+        FlowUpdate::SseEvent { flow_id, mut event } => {
+            if redaction.enabled && redaction.redact_bodies {
+                event.data = "[REDACTED]".to_string();
+            }
+            FlowUpdate::SseEvent { flow_id, event }
         }
         // `grpc-message` and friends are server-authored free text and can echo request content, so
         // they go through the same name-based screening as headers.

@@ -14,6 +14,7 @@ pub mod modification;
 pub mod policy;
 pub mod rule;
 pub mod sse;
+pub mod sse_stream;
 
 /// Command users type.
 ///

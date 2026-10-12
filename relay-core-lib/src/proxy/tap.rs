@@ -3,9 +3,24 @@ use crate::proxy::body_codec::{process_arrived_body, process_body_with_framing};
 use crate::proxy::body_plan::{PrefixBuffer, buffer_prefix};
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use relay_core_api::flow::{BodyData, Direction, FlowUpdate};
+use relay_core_api::sse_stream::SseParser;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::Sender;
+
+/// Is this `Content-Type` an event stream?
+///
+/// Parameters are allowed (`text/event-stream; charset=utf-8`), and the comparison is on the media
+/// type only — a stream whose type carries a charset is still a stream, and refusing it would leave
+/// the one body shape that most needs parsing unparsed.
+pub fn is_event_stream_content_type(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("text/event-stream")
+}
 
 /// Streaming body observer: forwards every frame untouched while retaining a bounded prefix.
 ///
@@ -37,6 +52,12 @@ pub struct TapBody {
     reported: std::sync::atomic::AtomicBool,
     /// Complete gRPC messages already pushed while the stream is still open.
     grpc_noted: std::sync::atomic::AtomicU32,
+    /// Incremental parser for a `text/event-stream` response (roadmap §7.2).
+    ///
+    /// `None` for every other body, so the common path pays nothing for a feature only SSE needs.
+    /// The parser is here rather than in the reporting task because its state is per-byte-stream:
+    /// splitting an event across chunks is the whole problem, and only the body sees the chunks.
+    sse: Option<SseParser>,
 }
 
 impl TapBody {
@@ -59,7 +80,25 @@ impl TapBody {
             reported: std::sync::atomic::AtomicBool::new(false),
             grpc_noted: std::sync::atomic::AtomicU32::new(0),
             observed: observed_tx,
+            sse: None,
         }
+    }
+
+    /// Parse this body as a `text/event-stream` response.
+    ///
+    /// Only the response direction can be one, and only when the peer said so: the content type is
+    /// the peer's claim, and parsing a body that is not an event stream would report nonsense as
+    /// events. Anything that is not exactly `text/event-stream` (parameters allowed) is left alone.
+    pub fn tap_event_stream(mut self) -> Self {
+        let is_event_stream = self.direction == Direction::ServerToClient
+            && self.headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("content-type") && is_event_stream_content_type(value)
+            });
+        if is_event_stream {
+            self.sse = Some(SseParser::default());
+            crate::metrics::inc_proxy_sse_streams();
+        }
+        self
     }
 
     /// Report the body once, from whichever signal arrives first.
@@ -67,10 +106,23 @@ impl TapBody {
     /// Two signals because either can be the last one a consumer sees: the end-of-stream poll, and
     /// `is_end_stream()` (which hyper consults to decide the body is finished, and which does not
     /// require another poll). Reporting from only one of them loses bodies from the capture.
-    fn report_once(&self) {
+    fn report_once(&mut self) {
         use std::sync::atomic::Ordering;
         if self.reported.swap(true, Ordering::Relaxed) {
             return;
+        }
+
+        // Close the event-stream parse. A trailing event with no blank line is not dispatched (that
+        // is what the spec says a client does), but it is counted: a capture that stops mid-event is
+        // exactly what someone debugging a dropped connection needs to see said out loud.
+        if let Some(parser) = self.sse.as_mut() {
+            let losses = parser.finish();
+            if losses.truncated_at_end {
+                crate::metrics::inc_proxy_sse_truncated();
+            }
+            for _ in 0..losses.oversized {
+                crate::metrics::inc_proxy_sse_events_dropped();
+            }
         }
 
         let snapshot = self.inner.snapshot();
@@ -250,51 +302,53 @@ impl Body for TapBody {
                     }
                 }
 
-                // A body that hyper finishes by `is_end_stream` — never yielding a final `None` — is
-                // still not recorded. Two attempts to fix that here both hung
-                // `test_h1_concurrent_connections`, and the evidence is now precise, so the third
-                // attempt can skip what these two established:
-                //
-                //   * reporting from `is_end_stream` itself, and
-                //   * reporting from this branch once a frame has arrived
-                //
-                // both hang, and relocating the call changed nothing. A stack sample of the hung test
-                // (`sample <pid>`) shows the runtime **idle in `kevent` with no task runnable and no
-                // lock held** — so this is not the deadlock it was first written up as. `PrefixBuffer`
-                // holds no lock at all (`retained: Vec<u8>`); a wakeup is being lost instead, which is
-                // a different class of bug and needs a different fix. Doing the report from a task that
-                // owns the exchange, rather than from inside the body's own poll, is the direction the
-                // evidence points to.
-                //
-                // The missing body stays missing until then: a capture without a body is a smaller
-                // failure than a proxy that stops answering.
                 // A body hyper finishes without a final poll — which is how it treats a
-                // length-delimited body — never reached the `Ready(None)` branch below, so those flows
-                // were captured with no body at all. Completion is read from the size hint, a pure
-                // query, and `Ready(None)` still covers everything else.
+                // length-delimited body — never reached the `Ready(None)` branch below, so those
+                // flows were once captured with no body at all. Completion is read from the size
+                // hint, a pure query, and `Ready(None)` still covers everything else; an h2 stream
+                // has no length, and for that case the report comes from `Drop` (see the impl
+                // below), which every body reaches.
                 //
-                // The hint only works when a length is known; an h2 stream has none, and for that case
-                // the report comes from `Drop` (see the impl below), which every body reaches.
+                // This paragraph previously described the fix as still outstanding, which stopped
+                // being true when the two signals landed — a comment that contradicts the code
+                // beneath it is worse than no comment, because it is read as the reason the code
+                // looks the way it does.
                 //
-                // Note on the history: three earlier attempts were written up here as proof that
-                // calling `is_end_stream()` inside a poll is unsafe. They were not. The test they hung
-                // on handed the proxy a ten-slot flow channel that nobody read, and `send(..).await`
-                // blocked once it filled; the baseline sat just under the limit, so any change that
-                // added one update appeared to deadlock the proxy.
+                // The history is worth keeping because it cost four wrong conclusions: three
+                // attempts were written up here as proof that calling `is_end_stream()` inside a
+                // poll is unsafe, and they were not. The test they "hung" on handed the proxy a
+                // ten-slot flow channel that nobody read, and `send(..).await` blocked once it
+                // filled; the baseline sat just under the limit, so any change that added one
+                // update looked like a deadlock in the proxy.
                 if let Some(data) = frame.data_ref()
                     && !data.is_empty()
                 {
                     self.note_arrived_grpc();
+
+                    // Parse what arrived and hand on whatever became complete. The work is bounded by
+                    // the bytes just seen, and the send is non-blocking for the same reason the
+                    // trailers above are: a slow consumer must not stall the response.
+                    let dispatched = match self.sse.as_mut() {
+                        Some(parser) => parser.push(data),
+                        None => Vec::new(),
+                    };
+                    for event in dispatched {
+                        crate::metrics::inc_proxy_sse_events();
+                        let _ = self.on_flow.try_send(FlowUpdate::SseEvent {
+                            flow_id: self.flow_id.clone(),
+                            event,
+                        });
+                    }
                 }
 
                 if self.inner.size_hint().exact() == Some(0) {
-                    self.report_once();
+                    self.as_mut().get_mut().report_once();
                 }
 
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(None) => {
-                self.report_once();
+                self.as_mut().get_mut().report_once();
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(err))) => {

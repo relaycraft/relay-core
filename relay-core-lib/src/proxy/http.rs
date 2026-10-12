@@ -766,6 +766,9 @@ where
         vec![]
     };
 
+    // A `text/event-stream` response is parsed as it streams (roadmap §7.2): the events are pushed
+    // as they complete, rather than making a reader wait for a body that may never end. Every other
+    // content type skips the parser entirely.
     let tap_res_body = TapBody::new(
         res_body,
         flow.id.to_string(),
@@ -774,7 +777,8 @@ where
         policy.max_body_size,
         res_headers,
         Some(observed_tx.clone()),
-    );
+    )
+    .tap_event_stream();
     let mut current_res_body = tap_res_body.boxed();
 
     match interceptor.on_response(&mut flow, current_res_body).await {

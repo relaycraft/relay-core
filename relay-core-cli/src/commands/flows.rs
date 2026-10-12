@@ -262,6 +262,16 @@ fn print_update(update: &relay_core_api::flow::FlowUpdate) {
         FlowUpdate::BodyBudgetExceeded { flow_id, direction } => {
             info!("[BudgetExceeded] [{}] {:?}", flow_id, direction);
         }
+        FlowUpdate::SseEvent { flow_id, event } => {
+            // Enough to follow a stream live without printing payloads into a terminal: the event
+            // name the app chose, and how much it carried.
+            info!(
+                "[SSE] [{}] {} ({} bytes)",
+                flow_id,
+                event.kind(),
+                event.data.len()
+            );
+        }
         FlowUpdate::ResponseTrailers { flow_id, trailers } => {
             let status = trailers.iter().find_map(|(name, value)| {
                 name.eq_ignore_ascii_case("grpc-status")

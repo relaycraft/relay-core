@@ -464,6 +464,16 @@ pub enum FlowUpdate {
         flow_id: String,
         trailers: Vec<(String, String)>,
     },
+    /// One event parsed out of a `text/event-stream` response (roadmap §7.2 / §4-2 "Message").
+    ///
+    /// An SSE response is a stream of events, so it is reported the way a WebSocket's messages are:
+    /// incrementally, as each one becomes complete, rather than making the reader wait for a body
+    /// that may never end. The body itself is still recorded separately, so nothing is lost by
+    /// reading events from here.
+    SseEvent {
+        flow_id: String,
+        event: crate::sse_stream::SseEvent,
+    },
     /// The HTTP/2 stream was reset.
     ///
     /// Distinct from a body that simply stopped: a reset is the peer cancelling the call, and the

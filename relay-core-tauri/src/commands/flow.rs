@@ -85,6 +85,18 @@ impl<R: Runtime> TauriFlowSink<R> {
                         eprintln!("Failed to emit flow-body-update event: {}", e);
                     }
                 }
+                FlowUpdate::SseEvent { flow_id, event } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct SseEventEvent {
+                        flow_id: String,
+                        event: relay_core_api::sse_stream::SseEvent,
+                    }
+                    let event = SseEventEvent { flow_id, event };
+                    if let Err(e) = self.app_handle.emit("flow-sse-update", event) {
+                        eprintln!("Failed to emit flow-sse-update event: {}", e);
+                    }
+                }
                 FlowUpdate::ResponseTrailers { flow_id, trailers } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]

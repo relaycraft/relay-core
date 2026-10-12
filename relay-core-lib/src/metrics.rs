@@ -33,6 +33,28 @@ pub static PROXY_STREAM_MODE_TAP_TOTAL: AtomicUsize = AtomicUsize::new(0);
 /// O4: Total number of bodies degraded from tap to pass-through
 pub static PROXY_STREAM_MODE_DEGRADE_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
+/// `text/event-stream` responses the engine recognised and parsed (roadmap §7.2).
+///
+/// A stream rather than a body: one SSE response carries many events and can stay open for hours, so
+/// counting responses is the only way to tell "one long stream" from "many short ones".
+pub static PROXY_SSE_STREAMS_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Events parsed out of proxied event streams and pushed to consumers.
+pub static PROXY_SSE_EVENTS_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Events that were parsed and then **dropped** because a single event exceeded the payload budget.
+///
+/// Deliberately not reported as events: a truncated payload published as a whole one cannot be told
+/// apart from a short event by whoever reads it, so the honest answer is to drop it and say so.
+pub static PROXY_SSE_EVENTS_DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Event streams that ended in the middle of an event.
+///
+/// The spec discards a trailing event with no closing blank line, and so does the parser — the client
+/// never received it. Counting it separately from `..._EVENTS_DROPPED_TOTAL` keeps "we chose not to
+/// keep this" apart from "the stream was cut short", which are different problems.
+pub static PROXY_SSE_TRUNCATED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
 /// Increment the dropped flows counter
 pub fn inc_flows_dropped() {
     FLOWS_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -176,6 +198,42 @@ pub fn inc_circuit_rejected() {
 /// Get the current count of requests refused by an open circuit.
 pub fn get_circuit_rejected() -> usize {
     PROXY_CIRCUIT_REJECTED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// O7: An event stream started.
+pub fn inc_proxy_sse_streams() {
+    PROXY_SSE_STREAMS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn get_proxy_sse_streams() -> usize {
+    PROXY_SSE_STREAMS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// O7: An event was parsed and pushed.
+pub fn inc_proxy_sse_events() {
+    PROXY_SSE_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn get_proxy_sse_events() -> usize {
+    PROXY_SSE_EVENTS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// O7: An event exceeded the payload budget and was dropped rather than truncated.
+pub fn inc_proxy_sse_events_dropped() {
+    PROXY_SSE_EVENTS_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn get_proxy_sse_events_dropped() -> usize {
+    PROXY_SSE_EVENTS_DROPPED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// O7: An event stream ended mid-event.
+pub fn inc_proxy_sse_truncated() {
+    PROXY_SSE_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn get_proxy_sse_truncated() -> usize {
+    PROXY_SSE_TRUNCATED_TOTAL.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
