@@ -124,6 +124,8 @@ pub struct CoreMetrics {
     pub proxy_sse_events_dropped_total: usize,
     /// Event streams that ended in the middle of an event.
     pub proxy_sse_truncated_total: usize,
+    /// WebSocket handshakes whose extension offer was stripped (roadmap §7.1).
+    pub proxy_ws_extensions_stripped_total: usize,
     /// O4: Total bodies degraded from tap to pass-through
     pub proxy_stream_mode_degrade_total: usize,
     /// O4: Total bytes transmitted to upstream (client→proxy→server)
@@ -160,6 +162,7 @@ relay_core_proxy_sse_streams_total {}\n\
 relay_core_proxy_sse_events_total {}\n\
 relay_core_proxy_sse_events_dropped_total {}\n\
 relay_core_proxy_sse_truncated_total {}\n\
+relay_core_proxy_ws_extensions_stripped_total {}\n\
 relay_core_proxy_stream_mode_degrade_total {}\n\
 relay_core_proxy_bytes_sent_total {}\n\
 relay_core_proxy_bytes_recv_total {}\n",
@@ -186,6 +189,7 @@ relay_core_proxy_bytes_recv_total {}\n",
             self.proxy_sse_events_total,
             self.proxy_sse_events_dropped_total,
             self.proxy_sse_truncated_total,
+            self.proxy_ws_extensions_stripped_total,
             self.proxy_stream_mode_degrade_total,
             self.proxy_bytes_sent_total,
             self.proxy_bytes_recv_total,
@@ -526,6 +530,8 @@ impl CoreState {
             proxy_sse_events_total: relay_core_lib::metrics::get_proxy_sse_events(),
             proxy_sse_events_dropped_total: relay_core_lib::metrics::get_proxy_sse_events_dropped(),
             proxy_sse_truncated_total: relay_core_lib::metrics::get_proxy_sse_truncated(),
+            proxy_ws_extensions_stripped_total:
+                relay_core_lib::metrics::get_proxy_ws_extensions_stripped(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(
             ),
             proxy_bytes_sent_total: relay_core_lib::metrics::get_bytes_sent(),

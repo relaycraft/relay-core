@@ -20,6 +20,19 @@ use relay_core_api::flow::{
     BodyData, Direction, Flow, FlowUpdate, HttpResponse, Layer, WebSocketMessage,
 };
 use relay_core_api::policy::ProxyPolicy;
+
+/// Tag placed on a WebSocket flow whose extension offer was removed.
+pub const WS_EXTENSIONS_STRIPPED_TAG: &str = "ws-extensions-stripped";
+
+/// Handshake headers this engine removes because it cannot honour what they negotiate.
+///
+/// Deliberately a list of one: the policy is "strip what changes framing", and today that is exactly
+/// the extension header. Keeping it a predicate puts the rule in one place, so an extension this
+/// engine later implements is supported by removing an entry rather than by hunting down string
+/// comparisons in two loops.
+fn is_downgraded_handshake_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("sec-websocket-extensions")
+}
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -206,6 +219,22 @@ where
         }
     }
 
+    // WebSocket extensions change how every frame after the handshake is framed, and this engine
+    // does not implement any of them. Forwarding the client's offer would make the *upstream* accept
+    // `permessage-deflate`, and the client would then see it in our 101 — so both peers would believe
+    // the extension was negotiated end to end while the tunnel simply copies bytes. That is the worst
+    // of the three outcomes roadmap §7.1 allows (support / pass through / explicit downgrade): the
+    // client's messages would arrive compressed with the RSV1 bit set, unreadable to the frame
+    // inspection that is the point of this proxy, and, because `permessage-deflate` keeps an LZ77
+    // window across messages by default, two independently negotiated contexts relayed verbatim can
+    // produce frames neither side can decompress.
+    //
+    // So the extension is stripped in both directions — from the request we forward, and from the 101
+    // we return — which is the downgrade: neither peer is told the extension is available, so both
+    // speak uncompressed. The removal is not silent; it is tagged on the flow and counted, for the
+    // same reason `body-encoding-dropped` is (§24.9): a client that quietly stopped compressing
+    // should be discoverable from the capture rather than only from a packet trace.
+    //
     // Prepare Forward Request
     let current_req = if let Layer::WebSocket(ws) = &flow.layer {
         &ws.handshake_request
@@ -221,13 +250,27 @@ where
         .uri(target_url_str.as_str())
         .version(hyper::Version::HTTP_11);
 
+    let mut stripped_extensions = false;
     for (k, v) in coalesce_cookie_headers(&current_req.headers) {
+        if is_downgraded_handshake_header(&k) {
+            // Only `Sec-WebSocket-Extensions` is stripped. `Sec-WebSocket-Protocol` is *not*: a
+            // subprotocol does not change framing, so passing it through is what keeps an app's own
+            // protocol working — stripping it would break every client that asked for one.
+            stripped_extensions = true;
+            continue;
+        }
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(&v),
         ) {
             forward_req_builder = forward_req_builder.header(name, val);
         }
+    }
+    if stripped_extensions {
+        // Tag rather than a log line: a tag travels with the flow into every adapter and the store,
+        // while a log line is only visible to whoever happened to be reading the log.
+        flow.tags.push(WS_EXTENSIONS_STRIPPED_TAG.to_string());
+        crate::metrics::inc_proxy_ws_extensions_stripped();
     }
 
     let forward_req =
@@ -363,6 +406,12 @@ where
                         if k.eq_ignore_ascii_case("content-length")
                             || k.eq_ignore_ascii_case("transfer-encoding")
                         {
+                            continue;
+                        }
+                        // Never tell the client an extension is on when this engine will relay frames
+                        // verbatim: an upstream that offers it unprompted would otherwise leave the
+                        // client compressing into a tunnel that cannot read it.
+                        if is_downgraded_handshake_header(k) {
                             continue;
                         }
                         if let (Ok(name), Ok(val)) = (

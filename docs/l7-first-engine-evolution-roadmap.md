@@ -360,7 +360,21 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 - 活跃连接帧注入
 - idle timeout、half-close、异常关闭
 - 背压和 bounded message history
-- `permessage-deflate` 等常见扩展策略明确：支持、透传或显式降级
+- ✅ **`permessage-deflate` 等常见扩展策略已明确：显式降级**（2026-10-11）。此前是**静默破坏**：
+  客户端在握手里提议 `permessage-deflate`，该头被原样转发给上游，于是上游会接受它、
+  客户端也会在 101 里看到它——**两端都以为扩展端到端协商成功，而隧道只是逐帧搬运字节**。
+  这对本引擎尤其致命：帧会带 RSV1 且载荷是压缩的，而帧级检查正是这个代理存在的意义；
+  又因为 `permessage-deflate` 默认**跨消息保留 LZ77 窗口**，把两个各自协商的上下文逐字节对接，
+  可以产出两端都解不开的帧。
+  现在 `Sec-WebSocket-Extensions` 在**两个方向**都被剥离（转发请求里 + 返回给客户端的 101 里），
+  因此两端都不会被告知该扩展可用，双方都讲未压缩——这就是降级本身。
+  **降级不静默**：Flow 打上 `ws-extensions-stripped` 标签，并计入
+  `relay_core_proxy_ws_extensions_stripped_total`（与 §24.9 的 `body-encoding-dropped` 同一思路：
+  一个悄悄不再压缩的客户端，应当能从捕获里查出来，而不是只能靠抓包）。
+  **`Sec-WebSocket-Protocol` 不剥离**：子协议不改变分帧，原样转发才能让应用自己的协议继续工作。
+  契约：`ws_extensions_test.rs` 三个用例（两个方向都剥离 / 未提议则不标签 /
+  子协议照常透传），**已双向验证**：让剥离谓词恒为 false，第一个用例即以
+  「the offer must not reach the upstream」失败。
 
 #### 可演进（E）
 

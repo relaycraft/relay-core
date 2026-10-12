@@ -200,6 +200,22 @@ pub fn get_circuit_rejected() -> usize {
     PROXY_CIRCUIT_REJECTED_TOTAL.load(Ordering::Relaxed)
 }
 
+/// WebSocket handshakes whose extension offer was stripped (roadmap §7.1).
+///
+/// A downgrade, not an error: the client is told the extension is unavailable and speaks
+/// uncompressed, which is correct but costs bandwidth — so it is worth being able to see how often
+/// it happens, and on which flows (the tag names them).
+pub static PROXY_WS_EXTENSIONS_STRIPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// O7: A WebSocket extension offer was removed from a handshake.
+pub fn inc_proxy_ws_extensions_stripped() {
+    PROXY_WS_EXTENSIONS_STRIPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn get_proxy_ws_extensions_stripped() -> usize {
+    PROXY_WS_EXTENSIONS_STRIPPED_TOTAL.load(Ordering::Relaxed)
+}
+
 /// O7: An event stream started.
 pub fn inc_proxy_sse_streams() {
     PROXY_SSE_STREAMS_TOTAL.fetch_add(1, Ordering::Relaxed);
