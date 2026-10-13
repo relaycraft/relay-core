@@ -49,7 +49,9 @@
 | §12 Fault Injection | **Partial** | delay/throttle/rate-limit/drop/mock/redirect 等有实现 | 绝大多数**无线路断言**；rate-limit 表现为**断连而非 429**；Abort 实际等同 Drop |
 | §13 Recording / HAR / Replay | **Partial** | SQLite 迁移、LRU、HAR 不假造 timing、replay 可用 | replay **绕过代理**（不捕获、不跑规则）；HAR 不写 `content.encoding` ⇒ base64 以文本导出 |
 | §14 Content Codec / Inspector | **Partial** | `Content-Encoding` 四编码闭环；失败不影响透传 | 无 codec trait/registry；无 JSON/XML/multipart；无 hex/raw 表示 |
-| §15 Observability / Reliability / Perf | **Partial** | harness 可信化、baseline 真实；coverage 有阈值门禁；**soak 已接 CI**（每周 20 分钟，判据为 panic/RSS 增长）；differential 已接 CI | **18 个指标恒为 0 或未导出**；fuzz **明确不承诺**（决策 0011）；soak 不阻塞 PR 且仅限 Linux |
+| §15 Observability / Reliability / Perf | **Partial** | harness 可信化、baseline 真实；coverage 有阈值门禁；**soak 已接 CI**（每周 20 分钟，判据为 panic/RSS 增长）；differential 已接 CI | ~~18 个指标恒为 0 或未导出~~ **已复核不成立**（2026-10-13）：导出面 27 个指标各自对应一个访问器，
+而 `metrics.rs` 里每个 `inc_*`/`add_*`/`note_*` 都有生产调用点；审计点名的 `proxy_invalid_method_total`
+与 `proxy_retry_total` 早已从导出面**移除**（`metrics.rs` 有注释说明理由）。fuzz **明确不承诺**（决策 0011）；soak 不阻塞 PR 且仅限 Linux |
 | §16 Security / Privacy | **Partial** | 落盘前脱敏、MapLocal sandbox、env/fetch 白名单、API 默认 loopback | 脱敏**默认关闭**（`enabled:false`/`redact_bodies:false`）；**CA 私钥以 0644 创建**；无依赖漏洞门禁 |
 | §17 Adapters 对齐 | **Partial** | 窄 service trait 存在，Tauri 特有字段留在 adapter | CLI **自带第二套控制面**；MCP 与 HTTP 各自重复实现 replay/HAR |
 | §18 MCP / AI-Native | **Partial** | 15 个工具 + 5 个资源，类型化输出 | 资源**不可订阅**却在推送通知；写工具**无幂等**（每次新 UUID） |
