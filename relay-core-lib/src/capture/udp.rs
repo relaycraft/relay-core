@@ -77,10 +77,23 @@ impl UdpSessionManager {
 
     /// Get existing session or create new one
     /// Returns (session, is_new)
+    /// Open (or reuse) the session for this 5-tuple.
+    ///
+    /// `transparent` says whether the destination was recovered from the kernel (TPROXY / PF) or
+    /// configured outright. It decides whether the session needs its own transparent socket pair,
+    /// which requires `CAP_NET_ADMIN` — so a plain forward with an explicit `remote_addr` must not
+    /// ask for one. It used to, on Linux, and that is why the UDP end-to-end tests could not run on
+    /// the only platform that blocks a release.
+    ///
+    /// The parameter is in the signature on every platform even though only Linux reads it: callers
+    /// should say which mode they are in rather than leave it to a platform difference to imply,
+    /// and a future transparent provider elsewhere must not find the parameter missing.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     pub async fn get_or_create_session(
         &self,
         src: SocketAddr,
         dst: SocketAddr,
+        transparent: bool,
     ) -> std::io::Result<(UdpSession, bool)> {
         let key = UdpSessionKey::new(src, dst);
         // Fast path: read lock
@@ -105,7 +118,7 @@ impl UdpSessionManager {
         }
 
         #[cfg(target_os = "linux")]
-        let (upstream, downstream) = {
+        let (upstream, downstream) = if transparent {
             // Create upstream socket: Bound to src, connect to dst
             let up = LinuxTproxy::create_transparent_udp_socket(src)?;
             up.connect(dst).await?;
@@ -115,6 +128,10 @@ impl UdpSessionManager {
             down.connect(src).await?;
 
             (Some(Arc::new(up)), Some(Arc::new(down)))
+        } else {
+            // A configured destination needs no `IP_TRANSPARENT`: the plain path forwards on the
+            // socket it already has, so nothing here needs privileges.
+            (None, None)
         };
 
         // Create new session
@@ -330,7 +347,7 @@ impl UdpProxy {
         let mut buf = [0u8; 65535];
 
         #[cfg(target_os = "linux")]
-        {
+        if self.remote_addr.is_none() {
             // Enable TPROXY on socket
             LinuxTproxy::enable_tproxy(&self.socket)?;
 
@@ -357,7 +374,8 @@ impl UdpProxy {
                 if let Some(dst_addr) = orig_dst {
                     match self
                         .session_manager
-                        .get_or_create_session(src_addr, dst_addr)
+                        // The transparent path: the destination came from the kernel.
+                        .get_or_create_session(src_addr, dst_addr, true)
                         .await
                     {
                         Ok((session, is_new)) => {
@@ -420,7 +438,9 @@ impl UdpProxy {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        // Reached on every platform when the destination is known: either the platform has no
+        // transparent capture, or one was not asked for. This block used to be `not(linux)` only,
+        // which meant a Linux forward with an explicit `remote_addr` could not exist.
         {
             let sm = self.session_manager.clone();
             let sock = self.socket.clone();
@@ -474,13 +494,16 @@ impl UdpProxy {
                     None => continue,
                 };
 
-                let (session, is_new) = match sm.get_or_create_session(src_addr, dst_addr).await {
-                    Ok(res) => res,
-                    Err(e) => {
-                        tracing::warn!("Failed to create UDP session: {}", e);
-                        continue;
-                    }
-                };
+                // The plain path: the destination is configured, so no transparent socket pair is
+                // needed and no privilege is required.
+                let (session, is_new) =
+                    match sm.get_or_create_session(src_addr, dst_addr, false).await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            tracing::warn!("Failed to create UDP session: {}", e);
+                            continue;
+                        }
+                    };
 
                 if is_new {
                     let mut flow = Flow {
@@ -651,7 +674,7 @@ mod tests {
         let dst: SocketAddr = "127.0.0.1:5555".parse().expect("addr");
 
         let (session, is_new) = manager
-            .get_or_create_session(src, dst)
+            .get_or_create_session(src, dst, false)
             .await
             .expect("create session");
         assert!(is_new, "the first packet must create the session");
@@ -715,7 +738,7 @@ mod tests {
         let dst: SocketAddr = "127.0.0.1:7777".parse().expect("addr");
 
         manager
-            .get_or_create_session(src, dst)
+            .get_or_create_session(src, dst, false)
             .await
             .expect("create session");
 

@@ -1342,13 +1342,14 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
-- 整个 `udp_integration_test.rs` 由文件级 `#![cfg(not(target_os = "linux"))]` 门控（理由见文件头注释：
-  Linux 上该路径需要 `CAP_NET_ADMIN`，per-test 门控会让 imports/helpers 变成死代码并被 `-D warnings` 拦下），
-  ⇒ **在唯一的阻塞门禁平台（Linux）上这些用例一个都不跑**。
-  根因（已复核）：`UdpProxy` 在 Linux 上**无条件**为每个会话调用
-  `LinuxTproxy::create_transparent_udp_socket`（`relay-core-lib/src/capture/udp.rs:107-114`），
-  于是连「带显式 `remote_addr` 的普通 UDP 转发」也需要 `CAP_NET_ADMIN` + iptables 规则。
-  把该调用限定到透明路径，即可让这些用例在 Linux 上无需特权而可测。
+- ✅ **UDP E2E 现在在 Linux 上也跑**（2026-10-13）：此前整文件被 `#![cfg(not(target_os = "linux"))]` 门控，
+  ⇒ **在唯一的阻塞门禁平台上一个用例都不跑**。根因是 `UdpProxy::run` 在 Linux 上**无条件**启用 TPROXY，
+  且为每个会话无条件创建透明 socket 对（需要 `IP_TRANSPARENT`/`CAP_NET_ADMIN`），
+  于是连「带显式 `remote_addr` 的**普通** UDP 转发」也要特权。
+  现在：`run` 只在**目的地来自内核时**（透明模式）进入 TPROXY 路径，
+  `get_or_create_session(src, dst, transparent)` 只在透明模式创建透明 socket 对，
+  普通转发走的是原来只在非 Linux 平台上编译的那条实现 —— 它**本来就不需要特权**。
+  门控已移除，两个用例在 macOS 与 Linux 上都跑（本地已验证；Linux 侧由 `quality` job 验证）。
 - ✅ **依赖审计已接入 CI**（2026-09-13）：新增 `deny.toml` 与 `audit` job，licences/bans 为**阻塞门禁**
   （实测通过），advisories 先作为追踪项。首次运行即暴露存量漏洞，其中最严重的是
   **`rustls-webpki 0.101.7` 的 3 条证书校验漏洞**与 **`h2 0.4.15` 的 DoS**——两者都在本引擎的

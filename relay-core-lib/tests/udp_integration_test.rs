@@ -1,8 +1,11 @@
-// Every test here drives the UDP proxy, and on Linux that path requires `CAP_NET_ADMIN`
-// (`LinuxTproxy::create_transparent_udp_socket` needs `IP_TRANSPARENT`), which a CI runner does not
-// have. Gating at the file level rather than per test keeps the whole file from compiling on Linux —
-// per-test gates left its imports and helpers as dead code there, and `-D warnings` failed the build.
-#![cfg(not(target_os = "linux"))]
+// Every test here drives the UDP proxy with an explicit `remote_addr`, which is the *plain* forward:
+// the destination is configured, not recovered from the kernel, so nothing needs `IP_TRANSPARENT`
+// and no privilege is required.
+//
+// This file used to be gated off entirely on Linux, because `UdpProxy::run` enabled TPROXY
+// unconditionally — so a plain forward asked the kernel for capabilities a CI runner does not have,
+// and the only platform that gates a release ran none of this. The proxy now opens a transparent
+// socket pair only when the destination came from the kernel, so these run everywhere.
 
 use relay_core_api::flow::{Flow, FlowUpdate};
 use relay_core_lib::capture::udp::UdpProxy;
@@ -147,8 +150,7 @@ async fn test_udp_proxy_allow_all() {
     // first on purpose — it is what the runtime turns into `FlowEvent::Started`, and a consumer that
     // may only see the first few updates must learn the session started rather than infer it.
     //
-    // Run locally (`#![cfg(not(target_os = "linux"))]` at the top of this file gates the whole file
-    // off in CI, because the Linux path needs CAP_NET_ADMIN — see the file header).
+    // This runs on every platform now: a configured destination needs no kernel privilege.
     let mut declared_started = false;
     let mut saw_flow = false;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);

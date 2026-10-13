@@ -44,7 +44,7 @@
 | §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | `Last-Event-ID` 辅助分析未做；事件**记录进响应**（`HttpResponse.sse_events`，上限 500）并在详情页 Messages 面板展示（实时 + 事后两条路都已通） |
 | §8 TLS / PKI | **Partial** | CA 生成/加载/按主机签发、MITM 端到端可用，CA 错误处理严格 | **无「按 host 决定 MITM/passthrough」策略** ⇒ 做 pinning 的客户端只能失败；SNI/ALPN 永不记录；叶证书对 IP 字面量发的是 DNS SAN |
 | §9 代理模式与捕获 | **Partial** | 正向代理默认稳定；透明模式 Linux/macOS/Windows 都有代码 | 透明捕获**零平台级测试**（三个 provider 文件 0 个测试）；reverse/多监听被生命周期**主动拒绝** |
-| §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话 | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource` |
+| §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话（含 `Started` 阶段声明）；**UDP E2E 已在 Linux 上运行**（普通转发不再要求特权） | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource`；透明捕获仍 0 平台级测试 |
 | §11 Rules/Scripts/Manual Intercept | **Partial** | 规则加载期拒绝非法模式、失败/跳过有原因、intercept 暂停有事件 | **加载期不校验「该动作是否真有线路实现」**；`RuleTrace` 无生产者 |
 | §12 Fault Injection | **Partial** | delay/throttle/rate-limit/drop/mock/redirect 等有实现 | 绝大多数**无线路断言**；rate-limit 表现为**断连而非 429**；Abort 实际等同 Drop |
 | §13 Recording / HAR / Replay | **Partial** | SQLite 迁移、LRU、HAR 不假造 timing、replay 可用 | replay **绕过代理**（不捕获、不跑规则）；HAR 不写 `content.encoding` ⇒ base64 以文本导出 |
