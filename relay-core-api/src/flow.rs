@@ -445,8 +445,8 @@ pub struct BodyData {
     ///
     /// A gRPC body is a sequence of length-prefixed messages, which is invisible in `content`: as
     /// base64 it is opaque, so without this a consumer can see that a call carried something but not
-    /// how many messages or how large. The payloads themselves stay encoded — decoding them needs the
-    /// service's protobuf schema, which the engine does not have.
+    /// how many messages or how large. The payloads themselves stay encoded in the capture. A detail
+    /// read may fill `messages[].decoded` from a `.proto` directory; that view is not stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grpc: Option<crate::grpc::GrpcBody>,
 }

@@ -206,7 +206,7 @@ pub async fn get_flow_detail_impl(
     state: &RelayCoreState,
     id: String,
 ) -> Result<FlowDetail, String> {
-    if let Some(flow) = state.ctx.flows.get_flow(&id).await {
+    if let Some(flow) = state.ctx.flows.get_flow_detail(&id).await {
         let mut detail = FlowDetail::from(flow);
         detail._rc.intercept.intercepted = state.ctx.intercepts.is_flow_intercepted(id).await;
         Ok(detail)

@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 /// One length-prefixed message inside a gRPC body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GrpcMessage {
     /// Position in the body, from zero.
     pub index: u32,
@@ -31,6 +31,39 @@ pub struct GrpcMessage {
     /// is usually binary, and pretending otherwise would produce mojibake rather than information.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Protobuf payload, filled on a detail read.
+    ///
+    /// Capture stores framing only. A detail read may set this from a `.proto` directory, or from
+    /// the wire format when no schema matches. It is not written back to the capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded: Option<GrpcDecoded>,
+}
+
+/// Where a protobuf view came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrpcDecodeSource {
+    /// A user `.proto` named the message, via the call's `:path`.
+    Schema,
+    /// No schema matched. Field numbers and wire types only.
+    Wire,
+}
+
+/// One gRPC message payload read as protobuf.
+///
+/// `value` is JSON. With a schema it uses proto3 JSON names. Without one, object keys are field
+/// numbers, length-delimited text is a string, and other bytes are base64.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GrpcDecoded {
+    pub source: GrpcDecodeSource,
+    /// Fully qualified message name when `source` is [`GrpcDecodeSource::Schema`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+    /// Set when this message could not be decoded. The capture itself is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Largest payload rendered as text in a message preview.
@@ -40,7 +73,7 @@ pub struct GrpcMessage {
 pub const MAX_MESSAGE_TEXT_BYTES: usize = 4096;
 
 /// What a body turned out to contain, structurally.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GrpcBody {
     /// Messages in arrival order.
     pub messages: Vec<GrpcMessage>,
@@ -49,6 +82,12 @@ pub struct GrpcBody {
     /// Reported rather than ignored: a partial capture that looks complete is worse than one that
     /// admits what it lost.
     pub unparsed_bytes: usize,
+    /// Why a schema was not applied on a detail read.
+    ///
+    /// Set when the `.proto` directory failed to compile, or when it compiled and no `rpc` matches
+    /// this call. Absent when there is no schema, and when one matched. Capture leaves it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_note: Option<String>,
 }
 
 impl GrpcBody {
@@ -126,6 +165,7 @@ pub fn parse_arrived_messages(body: &[u8]) -> GrpcBody {
     split_messages(body, false).unwrap_or(GrpcBody {
         messages: Vec::new(),
         unparsed_bytes: body.len(),
+        schema_note: None,
     })
 }
 
@@ -168,6 +208,7 @@ fn split_messages(body: &[u8], strict: bool) -> Result<GrpcBody, GrpcParseError>
                 return Ok(GrpcBody {
                     messages,
                     unparsed_bytes: body.len() - offset,
+                    schema_note: None,
                 });
             }
             return Err(GrpcParseError::Incomplete {
@@ -191,6 +232,7 @@ fn split_messages(body: &[u8], strict: bool) -> Result<GrpcBody, GrpcParseError>
             length,
             compressed,
             text,
+            decoded: None,
         });
         offset = payload_end;
         index += 1;
@@ -199,6 +241,7 @@ fn split_messages(body: &[u8], strict: bool) -> Result<GrpcBody, GrpcParseError>
     Ok(GrpcBody {
         messages,
         unparsed_bytes: body.len() - offset,
+        schema_note: None,
     })
 }
 
@@ -274,6 +317,7 @@ mod tests {
                 length: 14,
                 compressed: false,
                 text: Some("hello protobuf".to_string()),
+                decoded: None,
             }]
         );
         assert_eq!(parsed.unparsed_bytes, 0);

@@ -55,6 +55,10 @@ x509-parser = "0.18.1"
 # transitively (png+ureq, tauri-codegen) and are pure Rust; `zstd` vendors its C sources and builds
 # them via `cc`, so no system library is required.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+# Read-time protobuf views. `protox` compiles user `.proto` files without `protoc`;
+# `prost-reflect` decodes a message from that schema. Neither sits on the forward path.
+protox = "0.10"
+prost-reflect = { version = "0.16", features = ["serde"] }
 brotli = "8"
 hyper-tungstenite = "0.19.0"
 if-addrs = "0.15.0"

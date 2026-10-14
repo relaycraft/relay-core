@@ -502,7 +502,38 @@ function BodyDisplay(props: { body: BodyData; view: 'json' | 'hex' | 'text'; con
           </span>
         </Show>
       </div>
-      <Show when={props.body.grpc?.messages.some((message) => message.text)}>
+        <Show when={props.body.grpc?.schema_note}>
+          <div class="rounded border border-border/60 bg-surface-alt/40 px-2 py-1.5 text-[12px] text-text-dim">
+            {props.body.grpc!.schema_note}
+          </div>
+        </Show>
+        <Show when={props.body.grpc?.messages.some((message) => message.decoded)}>
+          <div class="space-y-1">
+            <For each={props.body.grpc!.messages.filter((message) => message.decoded)}>
+              {(message) => {
+                const decoded = message.decoded!;
+                const label = decoded.message_type ?? decoded.source;
+                let body = decoded.error ?? '';
+                if (decoded.value != null) {
+                  try {
+                    body = JSON.stringify(decoded.value, null, 2);
+                  } catch {
+                    body = String(decoded.value);
+                  }
+                }
+                return (
+                  <pre class="rounded-md border border-border/60 bg-surface-alt p-2 text-[12px] whitespace-pre-wrap break-all">
+                    <span class="text-text-dim">
+                      #{message.index} {label}
+                    </span>
+                    {body ? `\n${body}` : ''}
+                  </pre>
+                );
+              }}
+            </For>
+          </div>
+        </Show>
+        <Show when={props.body.grpc?.messages.some((message) => message.text)}>
         <div class="space-y-1">
           <For each={props.body.grpc!.messages.filter((message) => message.text != null)}>
             {(message) => (

@@ -44,7 +44,10 @@ pub fn search_flows_schema() -> Tool {
 pub fn get_flow_schema() -> Tool {
     tool(ToolSpec::read_only(
         "get_flow",
-        "Get full details of a specific flow by ID, including headers, body, timing, and tags.",
+        "Get full details of a specific flow by ID, including headers, body, timing, and tags. \
+         A gRPC body also carries per-message `decoded` protobuf when `$RELAY_DATA_DIR/protos` \
+         (or `RELAY_PROTO_DIR`) contains the service's `.proto` files. That view is computed \
+         for this read and is not stored.",
         json!({
             "type": "object",
             "required": ["id"],
@@ -125,7 +128,7 @@ fn proxy_is_running(ctx: &Arc<ProbeContext>) -> bool {
 
 pub async fn get_flow(ctx: &Arc<ProbeContext>, args: Value) -> Result<ToolOutcome, ToolError> {
     let id = require_str(&args, "id")?;
-    match ctx.flows.get_flow(&id).await {
+    match ctx.flows.get_flow_detail(&id).await {
         Some(flow) => ok_json(&flow),
         None => Err(format!("Flow not found: {id}").into()),
     }

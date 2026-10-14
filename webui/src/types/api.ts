@@ -47,12 +47,24 @@ export interface GrpcMessage {
   compressed: boolean;
   /** The payload as text, when it is text (absent for binary or compressed payloads). */
   text?: string | null;
+  /** Protobuf view added on a detail read. Absent on the stored capture. */
+  decoded?: GrpcDecoded | null;
+}
+
+export interface GrpcDecoded {
+  /** `schema` when a `.proto` matched the method, `wire` otherwise. */
+  source: 'schema' | 'wire';
+  message_type?: string | null;
+  value?: unknown;
+  error?: string | null;
 }
 
 export interface GrpcBody {
   messages: GrpcMessage[];
   /** Bytes that were not part of a complete message — a capture cut short. */
   unparsed_bytes: number;
+  /** Why a schema was not applied, when the proto directory failed or no rpc matched. */
+  schema_note?: string | null;
 }
 
 export interface Cookie {

@@ -377,6 +377,8 @@ pub struct CoreState {
     /// CA certificate the running proxy is signing with. Replay trusts this file so an HTTPS
     /// replay can complete the MITM handshake. Cleared when the proxy task ends.
     ca_cert_path: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// `.proto` directory compiled for detail reads. Not consulted while forwarding.
+    proto_schemas: Mutex<relay_core_lib::protobuf::ProtoSchemaCache>,
 }
 
 /// Removes the proxy listen port from `capture_exclude` when `run_proxy` returns.
@@ -474,6 +476,7 @@ impl CoreState {
             lifecycle: LifecycleManager::new(),
             proxy_exclude_port: AtomicU16::new(0),
             ca_cert_path: std::sync::Mutex::new(None),
+            proto_schemas: Mutex::new(relay_core_lib::protobuf::ProtoSchemaCache::new()),
         };
         state.ensure_retention_task();
         state
@@ -737,6 +740,21 @@ impl CoreState {
                 .map(|flow| redact_flow(flow, &self.current_redaction_policy()));
         }
         None
+    }
+
+    /// Protobuf view for a detail read. Lists, replay, and HAR keep the stored flow.
+    pub(crate) fn attach_protobuf_view(&self, flow: Flow) -> Flow {
+        if !relay_core_lib::protobuf::flow_has_grpc(&flow) {
+            return flow;
+        }
+        let dir = crate::paths::resolve_proto_dir();
+        let mut cache = self
+            .proto_schemas
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let mut flow = flow;
+        relay_core_lib::protobuf::apply_to_flow(&mut flow, cache.pool_for(&dir));
+        flow
     }
 
     pub async fn get_rules(&self) -> Vec<Rule> {

@@ -37,6 +37,7 @@ The proxy still starts only when a command or tool asks for it.
 Environment:
   RELAY_LOG       Log filter (default: info, e.g. debug, trace)
   RELAY_DATA_DIR       Data directory (default: ~/.relay-core)
+  RELAY_PROTO_DIR      .proto directory for gRPC detail views (default: $RELAY_DATA_DIR/protos)
   RELAY_CORE_TUI_THEME TUI preset when --theme is omitted (relay, slate, high-contrast)
   RELAY_CA_CERT        CA cert path (overrides data dir default)
   RELAY_CA_KEY         CA key path (overrides data dir default)"

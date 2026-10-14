@@ -78,7 +78,7 @@ async fn get_flow(
     State(ctx): State<Arc<HttpApiContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match ctx.flows.get_flow(&id).await {
+    match ctx.flows.get_flow_detail(&id).await {
         Some(flow) => Ok(Json(serde_json::to_value(&flow).unwrap_or_default())),
         None => Err(StatusCode::NOT_FOUND),
     }

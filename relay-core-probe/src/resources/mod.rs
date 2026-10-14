@@ -119,7 +119,7 @@ async fn flow_detail(
     ctx: &Arc<ProbeContext>,
     id: &str,
 ) -> Result<Vec<ResourceContents>, ToolError> {
-    match ctx.flows.get_flow(id).await {
+    match ctx.flows.get_flow_detail(id).await {
         Some(flow) => {
             let json = serde_json::to_string_pretty(&flow)
                 .map_err(|e| ToolError::internal(e.to_string()))?;

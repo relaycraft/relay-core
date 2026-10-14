@@ -78,7 +78,8 @@ pub fn rule_api_guide() -> String {
            `application/grpc` (also `application/grpc+proto` / `+json`). It is \
            `{ \"messages\": [{ \"index\", \"length\", \"compressed\", \"text\"? }], \"unparsed_bytes\" }`. \
            `text` is set only when the uncompressed payload is UTF-8 and within 4096 bytes; protobuf \
-           payloads stay binary. `application/grpc-web` is deliberately not framed.\n\
+           payloads stay binary on the capture a rule sees. A detail read may add `decoded`. \
+           `application/grpc-web` is deliberately not framed.\n\
          - `tags` — `rule_skipped:streaming_body` means a full-body rule was skipped because the \
            response streamed (no content length), so `Inspect` never ran. `rule_skipped:body_truncated` \
            means the body exceeded the rule inspection budget. `budget-exceeded` (with a \

@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 pub const RELAY_DATA_DIR_ENV: &str = "RELAY_DATA_DIR";
+pub const RELAY_PROTO_DIR_ENV: &str = "RELAY_PROTO_DIR";
 pub const RELAY_CA_CERT_ENV: &str = "RELAY_CA_CERT";
 pub const RELAY_CA_KEY_ENV: &str = "RELAY_CA_KEY";
 pub const DEFAULT_DATA_DIR_NAME: &str = ".relay-core";
+pub const DEFAULT_PROTO_DIR_NAME: &str = "protos";
 pub const DEFAULT_CA_CERT_FILE: &str = "ca_cert.pem";
 pub const DEFAULT_CA_KEY_FILE: &str = "ca_key.pem";
 
@@ -65,6 +67,20 @@ pub fn resolve_data_dir() -> PathBuf {
         return make_absolute(PathBuf::from(configured));
     }
     default_data_dir()
+}
+
+/// Directory of `.proto` files used when a detail read decodes a gRPC payload.
+///
+/// `RELAY_PROTO_DIR` wins. Otherwise the directory is `$RELAY_DATA_DIR/protos`
+/// (default `~/.relay-core/protos`). A missing directory is not an error: the
+/// payload is shown as wire fields.
+pub fn resolve_proto_dir() -> PathBuf {
+    if let Some(configured) =
+        std::env::var_os(RELAY_PROTO_DIR_ENV).filter(|value| !value.is_empty())
+    {
+        return make_absolute(PathBuf::from(configured));
+    }
+    resolve_data_dir().join(DEFAULT_PROTO_DIR_NAME)
 }
 
 /// `$HOME/.relay-core` (decision 0007): one directory per user, shared across

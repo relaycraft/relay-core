@@ -439,8 +439,10 @@ async fn test_full_snapshot_after_body_update_keeps_the_body() {
                     length: 3,
                     compressed: false,
                     text: Some("req".to_string()),
+                    decoded: None,
                 }],
                 unparsed_bytes: 0,
+                schema_note: None,
             }),
         },
         Direction::ClientToServer,
@@ -1456,4 +1458,103 @@ async fn an_exchange_declares_its_stages_and_its_body() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_detail_read_decodes_protobuf_and_the_stored_flow_does_not() {
+    let dir = tempfile::tempdir().expect("proto dir");
+    std::fs::write(
+        dir.path().join("greeter.proto"),
+        r#"syntax = "proto3";
+package demo.v1;
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply);
+}
+message HelloRequest { string name = 1; int32 id = 2; }
+message HelloReply { string message = 1; }
+"#,
+    )
+    .expect("proto");
+    let previous = std::env::var_os("RELAY_PROTO_DIR");
+    // The process environment is the schema-directory contract. Rust 2024 marks mutation unsafe
+    // because other threads may be reading it; this test is the only reader of RELAY_PROTO_DIR.
+    unsafe {
+        std::env::set_var("RELAY_PROTO_DIR", dir.path());
+    }
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            unsafe {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("RELAY_PROTO_DIR", value),
+                    None => std::env::remove_var("RELAY_PROTO_DIR"),
+                }
+            }
+        }
+    }
+    let _restore = Restore(previous);
+
+    let state = CoreState::new(None).await;
+    let mut flow = create_test_flow("http://grpc.local/demo.v1.Greeter/SayHello", "POST");
+    let payload = [0x0a, 0x05, b'r', b'e', b'l', b'a', b'y', 0x10, 0x07];
+    let mut framed = vec![0u8];
+    framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&payload);
+    let headers = vec![("content-type".to_string(), "application/grpc".to_string())];
+    let (encoding, content, grpc) =
+        relay_core_lib::proxy::body_codec::process_body_with_framing(&framed, &headers);
+    if let Layer::Http(http) = &mut flow.layer {
+        http.request.headers = headers;
+        http.request.body = Some(BodyData {
+            encoding,
+            content,
+            size: framed.len() as u64,
+            grpc,
+        });
+    }
+    let id = flow.id.to_string();
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    let stored = state.get_flow(id.clone()).await.expect("stored flow");
+    let Layer::Http(stored_http) = &stored.layer else {
+        panic!("http");
+    };
+    assert!(
+        stored_http
+            .request
+            .body
+            .as_ref()
+            .unwrap()
+            .grpc
+            .as_ref()
+            .unwrap()
+            .messages[0]
+            .decoded
+            .is_none(),
+        "the stored capture does not carry a protobuf view"
+    );
+
+    let detail = relay_core_runtime::services::FlowReadService::get_flow_detail(&state, &id)
+        .await
+        .expect("detail");
+    let Layer::Http(http) = &detail.layer else {
+        panic!("http");
+    };
+    let decoded = http
+        .request
+        .body
+        .as_ref()
+        .unwrap()
+        .grpc
+        .as_ref()
+        .unwrap()
+        .messages[0]
+        .decoded
+        .as_ref()
+        .expect("detail read decodes the payload");
+    assert_eq!(
+        decoded.value,
+        Some(serde_json::json!({ "name": "relay", "id": 7 }))
+    );
 }

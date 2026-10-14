@@ -8,6 +8,7 @@ pub mod capture;
 pub mod error;
 pub mod intercept;
 pub mod metrics;
+pub mod protobuf;
 pub mod proxy;
 pub mod rule;
 pub mod tls;
