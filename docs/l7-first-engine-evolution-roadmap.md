@@ -244,12 +244,13 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    - parser error
    - TLS error
 
-4. **类型化事件模型** —— ✅ **全部 9 个变体都有生产者**（2026-10-12）
+4. **类型化事件模型** —— ✅ **全部 10 个变体都有生产者**（2026-10-12，2026-10-28 增补 `RuleEvaluated`）
    - `FlowStarted` ✅（`FlowUpdate::Stage{Started}`，在请求头解析处声明）
    - `HeadersReceived` ✅（`Stage{RequestHeaders}` / `Stage{ResponseHeaders}`，按方向）
    - `BodyAvailable/BodyChunk` ✅（`FlowUpdate::HttpBody`，`observed_bytes` 与 `truncated` 都由观察者声明）
    - `MessageReceived` ✅（被代理 SSE 事件，见 §7.2）
    - `MutationApplied` ✅
+   - `RuleEvaluated` ✅（逐规则评估，含未匹配/跳过/失败，见 §24.6）
    - `InterceptPaused/Resolved` ✅
    - `FlowCompleted/Errored` ✅（由 Flow 记录的关闭原因发出）
 
@@ -445,21 +446,29 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 
 ### 必做（M0/M1）
 
-1. ClientHello/SNI 提取
-2. ALPN negotiation 记录
-3. 按 host/IP 决定：
-   - MITM
-   - passthrough
-   - drop
-4. ignore hosts / allow hosts 策略
-5. upstream 证书验证策略：
-   - native roots
-   - custom CA bundle
-   - explicit insecure（带审计和明显状态）
-6. 动态叶证书：DNS/IP SAN、wildcard、IDN
-7. 原始 upstream 证书链和错误原因可观察
-8. TLS handshake timeout 和 timing
-9. CA key 文件权限与加载失败策略
+1. ✅ **ClientHello/SNI 提取**（2026-10-28）：MITM 路径在 `TlsAcceptor::accept` 之后读
+   `ServerConnection::server_name()`，写入每个隧道内 Flow 的 `NetworkInfo.sni`。
+   **边界**：passthrough 路径不解析握手（那是该模式的定义），CONNECT 流只记录 authority。
+2. ✅ **ALPN negotiation 记录**（2026-10-28）：`NetworkInfo.alpn` 记录协商结果（`h2` / `http/1.1`），
+   与「hyper 解析出的请求版本」分开——前者是双方协商的事实，后者是实际说的话。
+   `tls_version` 一并记录（`TLSv1.3` / `TLSv1.2`）。
+3. ✅ **按 host/IP 决定 MITM / passthrough / drop**（2026-10-28）：`ProxyPolicy.tls`
+   （决策 [`0012`](./decisions/0012-tls-passthrough-and-handshake-metadata.md)）。
+   匹配 CONNECT authority，支持 `host`、`host:port`、`[ipv6]:port`、glob、IP、`cidr:`；
+   `drop` > `passthrough` > `mitm`，空列表保持全量 MITM。
+4. ✅ **ignore hosts / allow hosts 策略**（2026-10-28）：即 `passthrough_hosts` / `drop_hosts`。
+   **边界**：匹配粒度是目标，不是客户端；按客户端/证书的决策仍在演进项。
+5. ✅ **upstream 证书验证策略**（2026-10-30）：`ProxyPolicy.upstream_tls.verification`
+   （决策 [`0013`](./decisions/0013-upstream-certificate-verification-policy.md)）：
+   `native_roots`（默认）/ `custom_ca { path }`（**替换**而非叠加系统根）/ `insecure { reason }`
+   （reason 必填、每次构建都 warn、API 始终可见）。
+   策略先验证后入库，坏 bundle 不会造成「API 说 custom_ca、实际仍用旧信任」的分离；运行中变更会重建
+   client + connector。**边界**：HTTPS **父代理**的 TLS 仍固定 native roots；Web UI 已在 Settings → TLS 显示验证模式
+   （insecure 时红色 `DISABLED` + 理由，无截图级验证）；原始证书链与握手错误仍不可观察。
+6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
+7. ⬜ **原始 upstream 证书链和错误原因可观察**。
+8. 🟡 **TLS handshake timeout**：入站有 10s 超时；`connect_time_ms` / `ssl_time_ms` 仍无赋值点。
+9. ✅ **CA key 文件权限与加载失败策略**：`0600` 创建并修正旧文件，有断言测试（`tls/ca.rs`）。
 
 ### 可演进（E）
 
@@ -474,9 +483,12 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
 
 ### 验收标准
 
-- pinning/不兼容应用可以按策略 passthrough，而不是只能失败
-- SNI/ALPN 在 Flow/Connection 中可用
-- insecure 模式不会静默开启
+- ✅ pinning/不兼容应用可以按策略 passthrough，而不是只能失败（决策 0012；
+  线路契约 `tls_policy_test.rs`：客户端看到的叶子证书与上游证书逐字节相同，已双向验证）
+- ✅ SNI/ALPN 在 Flow/Connection 中可用（MITM 路径；passthrough 路径按设计不解析握手）
+- ✅ insecure 模式不会静默开启（2026-10-30）：只有显式 `insecure { reason }` 会关闭验证，
+  reason 为空会被拒绝；没有「校验失败后自动降级」的路径；策略在入库前验证，坏 bundle 不会让报告与行为分离。
+  **边界**：Web UI 的标记只是文本级验证（无截图靶场）；HTTPS 父代理仍固定 native roots。
 
 ---
 
@@ -1116,10 +1128,21 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
     （会得到错误答案），而是被跳过并**逐条记录原因**（含预算字节数），同时计入错误指标。
     新增 `RuleEngine::rules_for_stage` 以列出某阶段将被执行的规则。
     「我的 body 规则为什么没生效」因此可回答。3 个单测覆盖。
-  - ⬜ `RuleTrace`（`api/rule.rs:303-310`）仍无构造点，未通过任何适配器暴露给 UI/MCP。
-    说明：「这次改动是谁做的、改了哪些字段」现已通过 `FlowEvent::MutationApplied` 暴露
-    （见 §24.8），但 `RuleTrace` 的**逐阶段逐规则事件**（`RuleExecutionEvent`：匹配与否、
-    耗时、outcome）仍未对外暴露——`FlowEvent` 只覆盖「已应用」的结果，不覆盖「评估过但未匹配」。
+  - ✅ **逐规则执行事件已对外暴露**（2026-10-28）：新增 `FlowEvent::RuleEvaluated`
+    （`flow_id`、`direction`、`rule_id`、`stage`、`matched`、`duration_us`、`outcome`），
+    由 `RuleInterceptor::publish_stage_events` 在每个阶段之后逐条发布——**包括未匹配与跳过**，
+    因此「我的规则为什么没生效」不再只能靠内部日志。消费者：SSE `event: flow-event` 与 Web UI Trace。
+    为此 executor 新增 `RuleOutcome::NotMatched`：**未匹配的规则此前根本不进 trace**，只有匹配的才记录，
+    于是「trace 里没有这条规则」与「规则不存在」无法区分。
+    Web UI Trace 把 `rule_evaluated` 归约为「rule X matched/did not match at Stage（failed/skipped/…）」。
+    唯一的例外是 `NotMatched`：它不追加括号说明，因为「did not match」已经把话说完了。
+    契约：`a_rule_that_does_not_match_is_still_traced`（executor）、
+    `every_evaluated_rule_reaches_the_event_stream`（runtime）、
+    `a_stage_that_matches_nothing_reports_only_the_evaluation`（真实事件通道，断言「只有评估、没有变更」）、
+    `every_flow_event_round_trips_through_its_frame`、`flowEvents.test.ts` 2 个用例。
+  - 🟡 `RuleTrace`（`api/rule.rs`）作为**聚合容器**仍无构造点：其价值（按 flow 懒加载详细日志）
+    已由逐条 `RuleEvaluated` 事件取代，保留类型是为了不破坏已导出的 API；
+    若后续引入「按 flow 查询 trace」端点，应在那里构造它，而不是再复制一条事件通道。
 
 ### 24.7 模型与时间语义失真
 
@@ -1155,7 +1178,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `wire_matrix_dropped_exchange_is_not_reported_as_completed`、
   `wire_matrix_failed_flow_records_its_end_time` 与 3 个 serde 兼容测试锁定，均已双向验证。
 - ⬜ `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
-- ⬜ `NetworkInfo.sni` 与 `ConnectionInfo.tls_sni` 无写入方（`proxy/server.rs:171-172` 为 TODO）
+- ✅ **`NetworkInfo.sni` / `tls_version` / `alpn` 已有写入方**（2026-10-28，决策 0012）：
+  `serve_tls_tunnel` 在握手后从 `ServerConnection` 读取并写入隧道内的每个 Flow；
+  已由 `tls_is_intercepted_by_default` 在线路上断言（SNI `localhost`、ALPN `http/1.1`、版本 `TLSv1.x`）。
+  **边界**：脚本 `onConnect` 的 `ConnectionInfo.tls_sni` 仍为 `None`——它在 TLS 之前构造，
+  属于 §8 的客户端级决策，不在本次范围内。
 - ⬜ `CloseReason::TlsError` 目前**没有生产者**：MITM 握手失败发生在 Flow 建立之前，
   没有可承载原因的 Flow（语义已在枚举里，尚无终局映射到它）
 
@@ -1195,7 +1222,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   不是从字段是否被填充猜出来的——按 `end_time.is_some()` 推断会把每一次上游失败与策略丢弃
   都报成成功。契约由一个**真实起代理**的集成测试锁定
   （`a_flow_that_recorded_its_ending_publishes_a_terminal_event`）。
-- ✅ **事件模型已补齐（§4-4 的全部 9 个变体都有生产者）**（2026-10-12）：
+- ✅ **事件模型已补齐（§4-4 的全部 10 个变体都有生产者）**（2026-10-12；`RuleEvaluated` 2026-10-28）：
   - `MessageReceived` ← 被代理 SSE 流解析出的每个事件（§7.2）；
   - `Started` / `HeadersReceived` ← **代理声明的阶段**：新增 `FlowUpdate::Stage`，
     在**请求头解析完成处**（`handle_http_request`、WS 握手、CONNECT）声明 `Started` + `RequestHeaders`，
@@ -1334,11 +1361,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.10 验证体系基线
 
-- **计数已过期（本节此前为 493/22，后为 661/838，再后为 898、908）**：截至 **2026-10-12** 实测
-  `cargo test --workspace` 为 **938 passed / 0 failed / 0 ignored**（47 个套件），
-  Web UI 侧 `webui` 为 **102 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
+- **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
+  `cargo test --workspace` 为 **979 passed / 0 failed / 0 ignored**（51 个套件），
+  Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
-  `ws_extensions_test.rs` **3 个**，**0 个 `#[ignore]`**。
+  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **5 个**，
+  **0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。

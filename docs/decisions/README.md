@@ -36,3 +36,5 @@
 | [0009](./0009-daemon-observes-body-prefix.md) | Daemon 保留 body 前缀 | Accepted |
 | [0010](./0010-connect-tunnels-recorded-not-listed.md) | CONNECT 隧道：记录，但不默认进请求列表 | Accepted |
 | [0011](./0011-soak-and-fuzz-ci-promise.md) | soak 与 fuzz 的 CI 承诺 | Accepted |
+| [0012](./0012-tls-passthrough-and-handshake-metadata.md) | 按目标决定 TLS 处理，并记录真实的握手事实 | Accepted |
+| [0013](./0013-upstream-certificate-verification-policy.md) | 出站证书验证是策略，不是常量 | Accepted |

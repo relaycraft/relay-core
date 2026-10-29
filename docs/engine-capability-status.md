@@ -1,5 +1,18 @@
 # RelayCore 能力现状盘点（Engine Capability Status）
 
+> **2026-10-28 增量（阅读本文前先看这一段）**：本快照之后又落了三批改动，下表相关行已就地更新，
+> 但**本文其余段落仍是 2026-09-13 的结论**：
+> - §8：按目标的 TLS `passthrough` / `drop` 策略与 SNI/ALPN/tls_version 记录已交付
+>   （决策 [`0012`](./decisions/0012-tls-passthrough-and-handshake-metadata.md)，线路契约
+>   `relay-core-lib/tests/tls_policy_test.rs`）；出站证书验证策略（native roots / custom CA /
+>   explicit insecure）已交付（决策 [`0013`](./decisions/0013-upstream-certificate-verification-policy.md)，
+>   线路契约 `relay-core-lib/tests/upstream_tls_policy_test.rs`）。
+> - §16：脱敏默认已改为开启（header/query，body 仍 opt-in）；CA 私钥已改为 `0600` 并会修正旧文件；
+>   `cargo-deny` + Dependabot 已接入 CI。
+> - §11：逐规则评估（含**未匹配/跳过/失败**）已由 `FlowEvent::RuleEvaluated` 暴露给 SSE 与 Web UI；
+>   未匹配的规则此前根本不进 trace（executor 新增 `RuleOutcome::NotMatched`）。
+> - 验证体系：mitmproxy 差分已设 `REQUIRE_MITMPROXY=1`、覆盖率有 75% 门槛、soak 已每周跑、UDP E2E 在 Linux 上运行。
+
 > **Web UI 验证**：见 [`webui-verification.md`](./webui-verification.md)。UI 此前验证很少，
 > 已建立可复现的截图靶场，并记录 13 项已修缺陷与**尚未验证**的部分（亮色遮罩、键盘可达性、窄窗口、长列表性能）。
 
@@ -37,22 +50,22 @@
 | 能力面 | 成熟度 | 一句话现状 | 最大缺口 |
 |---|---|---|---|
 | §3 数据面与 Mutation Pipeline | **Partial** | 头/状态/body/编码的改写都真的到线路了，且失败与超预算有结构化原因 | 没有「显式 Mutation 类型」；`BodyObservation` 策略不是真正决定保留的开关 |
-| §4 Connection/Stream/Message 模型 | **Partial**（2026-10-11 由 Skeleton 升） | `connection_id` / `parent_flow_id` / `protocol_stack` 已交付并有线路契约；CONNECT 现在是一条带 `connect` 标签的 Flow（记录但默认不进列表） | **`stream_id` 仍缺，且已判定不该造**：没有任何应用层代理实现它，hyper 也不暴露（证据见路线图 §4-1）；Message 级已齐（WS frame 与被代理 SSE 事件均为增量），typed event 9 个变体全部有生产者 |
+| §4 Connection/Stream/Message 模型 | **Partial**（2026-10-11 由 Skeleton 升） | `connection_id` / `parent_flow_id` / `protocol_stack` 已交付并有线路契约；CONNECT 现在是一条带 `connect` 标签的 Flow（记录但默认不进列表） | **`stream_id` 仍缺，且已判定不该造**：没有任何应用层代理实现它，hyper 也不暴露（证据见路线图 §4-1）；Message 级已齐（WS frame 与被代理 SSE 事件均为增量），typed event 10 个变体全部有生产者（含 2026-10-28 的 `RuleEvaluated`） |
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
 | §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手都可观测；`permessage-deflate` 现为**显式降级**（双向剥离 + `ws-extensions-stripped` 标签 + 指标），不再是静默破坏 | 帧级修改仍无线路断言；Socket.IO/帧级双视图未做 |
 | §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | `Last-Event-ID` 辅助分析未做；事件**记录进响应**（`HttpResponse.sse_events`，上限 500）并在详情页 Messages 面板展示（实时 + 事后两条路都已通） |
-| §8 TLS / PKI | **Partial** | CA 生成/加载/按主机签发、MITM 端到端可用，CA 错误处理严格 | **无「按 host 决定 MITM/passthrough」策略** ⇒ 做 pinning 的客户端只能失败；SNI/ALPN 永不记录；叶证书对 IP 字面量发的是 DNS SAN |
+| §8 TLS / PKI | **Partial**（2026-10-30 更新） | CA 生成/加载/按主机签发、MITM 端到端可用；按目标的 passthrough/drop（0012）；SNI/ALPN/版本写入 Flow；**出站验证策略** native roots / custom CA / explicit insecure（0013，策略先验证后入库、运行中生效） | 上游证书链与握手错误原因不可观察；`connect_time_ms`/`ssl_time_ms` 仍为 `None`；按**客户端**的决策未做；passthrough 不解析握手（按设计）；HTTPS **父代理** TLS 仍用 native roots；Web UI 的 insecure 标记无截图级验证 |
 | §9 代理模式与捕获 | **Partial** | 正向代理默认稳定；透明模式 Linux/macOS/Windows 都有代码 | 透明捕获**零平台级测试**（三个 provider 文件 0 个测试）；reverse/多监听被生命周期**主动拒绝** |
 | §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话（含 `Started` 阶段声明）；**UDP E2E 已在 Linux 上运行**（普通转发不再要求特权） | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource`；透明捕获仍 0 平台级测试 |
-| §11 Rules/Scripts/Manual Intercept | **Partial** | 规则加载期拒绝非法模式、失败/跳过有原因、intercept 暂停有事件 | **加载期不校验「该动作是否真有线路实现」**；`RuleTrace` 无生产者 |
+| §11 Rules/Scripts/Manual Intercept | **Partial** | 规则加载期拒绝非法模式、失败/跳过有原因、intercept 暂停有事件 | **加载期不校验「该动作是否真有线路实现」**；逐规则评估已由 `FlowEvent::RuleEvaluated` 暴露（2026-10-28），`RuleTrace` 聚合容器仍无生产者 |
 | §12 Fault Injection | **Partial** | delay/throttle/rate-limit/drop/mock/redirect 等有实现 | 绝大多数**无线路断言**；rate-limit 表现为**断连而非 429**；Abort 实际等同 Drop |
 | §13 Recording / HAR / Replay | **Partial** | SQLite 迁移、LRU、HAR 不假造 timing、replay 可用 | replay **绕过代理**（不捕获、不跑规则）；HAR 不写 `content.encoding` ⇒ base64 以文本导出 |
 | §14 Content Codec / Inspector | **Partial** | `Content-Encoding` 四编码闭环；失败不影响透传 | 无 codec trait/registry；无 JSON/XML/multipart；无 hex/raw 表示 |
 | §15 Observability / Reliability / Perf | **Partial** | harness 可信化、baseline 真实；coverage 有阈值门禁；**soak 已接 CI**（每周 20 分钟，判据为 panic/RSS 增长）；differential 已接 CI | ~~18 个指标恒为 0 或未导出~~ **已复核不成立**（2026-10-13）：导出面 27 个指标各自对应一个访问器，
 而 `metrics.rs` 里每个 `inc_*`/`add_*`/`note_*` 都有生产调用点；审计点名的 `proxy_invalid_method_total`
 与 `proxy_retry_total` 早已从导出面**移除**（`metrics.rs` 有注释说明理由）。fuzz **明确不承诺**（决策 0011）；soak 不阻塞 PR 且仅限 Linux |
-| §16 Security / Privacy | **Partial** | 落盘前脱敏、MapLocal sandbox、env/fetch 白名单、API 默认 loopback | 脱敏**默认关闭**（`enabled:false`/`redact_bodies:false`）；**CA 私钥以 0644 创建**；无依赖漏洞门禁 |
+| §16 Security / Privacy | **Partial**（2026-10-28 更新） | 落盘前脱敏（header/query **默认开启**，body opt-in）、MapLocal sandbox、env/fetch 白名单、API 默认 loopback、CA 私钥 `0600`、`cargo-deny` + Dependabot 已接 CI | `redact_bodies` 仍为 opt-in（改 body 会改变规则/脚本看到的载荷）；advisories 只报告、不阻塞发布（决策 0004） |
 | §17 Adapters 对齐 | **Partial** | 窄 service trait 存在，Tauri 特有字段留在 adapter | CLI **自带第二套控制面**；MCP 与 HTTP 各自重复实现 replay/HAR |
 | §18 MCP / AI-Native | **Partial** | 15 个工具 + 5 个资源，类型化输出 | 资源**不可订阅**却在推送通知；写工具**无幂等**（每次新 UUID） |
 | §19/§20 阶段计划 | **Partial** | Phase A 的数据面关口基本走完 | Phase A 的「关系字段/typed event 基础」未完成；§20「设计」桶里 DNS/SOCKS5/WireGuard/gRPC **无任何设计产物** |
@@ -220,6 +233,9 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 
 依据 §21 的决策准则排序，**不按模块**：
 
+> **2026-10-28 状态**：本节是 2026-09-13 的排序建议，不是当前待办。此后第 1、2b、3、4、5、7（Web UI `flow-event`）与
+> 第 8（typed event 补齐，现含 `RuleEvaluated`）已完成；**仍未完成**的项以路线图 §24 为准。
+
 1. **止血三类「声明但无效」**（§21-1，最高优先）：
    `BodyObservation` 真正成为保留的开关（或改口径、删承诺）；从 Prometheus 面移除或补上那 18 个恒零指标；
    `CloseReason::TlsError` 与 `connect_time_ms`/`ssl_time_ms`/`sni` 二选一：**要么补生产者，要么删字段**。
@@ -239,8 +255,8 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 6. **熔断器放大倍率**（§2.5 的决策项）：它同时影响可靠性语义与性能 DoD 的可解释性。
 7. **分发与适配器一致性**（§17/§18）：Web UI 接 `flow-event`；MCP 资源改为可订阅或停止推送；
    写工具加幂等键；CLI 的两套控制面收敛为一套，并修掉两个必然失败的命令。
-8. **typed event 补齐**：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived` 的生产者，
-   与 §4-4 的完成度直接绑定（当前 9 个变体中 4 个无生产者，不得宣称完成）。
+8. ~~**typed event 补齐**：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived` 的生产者。~~
+   已于 2026-10-12 完成；2026-10-28 又补上 `RuleEvaluated`，现 10 个变体均有生产者。
 
 **明确不投入（建议在路线图里保持）**：DNS / SOCKS5 / TUN / WireGuard / DTLS / HTTP-3 MITM / gRPC-Protobuf 可编辑视图 / OpenTelemetry 全链路 / 分布式压测。
 其中 reverse 与多监听建议**从 M1 移到 1.x**——它们不是「未实现」，而是被 `lifecycle.rs` **主动拒绝**，需要生命周期重设计。
