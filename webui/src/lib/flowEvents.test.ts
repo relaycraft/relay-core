@@ -24,6 +24,39 @@ describe('describeFlowEvent', () => {
     expect(notice?.summary).toBe('rule:add-auth changed request.headers.authorization');
   });
 
+  it('says a rule was evaluated and did not match, so silence is not ambiguous', () => {
+    const notice = describeFlowEvent({
+      event: 'rule_evaluated',
+      flow_id: FLOW,
+      direction: 'ClientToServer',
+      rule_id: 'add-auth',
+      stage: 'RequestHeaders',
+      matched: false,
+      duration_us: 12,
+      outcome: 'NotMatched',
+    });
+
+    expect(notice?.kind).toBe('rule_evaluated');
+    expect(notice?.summary).toBe('rule add-auth did not match at RequestHeaders');
+  });
+
+  it('reads a failed rule evaluation, including why the action could not run', () => {
+    const notice = describeFlowEvent({
+      event: 'rule_evaluated',
+      flow_id: FLOW,
+      direction: 'ServerToClient',
+      rule_id: 'rewrite-body',
+      stage: 'ResponseBody',
+      matched: true,
+      duration_us: 40,
+      outcome: { Failed: 'body budget exceeded' },
+    });
+
+    expect(notice?.summary).toBe(
+      'rule rewrite-body matched at ResponseBody (failed: body budget exceeded)',
+    );
+  });
+
   it('reports a pause with its phase', () => {
     const notice = describeFlowEvent({
       event: 'intercept_paused',

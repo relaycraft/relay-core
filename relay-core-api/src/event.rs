@@ -103,6 +103,29 @@ pub enum FlowEvent {
         /// Names of the fields that changed, for explainability.
         fields: Vec<String>,
     },
+    /// One rule was evaluated at one stage, whether or not it matched.
+    ///
+    /// This exists because `MutationApplied` only covers rules that changed something. "Why did my
+    /// rule not fire?" was unanswerable from the API: a rule that was evaluated and did not match,
+    /// was skipped for a budget, or failed to validate produced no event at all. The per-rule
+    /// execution log the engine already built internally (`RuleExecutionEvent`) is now published
+    /// verbatim, so a consumer stops having to infer evaluation from its absence.
+    RuleEvaluated {
+        /// Flow this event belongs to.
+        flow_id: Uuid,
+        /// Which direction's stage was evaluated.
+        direction: Direction,
+        /// The rule that was evaluated.
+        rule_id: String,
+        /// The stage it was evaluated at.
+        stage: crate::rule::RuleStage,
+        /// Whether its filters matched.
+        matched: bool,
+        /// How long the evaluation took, in microseconds.
+        duration_us: u64,
+        /// What happened: executed, terminated, skipped, or failed with a reason.
+        outcome: crate::rule::RuleOutcome,
+    },
     /// A breakpoint paused the exchange.
     InterceptPaused {
         /// Flow this event belongs to.
@@ -146,6 +169,7 @@ impl FlowEvent {
             | FlowEvent::BodyChunk { flow_id, .. }
             | FlowEvent::MessageReceived { flow_id, .. }
             | FlowEvent::MutationApplied { flow_id, .. }
+            | FlowEvent::RuleEvaluated { flow_id, .. }
             | FlowEvent::InterceptPaused { flow_id, .. }
             | FlowEvent::InterceptResolved { flow_id, .. }
             | FlowEvent::Completed { flow_id, .. }

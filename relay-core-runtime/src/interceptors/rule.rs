@@ -162,12 +162,15 @@ fn stage_debug(stage: &RuleStage) -> String {
     format!("{stage:?}")
 }
 
-/// Publish what this stage changed, per rule.
+/// Publish what this stage decided, per rule.
 ///
-/// Roadmap §4-4: `RuleTraceSummary::Modified` says rules ran, which is not enough for a UI or an
-/// agent to explain a change. Each applied rule becomes one event naming the fields it touched;
-/// a stage that changed nothing publishes nothing.
-fn publish_mutations(
+/// Two different questions are answered from one place:
+/// - `MutationApplied` (§4-4): which rules *changed* something, and which fields — enough for a UI
+///   or agent to explain a diff without re-reading the rule set.
+/// - `RuleEvaluated` (§24.6): which rules were *considered*, matched or not, how long they took and
+///   what the outcome was. Without this, "my rule did not fire" could not be distinguished from
+///   "the rule was never there" — the trace existed only inside this process and was discarded.
+fn publish_stage_events(
     events: &Arc<dyn FlowEventSink>,
     flow: &Flow,
     direction: &Direction,
@@ -179,6 +182,18 @@ fn publish_mutations(
             direction: direction.clone(),
             actor: format!("rule:{}", mutation.rule_id),
             fields: mutation.fields.clone(),
+        });
+    }
+
+    for evaluated in &ctx.trace {
+        events.publish_flow_event(FlowEvent::RuleEvaluated {
+            flow_id: flow.id,
+            direction: direction.clone(),
+            rule_id: evaluated.rule_id.clone(),
+            stage: evaluated.stage.clone(),
+            matched: evaluated.matched,
+            duration_us: evaluated.duration_us,
+            outcome: evaluated.outcome.clone(),
         });
     }
 }
@@ -245,7 +260,7 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::RequestHeaders, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::RequestHeaders, &ctx);
-        publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
+        publish_stage_events(&self.events, flow, &Direction::ClientToServer, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestHeaders);
 
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
@@ -284,14 +299,16 @@ impl Interceptor for RuleInterceptor {
             // exists to preserve, so the stage simply runs against metadata and streams on.
             BodyPlan::Capture { .. } => {
                 let ctx = engine.execute(RuleStage::RequestBody, flow).await;
-                publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
+                report_stage_outcome(&self.rules, &RuleStage::RequestBody, &ctx);
+                publish_stage_events(&self.events, flow, &Direction::ClientToServer, &ctx);
                 mark_stage_executed(flow, &RuleStage::RequestBody);
                 return finish_request_stage(&self.intercepts, &self.events, flow, ctx, body).await;
             }
             BodyPlan::PassThrough => {
                 // Nothing here needs the bytes: run the stage against metadata only and stream on.
                 let ctx = engine.execute(RuleStage::RequestBody, flow).await;
-                publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
+                report_stage_outcome(&self.rules, &RuleStage::RequestBody, &ctx);
+                publish_stage_events(&self.events, flow, &Direction::ClientToServer, &ctx);
                 mark_stage_executed(flow, &RuleStage::RequestBody);
                 return finish_request_stage(&self.intercepts, &self.events, flow, ctx, body).await;
             }
@@ -330,7 +347,7 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::RequestBody, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::RequestBody, &ctx);
-        publish_mutations(&self.events, flow, &Direction::ClientToServer, &ctx);
+        publish_stage_events(&self.events, flow, &Direction::ClientToServer, &ctx);
         mark_stage_executed(flow, &RuleStage::RequestBody);
         finish_request_stage(&self.intercepts, &self.events, flow, ctx, forwarded).await
     }
@@ -343,7 +360,7 @@ impl Interceptor for RuleInterceptor {
 
         let ctx = engine.execute(RuleStage::ResponseHeaders, flow).await;
         report_stage_outcome(&self.rules, &RuleStage::ResponseHeaders, &ctx);
-        publish_mutations(&self.events, flow, &Direction::ServerToClient, &ctx);
+        publish_stage_events(&self.events, flow, &Direction::ServerToClient, &ctx);
         mark_stage_executed(flow, &RuleStage::ResponseHeaders);
         if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
             return handle_rule_termination(
@@ -369,7 +386,7 @@ impl Interceptor for RuleInterceptor {
         if engine.has_rules_for_stage(RuleStage::ResponseBody) {
             let ctx = engine.execute(RuleStage::ResponseBody, flow).await;
             report_stage_outcome(&self.rules, &RuleStage::ResponseBody, &ctx);
-            publish_mutations(&self.events, flow, &Direction::ServerToClient, &ctx);
+            publish_stage_events(&self.events, flow, &Direction::ServerToClient, &ctx);
             mark_stage_executed(flow, &RuleStage::ResponseBody);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 let result = handle_rule_termination(
@@ -415,7 +432,7 @@ impl Interceptor for RuleInterceptor {
             }
             let ctx = engine.execute(RuleStage::WebSocketMessage, flow).await;
             report_stage_outcome(&self.rules, &RuleStage::WebSocketMessage, &ctx);
-            publish_mutations(&self.events, flow, &message.direction, &ctx);
+            publish_stage_events(&self.events, flow, &message.direction, &ctx);
             mark_stage_executed(flow, &RuleStage::WebSocketMessage);
             if let RuleTraceSummary::Terminated { reason, .. } = &ctx.summary {
                 // `Action::MockWebSocketMessage` replaces the frame with the one the rule produced,
@@ -464,8 +481,10 @@ impl Interceptor for RuleInterceptor {
 
 #[cfg(test)]
 mod stage_outcome_tests {
-    use super::report_stage_outcome;
+    use super::{publish_stage_events, report_stage_outcome};
     use async_trait::async_trait;
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::flow::{Direction, Flow};
     use relay_core_api::rule::{RuleOutcome, RuleStage, RuleTraceSummary};
     use relay_core_lib::rule::RuleExecutionEvent;
     use relay_core_lib::rule::engine::ExecutionContext;
@@ -593,6 +612,61 @@ mod stage_outcome_tests {
 
         assert_eq!(reported.load(Ordering::Relaxed), 0);
     }
+
+    fn flow_fixture() -> Flow {
+        serde_json::from_str(
+            r#"{"id":"00000000-0000-0000-0000-0000000000bb","start_time":"2026-05-20T10:00:00Z",
+                "end_time":null,
+                "network":{"client_ip":"127.0.0.1","client_port":1234,"server_ip":"0.0.0.0",
+                           "server_port":0,"protocol":"TCP","tls":false,"tls_version":null,
+                           "sni":null},
+                "layer":{"type":"Http","data":{"request":{"method":"GET","url":"https://example.com/",
+                          "version":"HTTP/1.1","headers":[],"cookies":[],"query":[],"body":null},
+                          "response":null,"error":null}},
+                "tags":[],"meta":{}}"#,
+        )
+        .expect("sample flow should parse")
+    }
+
+    /// A rule that was considered but did not match must still be visible. This is the difference
+    /// between "your rule ran and declined" and "your rule was never evaluated".
+    #[test]
+    fn every_evaluated_rule_reaches_the_event_stream() {
+        let recording = Arc::new(crate::services::RecordingFlowEventSink::default());
+        let sink: Arc<dyn crate::services::FlowEventSink> = recording.clone();
+        let mut ctx = ctx_with(vec![RuleOutcome::MatchedAndExecuted, RuleOutcome::Skipped]);
+        ctx.trace[1].matched = false;
+        let flow = flow_fixture();
+
+        publish_stage_events(&sink, &flow, &Direction::ClientToServer, &ctx);
+
+        let recorded = recording.recorded();
+        assert_eq!(
+            recorded.len(),
+            2,
+            "each evaluated rule gets exactly one event, matched or not"
+        );
+
+        match &recorded[1] {
+            FlowEvent::RuleEvaluated {
+                flow_id,
+                direction,
+                rule_id,
+                stage,
+                matched,
+                duration_us: _,
+                outcome,
+            } => {
+                assert_eq!(*flow_id, flow.id);
+                assert_eq!(*direction, Direction::ClientToServer);
+                assert_eq!(rule_id, "r1");
+                assert_eq!(*stage, RuleStage::RequestHeaders);
+                assert!(!matched, "the non-matching rule must say so");
+                assert_eq!(*outcome, RuleOutcome::Skipped);
+            }
+            other => panic!("expected a rule evaluation, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -671,6 +745,7 @@ mod intercept_resolution_tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -890,6 +965,7 @@ mod body_budget_skip_tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Unknown,
             tags: vec![],

@@ -34,6 +34,7 @@ export type FlowEventKind =
   | 'body_chunk'
   | 'message_received'
   | 'mutation_applied'
+  | 'rule_evaluated'
   | 'intercept_paused'
   | 'intercept_resolved'
   | 'completed'
@@ -45,6 +46,7 @@ const KINDS: FlowEventKind[] = [
   'body_chunk',
   'message_received',
   'mutation_applied',
+  'rule_evaluated',
   'intercept_paused',
   'intercept_resolved',
   'completed',
@@ -104,6 +106,37 @@ export function describeFlowEvent(raw: unknown): FlowEventNotice | null {
         fields.length > 0
           ? `${actor} changed ${fields.join(', ')}`
           : `${actor} changed this exchange`;
+      break;
+    }
+    case 'rule_evaluated': {
+      const rule = asString(payload.rule_id) ?? 'unknown rule';
+      const stage = asString(payload.stage) ?? 'unknown stage';
+      const matched = payload.matched === true ? 'matched' : 'did not match';
+      const outcome = payload.outcome;
+      let verdict: string | null;
+      if (typeof outcome === 'string') {
+        // `NotMatched` says nothing the "did not match" wording has not already said.
+        if (outcome === 'NotMatched') {
+          verdict = null;
+        } else if (outcome === 'Skipped') {
+          verdict = 'skipped';
+        } else if (outcome === 'MatchedAndExecuted') {
+          verdict = 'executed';
+        } else if (outcome === 'MatchedAndTerminated') {
+          verdict = 'terminated';
+        } else {
+          verdict = outcome;
+        }
+      } else if (typeof outcome === 'object' && outcome !== null) {
+        // `RuleOutcome::Failed` is the only variant carrying a payload, so this is its shape.
+        const reason = asString((outcome as Record<string, unknown>).Failed);
+        verdict = reason ? `failed: ${reason}` : 'failed';
+      } else {
+        verdict = 'unknown outcome';
+      }
+      summary = verdict
+        ? `rule ${rule} ${matched} at ${stage} (${verdict})`
+        : `rule ${rule} ${matched} at ${stage}`;
       break;
     }
     case 'intercept_paused': {

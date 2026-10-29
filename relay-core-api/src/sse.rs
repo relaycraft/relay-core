@@ -528,6 +528,15 @@ mod tests {
                 actor: "rule:rewrite-url".to_string(),
                 fields: vec!["request.url".to_string()],
             },
+            FlowEvent::RuleEvaluated {
+                flow_id,
+                direction: Direction::ClientToServer,
+                rule_id: "rewrite-url".to_string(),
+                stage: crate::rule::RuleStage::RequestHeaders,
+                matched: false,
+                duration_us: 12,
+                outcome: crate::rule::RuleOutcome::Skipped,
+            },
             FlowEvent::InterceptPaused {
                 flow_id,
                 phase: "request_headers".to_string(),

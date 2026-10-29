@@ -323,6 +323,17 @@ impl RuleEngine {
                 if let RuleTermination::Stop = rule.termination {
                     break;
                 }
+            } else {
+                // "Evaluated and declined" is a fact a consumer needs. Without it, the trace only
+                // contained rules that fired, so a trace with no entry for a rule was
+                // indistinguishable from one where the rule was never loaded.
+                ctx.trace.push(RuleExecutionEvent {
+                    rule_id: rule.id.clone(),
+                    stage: stage.clone(),
+                    matched: false,
+                    duration_us: start.elapsed().as_micros() as u64,
+                    outcome: RuleOutcome::NotMatched,
+                });
             }
         }
 
@@ -397,6 +408,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(relay_core_api::flow::HttpLayer {
                 request: HttpRequest {
@@ -471,6 +483,41 @@ mod tests {
         );
     }
 
+    /// A rule whose filters did not match is still part of the evaluation record.
+    #[tokio::test]
+    async fn a_rule_that_does_not_match_is_still_traced() {
+        let rule = Rule {
+            id: "post-only".to_string(),
+            name: "POST only".to_string(),
+            active: true,
+            stage: RuleStage::RequestHeaders,
+            priority: 0,
+            termination: RuleTermination::Continue,
+            filter: Filter::Method(StringMatcher::Exact("POST".to_string())),
+            actions: vec![Action::AddRequestHeader {
+                name: "x-should-not-appear".to_string(),
+                value: "1".to_string(),
+            }],
+            constraints: None,
+        };
+
+        let engine = RuleEngine::new(vec![rule], vec![], None, None);
+        let mut flow = create_test_flow(); // GET
+        let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;
+
+        assert_eq!(
+            ctx.trace.len(),
+            1,
+            "the evaluated rule must be in the trace"
+        );
+        assert!(!ctx.trace[0].matched);
+        assert_eq!(ctx.trace[0].outcome, RuleOutcome::NotMatched);
+        assert!(
+            ctx.mutations.is_empty(),
+            "a rule that did not match changed nothing"
+        );
+    }
+
     /// A rule that matched but failed changed nothing, so it must not appear as a mutation —
     /// reporting it would tell a consumer to look for a change that never happened.
     #[tokio::test]
@@ -487,7 +534,6 @@ mod tests {
             actions: vec![Action::Throttle { kbps: 0 }],
             constraints: None,
         };
-
         let engine = RuleEngine::new(vec![rule], vec![], None, None);
         let mut flow = create_test_flow();
         let ctx = engine.execute(RuleStage::RequestHeaders, &mut flow).await;

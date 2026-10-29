@@ -898,10 +898,10 @@ async fn a_matching_rule_publishes_a_mutation_event() {
     }
 }
 
-/// A stage with no matching rule must stay silent: an event claiming a change that did not happen
-/// is worse than no event at all.
+/// A stage with no matching rule must report the evaluation but never a change: an event claiming
+/// a change that did not happen is worse than no event at all.
 #[tokio::test]
-async fn a_stage_that_matches_nothing_publishes_no_event() {
+async fn a_stage_that_matches_nothing_reports_only_the_evaluation() {
     let state = Arc::new(CoreState::new(None).await);
     let mut events = state.subscribe_flow_events();
 
@@ -928,9 +928,27 @@ async fn a_stage_that_matches_nothing_publishes_no_event() {
     let result = interceptor.on_request_headers(&mut flow).await;
     assert!(matches!(result, InterceptionResult::Continue));
 
+    let event = events
+        .try_recv()
+        .expect("a non-matching rule must still report that it was evaluated");
+    match event {
+        relay_core_api::event::FlowEvent::RuleEvaluated {
+            rule_id,
+            stage,
+            matched,
+            outcome,
+            ..
+        } => {
+            assert_eq!(rule_id, "post-only");
+            assert_eq!(stage, RuleStage::RequestHeaders);
+            assert!(!matched);
+            assert_eq!(outcome, relay_core_api::rule::RuleOutcome::NotMatched);
+        }
+        other => panic!("expected a rule evaluation, got {other:?}"),
+    }
     assert!(
         events.try_recv().is_err(),
-        "a non-matching stage must not report a mutation"
+        "a non-matching rule changed nothing, so no mutation event may follow"
     );
 }
 

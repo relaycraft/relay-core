@@ -344,6 +344,12 @@ pub struct RuleExecutionEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RuleOutcome {
+    /// The rule's filters were evaluated and did not match.
+    ///
+    /// Distinct from [`Self::Skipped`]: a skipped rule could not be evaluated (for example its body
+    /// was over budget), while this one was evaluated and declined. Both used to be invisible,
+    /// which made "my rule did not fire" unanswerable.
+    NotMatched,
     Skipped,
     MatchedAndExecuted,
     MatchedAndTerminated,
