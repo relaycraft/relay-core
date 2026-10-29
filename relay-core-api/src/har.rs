@@ -117,6 +117,15 @@ pub fn flow_to_har_entry(flow: &Flow) -> Value {
             "bodySize": resp.body.as_ref().map(|b| b.size).unwrap_or(0),
         });
 
+        // HAR's default is that `text` is literal. A captured binary body is stored base64, so
+        // exporting it without this key tells every consumer the bytes are text — the same class of
+        // lie as reporting an unmeasured timing as `0`.
+        if let Some(body) = &resp.body
+            && body.encoding == "base64"
+        {
+            resp_json["content"]["encoding"] = json!("base64");
+        }
+
         if let Some(ttfb) = resp.timing.time_to_first_byte {
             timings["wait"] = json!(ttfb);
         }

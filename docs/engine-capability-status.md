@@ -60,7 +60,7 @@
 | §10 通用 TCP/UDP/DNS | **Skeleton** | `CaptureSource` 泛型正确；UDP 可转发并上报会话（含 `Started` 阶段声明）；**UDP E2E 已在 Linux 上运行**（普通转发不再要求特权） | 无协议探测；无通用 Message；UDP 绕过 `CaptureSource`；透明捕获仍 0 平台级测试 |
 | §11 Rules/Scripts/Manual Intercept | **Partial** | 规则加载期拒绝非法模式、失败/跳过有原因、intercept 暂停有事件 | **加载期不校验「该动作是否真有线路实现」**；逐规则评估已由 `FlowEvent::RuleEvaluated` 暴露（2026-10-28），`RuleTrace` 聚合容器仍无生产者 |
 | §12 Fault Injection | **Partial** | delay/throttle/rate-limit/drop/mock/redirect 等有实现 | 绝大多数**无线路断言**；rate-limit 表现为**断连而非 429**；Abort 实际等同 Drop |
-| §13 Recording / HAR / Replay | **Partial** | SQLite 迁移、LRU、HAR 不假造 timing、replay 可用 | replay **绕过代理**（不捕获、不跑规则）；HAR 不写 `content.encoding` ⇒ base64 以文本导出 |
+| §13 Recording / HAR / Replay | **Partial**（2026-10-30 更新） | SQLite 迁移、LRU、HAR 不假造 timing、**base64 响应体带 `content.encoding`**（2 个测试）、replay 可用 | replay **绕过代理**（不捕获、不跑规则）；HAR 请求侧 `postData` 无 encoding 字段（HAR 1.2 未定义） |
 | §14 Content Codec / Inspector | **Partial** | `Content-Encoding` 四编码闭环；失败不影响透传 | 无 codec trait/registry；无 JSON/XML/multipart；无 hex/raw 表示 |
 | §15 Observability / Reliability / Perf | **Partial** | harness 可信化、baseline 真实；coverage 有阈值门禁；**soak 已接 CI**（每周 20 分钟，判据为 panic/RSS 增长）；differential 已接 CI | ~~18 个指标恒为 0 或未导出~~ **已复核不成立**（2026-10-13）：导出面 27 个指标各自对应一个访问器，
 而 `metrics.rs` 里每个 `inc_*`/`add_*`/`note_*` 都有生产调用点；审计点名的 `proxy_invalid_method_total`

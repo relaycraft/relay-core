@@ -173,3 +173,47 @@ fn a_flow_without_http_reports_no_fabricated_timings() {
     assert_eq!(har["timings"], json!({}));
     assert_eq!(har["time"], json!(-1));
 }
+
+/// A binary body is stored base64. Without `content.encoding`, every consumer reads the base64 text
+/// as if it were the payload — the same "documented shape that is not what was recorded" failure the
+/// timing tests above cover.
+#[test]
+fn a_base64_body_is_exported_with_its_encoding() {
+    let mut flow = flow_with_timing(ResponseTiming {
+        time_to_first_byte: None,
+        time_to_last_byte: None,
+        connect_time_ms: None,
+        ssl_time_ms: None,
+    });
+    if let Layer::Http(http) = &mut flow.layer {
+        http.response.as_mut().expect("response").body = Some(BodyData {
+            encoding: "base64".to_string(),
+            content: "AAEC".to_string(),
+            size: 3,
+            grpc: None,
+        });
+    }
+
+    let har = flow_to_har_entry(&flow);
+    assert_eq!(har["response"]["content"]["encoding"], "base64");
+    assert_eq!(
+        har["response"]["content"]["text"], "AAEC",
+        "the stored base64 must be exported as-is, with the encoding saying so"
+    );
+}
+
+/// A textual body must not grow an `encoding` key: HAR's default is literal text.
+#[test]
+fn a_text_body_has_no_encoding_key() {
+    let flow = flow_with_timing(ResponseTiming {
+        time_to_first_byte: None,
+        time_to_last_byte: None,
+        connect_time_ms: None,
+        ssl_time_ms: None,
+    });
+    let har = flow_to_har_entry(&flow);
+    assert!(
+        har["response"]["content"].get("encoding").is_none(),
+        "utf-8 text needs no encoding marker"
+    );
+}
