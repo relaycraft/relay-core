@@ -147,6 +147,55 @@ mod tests {
         let _ = connect_task.await;
     }
 
+    #[test]
+    fn only_the_degradable_error_kinds_are_recoverable() {
+        for kind in [
+            io::ErrorKind::Unsupported,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::AddrNotAvailable,
+            io::ErrorKind::InvalidInput,
+        ] {
+            assert!(
+                is_recoverable_original_dst_error(&io::Error::new(kind, "degradable")),
+                "{kind:?} means this platform cannot report the original destination"
+            );
+        }
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::Other,
+        ] {
+            assert!(
+                !is_recoverable_original_dst_error(&io::Error::new(kind, "real failure")),
+                "{kind:?} is a real failure and must not be hidden"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_accept_reports_the_original_destination_when_available() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener_addr = listener.local_addr().expect("local_addr");
+        let original = "203.0.113.9:443".parse().expect("address");
+        let provider = Arc::new(MockOriginalDstProvider {
+            listen_addrs: BTreeSet::new(),
+            dst_result: Ok(Some(original)),
+        });
+        let mut source = TransparentTcpCaptureSource::new(listener, provider);
+
+        let connect_task = tokio::spawn(async move {
+            let _ = TcpStream::connect(listener_addr).await;
+        });
+
+        let conn = source.accept().await.expect("accept");
+        assert_eq!(
+            conn.target_addr,
+            Some(original),
+            "a resolved destination must not be thrown away by the fallback path"
+        );
+        let _ = connect_task.await;
+    }
+
     #[tokio::test]
     async fn test_accept_propagates_non_recoverable_original_dst_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

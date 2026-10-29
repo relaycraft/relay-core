@@ -276,3 +276,132 @@ unsafe fn parse_orig_dst(msg: &libc::msghdr) -> Option<SocketAddr> {
 
     None
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{parse_orig_dst, sockaddr_to_socket_addr};
+    use std::mem;
+
+    /// Build a `msghdr` whose ancillary data is one `cmsg` of `level`/`kind`, filled by `fill`.
+    ///
+    /// The buffer is heap-allocated and returned alongside the header: moving the `Vec` moves the
+    /// handle, not the bytes, so the pointer inside `msg` stays valid.
+    fn message(
+        level: libc::c_int,
+        kind: libc::c_int,
+        payload: usize,
+        fill: impl FnOnce(*mut libc::c_void),
+    ) -> (Vec<u64>, libc::msghdr) {
+        let space = unsafe { libc::CMSG_SPACE(payload as u32) } as usize;
+        let mut buffer = vec![0u64; space.div_ceil(8)];
+        let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+        msg.msg_control = buffer.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = space as _;
+        unsafe {
+            let header = libc::CMSG_FIRSTHDR(&msg);
+            assert!(!header.is_null(), "CMSG_FIRSTHDR must find the space");
+            (*header).cmsg_level = level;
+            (*header).cmsg_type = kind;
+            (*header).cmsg_len = libc::CMSG_LEN(payload as u32) as _;
+            fill(libc::CMSG_DATA(header) as *mut libc::c_void);
+        }
+        (buffer, msg)
+    }
+
+    fn ipv4_message(octets: [u8; 4], port: u16) -> (Vec<u64>, libc::msghdr) {
+        message(
+            libc::SOL_IP,
+            libc::IP_RECVORIGDSTADDR,
+            mem::size_of::<libc::sockaddr_in>(),
+            |data| unsafe {
+                let addr = data as *mut libc::sockaddr_in;
+                addr.write(libc::sockaddr_in {
+                    sin_family: libc::AF_INET as libc::sa_family_t,
+                    sin_port: port.to_be(),
+                    sin_addr: libc::in_addr {
+                        s_addr: u32::from_ne_bytes(octets),
+                    },
+                    sin_zero: [0; 8],
+                });
+            },
+        )
+    }
+
+    #[test]
+    fn an_ipv4_original_destination_is_decoded() {
+        let (_buffer, msg) = ipv4_message([10, 1, 2, 3], 8443);
+        let parsed = unsafe { parse_orig_dst(&msg) };
+        assert_eq!(
+            parsed,
+            Some("10.1.2.3:8443".parse().expect("expected address")),
+            "the original destination must survive the cmsg encoding"
+        );
+    }
+
+    #[test]
+    fn an_ipv6_original_destination_is_decoded() {
+        let expected: std::net::SocketAddr = "[2001:db8::1]:9443".parse().expect("address");
+        let std::net::SocketAddr::V6(v6) = expected else {
+            panic!("expected an IPv6 address");
+        };
+        let (_buffer, msg) = message(
+            libc::SOL_IPV6,
+            libc::IPV6_RECVORIGDSTADDR,
+            mem::size_of::<libc::sockaddr_in6>(),
+            |data| unsafe {
+                let addr = data as *mut libc::sockaddr_in6;
+                addr.write(libc::sockaddr_in6 {
+                    sin6_family: libc::AF_INET6 as libc::sa_family_t,
+                    sin6_port: v6.port().to_be(),
+                    sin6_flowinfo: 0,
+                    sin6_addr: libc::in6_addr {
+                        s6_addr: v6.ip().octets(),
+                    },
+                    sin6_scope_id: 0,
+                });
+            },
+        );
+        assert_eq!(unsafe { parse_orig_dst(&msg) }, Some(expected));
+    }
+
+    #[test]
+    fn a_packet_without_ancillary_data_has_no_original_destination() {
+        let msg: libc::msghdr = unsafe { mem::zeroed() };
+        assert_eq!(unsafe { parse_orig_dst(&msg) }, None);
+    }
+
+    #[test]
+    fn an_unrelated_control_message_is_not_mistaken_for_an_original_destination() {
+        let (_buffer, msg) = message(libc::SOL_IP, libc::IP_TTL, 4, |data| unsafe {
+            (data as *mut i32).write(64);
+        });
+        assert_eq!(
+            unsafe { parse_orig_dst(&msg) },
+            None,
+            "only IP_RECVORIGDSTADDR / IPV6_RECVORIGDSTADDR carry the destination"
+        );
+    }
+
+    #[test]
+    fn a_sockaddr_storage_decodes_by_family() {
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        unsafe {
+            let v4 = &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in);
+            v4.sin_family = libc::AF_INET as libc::sa_family_t;
+            v4.sin_port = 8080u16.to_be();
+            v4.sin_addr = libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            };
+        }
+        assert_eq!(
+            unsafe { sockaddr_to_socket_addr(&storage) }.expect("IPv4 storage"),
+            "127.0.0.1:8080".parse().expect("address")
+        );
+
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        storage.ss_family = libc::AF_UNIX as libc::sa_family_t;
+        let error = unsafe { sockaddr_to_socket_addr(&storage) }
+            .expect_err("an unknown family must be reported, not guessed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+}
