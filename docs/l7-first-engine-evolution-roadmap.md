@@ -463,7 +463,7 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    `native_roots`（默认）/ `custom_ca { path }`（**替换**而非叠加系统根）/ `insecure { reason }`
    （reason 必填、每次构建都 warn、API 始终可见）。
    策略先验证后入库，坏 bundle 不会造成「API 说 custom_ca、实际仍用旧信任」的分离；运行中变更会重建
-   client + connector。**边界**：HTTPS **父代理**的 TLS 仍固定 native roots；Web UI 已在 Settings → TLS 显示验证模式
+   client + connector。**边界**：`custom_ca` 会替换信任库，HTTPS 父代理与目标必须同时在该 bundle 内；Web UI 已在 Settings → TLS 显示验证模式
    （insecure 时红色 `DISABLED` + 理由，无截图级验证）；原始证书链与握手错误仍不可观察。
 6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
 7. ⬜ **原始 upstream 证书链和错误原因可观察**。
@@ -1370,11 +1370,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **986 passed / 0 failed / 0 ignored**（52 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **987 passed / 0 failed / 0 ignored**（52 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
-  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **5 个** +
+  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **6 个** +
   `request_trailers_test.rs` **1 个**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的

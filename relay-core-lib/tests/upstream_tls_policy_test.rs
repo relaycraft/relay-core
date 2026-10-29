@@ -6,7 +6,9 @@
 
 use rcgen::generate_simple_self_signed;
 use relay_core_api::flow::FlowUpdate;
-use relay_core_api::policy::{ProxyPolicy, UpstreamTlsPolicy, UpstreamTlsVerification};
+use relay_core_api::policy::{
+    ProxyPolicy, UpstreamProxyConfig, UpstreamTlsPolicy, UpstreamTlsVerification,
+};
 use relay_core_lib::capture::TcpCaptureSource;
 use relay_core_lib::interceptor::NoOpInterceptor;
 use relay_core_lib::proxy::server::start_proxy;
@@ -79,6 +81,71 @@ async fn spawn_tls_upstream(body: &'static str) -> TlsUpstream {
     }
 }
 
+struct HttpsParent {
+    addr: SocketAddr,
+}
+
+/// A minimal HTTPS CONNECT proxy: TLS in, CONNECT out, then bytes both ways.
+async fn spawn_https_parent() -> HttpsParent {
+    init_crypto();
+    let cert = generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+        .expect("generate a parent certificate");
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.cert.der().clone()], key)
+        .expect("parent server config");
+    let acceptor = TlsAcceptor::from(Arc::new(config));
+
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind HTTPS parent");
+    let addr = listener.local_addr().expect("parent addr");
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(socket).await else {
+                    return;
+                };
+                // Read exactly the CONNECT head: one byte at a time so no tunneled byte is consumed.
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => head.push(byte[0]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&head);
+                let target = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default()
+                    .to_string();
+                let Ok(mut upstream) = TcpStream::connect(&target).await else {
+                    let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                    return;
+                };
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 Connection Established\r\nProxy-Connection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = stream.flush().await;
+                let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+            });
+        }
+    });
+
+    HttpsParent { addr }
+}
+
 async fn start_proxy_with(policy: ProxyPolicy) -> u16 {
     start_proxy_with_updates(policy).await.0
 }
@@ -119,14 +186,18 @@ async fn start_proxy_with_updates(
 
 /// One forward-proxy request for an `https://` target the proxy must dial itself.
 async fn request_through_proxy(proxy_port: u16, target_port: u16) -> (u16, String) {
+    request_through_proxy_to(proxy_port, "localhost", target_port).await
+}
+
+async fn request_through_proxy_to(proxy_port: u16, host: &str, target_port: u16) -> (u16, String) {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
         .await
         .expect("connect proxy");
     stream
         .write_all(
             format!(
-                "GET https://localhost:{target_port}/verify HTTP/1.1\r\n\
-                 Host: localhost:{target_port}\r\nConnection: close\r\n\r\n"
+                "GET https://{host}:{target_port}/verify HTTP/1.1\r\n\
+                 Host: {host}:{target_port}\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -274,4 +345,53 @@ async fn tightening_or_relaxing_verification_applies_without_a_restart() {
         "a policy update must rebuild the outbound client: {body}"
     );
     assert!(body.contains("AFTER-POLICY-CHANGE"), "got {body}");
+}
+
+/// The HTTPS parent proxy is part of the outbound trust decision. With verification disabled both
+/// the parent and the target are accepted; under the default policy the parent's self-signed
+/// certificate must be refused before any CONNECT is sent.
+#[tokio::test]
+async fn an_https_parent_proxy_follows_the_same_trust_policy() {
+    let target = spawn_tls_upstream("THROUGH-HTTPS-PARENT").await;
+    let parent = spawn_https_parent().await;
+
+    let insecure = ProxyPolicy {
+        upstream: Some(UpstreamProxyConfig {
+            proxy_url: format!("https://127.0.0.1:{}", parent.addr.port()),
+            auth: None,
+            bypass_hosts: Vec::new(),
+            fail_open: false,
+        }),
+        upstream_tls: UpstreamTlsPolicy {
+            verification: UpstreamTlsVerification::Insecure {
+                reason: "self-signed parent fixture".to_string(),
+            },
+        },
+        ..ProxyPolicy::default()
+    };
+    let proxy_port = start_proxy_with(insecure).await;
+    let (status, body) =
+        request_through_proxy_to(proxy_port, "127.0.0.1", target.addr.port()).await;
+    assert_eq!(
+        status, 200,
+        "an explicit insecure policy must also cover the parent proxy: {body}"
+    );
+    assert!(body.contains("THROUGH-HTTPS-PARENT"), "got {body}");
+
+    let strict = ProxyPolicy {
+        upstream: Some(UpstreamProxyConfig {
+            proxy_url: format!("https://127.0.0.1:{}", parent.addr.port()),
+            auth: None,
+            bypass_hosts: Vec::new(),
+            fail_open: false,
+        }),
+        ..ProxyPolicy::default()
+    };
+    let proxy_port = start_proxy_with(strict).await;
+    let (status, body) =
+        request_through_proxy_to(proxy_port, "127.0.0.1", target.addr.port()).await;
+    assert_ne!(
+        status, 200,
+        "the parent's self-signed certificate must be refused by default: {body}"
+    );
 }

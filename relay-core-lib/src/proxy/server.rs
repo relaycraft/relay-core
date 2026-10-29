@@ -64,14 +64,19 @@ where
     // Initialize OutboundConnector based on ProxyPolicy.upstream.
     // Later changes to `upstream` or `upstream_tls` replace it; each accepted connection reads the
     // current one.
-    let connector =
-        match build_outbound(startup_policy.upstream.as_ref(), current_client.clone()).await {
-            Ok(connector) => connector,
-            Err(error) => {
-                tracing::error!("{error}, aborting startup (fail_open=false)");
-                return Err(crate::error::RelayError::Proxy(error));
-            }
-        };
+    let connector = match build_outbound(
+        startup_policy.upstream.as_ref(),
+        current_client.clone(),
+        &startup_policy.upstream_tls,
+    )
+    .await
+    {
+        Ok(connector) => connector,
+        Err(error) => {
+            tracing::error!("{error}, aborting startup (fail_open=false)");
+            return Err(crate::error::RelayError::Proxy(error));
+        }
+    };
     let (connector_tx, connector_rx) = watch::channel(connector);
     {
         let mut policy_updates = policy.clone();
@@ -112,7 +117,13 @@ where
                     current_client.clone()
                 };
 
-                match build_outbound(next_upstream.as_ref(), next_client.clone()).await {
+                match build_outbound(
+                    next_upstream.as_ref(),
+                    next_client.clone(),
+                    &next_upstream_tls,
+                )
+                .await
+                {
                     Ok(connector) => {
                         applied_upstream = next_upstream;
                         applied_upstream_tls = next_upstream_tls;
@@ -417,6 +428,7 @@ fn upstream_auth_changed(
 async fn build_outbound(
     upstream: Option<&relay_core_api::policy::UpstreamProxyConfig>,
     client: Arc<HttpsClient>,
+    tls_policy: &relay_core_api::policy::UpstreamTlsPolicy,
 ) -> Result<Arc<dyn OutboundConnector>, String> {
     let Some(upstream) = upstream else {
         return Ok(Arc::new(DirectConnector::new(client)));
@@ -425,11 +437,11 @@ async fn build_outbound(
         .map(|url| url.scheme().to_string())
         .unwrap_or_else(|_| "http".to_string());
     let built = if scheme == "https" {
-        HttpsUpstreamConnector::new(upstream, client.clone())
+        HttpsUpstreamConnector::new(upstream, client.clone(), tls_policy)
             .await
             .map(|connector| Arc::new(connector) as Arc<dyn OutboundConnector>)
     } else {
-        HttpUpstreamConnector::new(upstream, client.clone())
+        HttpUpstreamConnector::new(upstream, client.clone(), tls_policy)
             .await
             .map(|connector| Arc::new(connector) as Arc<dyn OutboundConnector>)
     };

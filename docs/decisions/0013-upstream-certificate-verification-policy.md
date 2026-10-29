@@ -56,7 +56,9 @@ policy watcher 现在同时看 `upstream` 与 `upstream_tls`。TLS 策略变化�
 ### 4. 范围：只约束本引擎主动发起的**目标** TLS
 
 - 不约束浏览器→代理的 MITM 证书（那是 §8 的叶证书策略）；
-- **暂不**约束到 HTTPS 父代理（upstream proxy）的 TLS；那条连接仍用 native roots，是后续项；
+- **同样约束 HTTPS 父代理**：父代理与目标是同一个出站信任决策，否则「信任目标但不信任你让我用的代理」
+  会让内部 HTTPS 代理无法使用。`HttpUpstreamConnector` 里「通过父代理访问 HTTPS 目标」的那段 TLS
+  也使用同一份配置，不再有第三条硬编码 native roots 的路径；
 - 不改变 passthrough 隧道：客户端自己验证上游，本引擎不验证也不介入。
 
 ## 被排除的替代方案
@@ -76,7 +78,7 @@ policy watcher 现在同时看 `upstream` 与 `upstream_tls`。TLS 策略变化�
 - **代价 / 仍未覆盖（必须一起读）**：
   - **Web UI 现在会在 Settings → TLS 显示 `DISABLED` 与理由**，但这是类型检查 + vitest 级别的验证，
     没有浏览器截图靶场；`custom_ca` 只显示路径，不校验文件当前是否仍可读。
-  - **HTTPS 父代理**的验证仍固定 native roots；若要连内部 HTTPS 代理，需要单独扩展。
+  - `custom_ca` 是**替换**信任库，因此 HTTPS 父代理与目标必须同时在该 bundle 里；只装其中一个会被拒绝。
   - 验证与 watcher 构建之间理论上存在竞态：策略被接受后 bundle 被删除，watcher 会记 error 并保留旧
     client。窗口很小，但「旧 client 可能更宽松」这件事仍成立；彻底的修法是失败时换成一个拒绝一切 TLS
     的 client，目前未做。
@@ -90,8 +92,9 @@ policy watcher 现在同时看 `upstream` 与 `upstream_tls`。TLS 策略变化�
   空 bundle、有效 bundle）。
 - 接线：`relay-core-lib/src/proxy/server.rs`（启动构建、watcher 重建 client+connector）、
   `relay-core-runtime/src/lib.rs`（入库前拒绝：`an_unreadable_ca_bundle_is_rejected_instead_of_stored`）。
-- 线路契约：`relay-core-lib/tests/upstream_tls_policy_test.rs`（5 个用例）：
+- 线路契约：`relay-core-lib/tests/upstream_tls_policy_test.rs`（6 个用例）：
   默认拒绝自签；custom CA 接受；显式 insecure 接受；**不含目标链的 custom CA 不回落**；
-  运行中更新策略无需重启即生效。
+  运行中更新策略无需重启即生效；**HTTPS 父代理与目标使用同一信任策略**（insecure 下经父代理访问
+  自签目标成功，默认策略下父代理自签证书被拒绝）。
 - CLI：`--upstream-ca` / `--upstream-insecure <reason>`（互斥；空 reason 与不可读文件在启动前拒绝），
   2 个 daemon 单测。

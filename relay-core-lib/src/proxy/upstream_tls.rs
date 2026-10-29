@@ -5,7 +5,7 @@
 //! that defaulted to native roots would quietly undo a deployment's custom CA.
 
 use crate::proxy::http_utils::HttpsClient;
-use hyper_rustls::HttpsConnectorBuilder;
+use hyper_rustls::{ConfigBuilderExt, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
 use relay_core_api::policy::{UpstreamTlsPolicy, UpstreamTlsVerification};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -20,48 +20,9 @@ use std::time::Duration;
 /// substituting the native roots for it would make the proxy appear to work while trusting a
 /// different set of peers than the policy says.
 pub fn build_upstream_client(policy: &UpstreamTlsPolicy) -> Result<HttpsClient, String> {
-    validate(policy)?;
-
-    // `ClientConfig::builder()` panics when no process default is installed. Installing ring here
-    // is idempotent, and it makes this function safe to call from a test or an embedding that never
-    // constructed a TLS server first.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let builder = match &policy.verification {
-        UpstreamTlsVerification::NativeRoots => HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .map_err(|e| format!("could not load the native trust store: {e}"))?,
-        UpstreamTlsVerification::CustomCa { path } => {
-            let store = load_custom_ca(path)?;
-            let config = ClientConfig::builder()
-                .with_root_certificates(store)
-                .with_no_client_auth();
-            HttpsConnectorBuilder::new().with_tls_config(config)
-        }
-        UpstreamTlsVerification::Insecure { reason } => {
-            if reason.trim().is_empty() {
-                return Err(
-                    "insecure upstream verification requires a non-empty reason; refusing to \
-                     disable certificate checking silently"
-                        .to_string(),
-                );
-            }
-            tracing::warn!(
-                reason = %reason,
-                "upstream certificate verification is DISABLED; this engine will accept any \
-                 certificate presented by a target"
-            );
-            let mut config = ClientConfig::builder()
-                .with_root_certificates(RootCertStore::empty())
-                .with_no_client_auth();
-            config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(AcceptAnyCertificate));
-            HttpsConnectorBuilder::new().with_tls_config(config)
-        }
-    };
-
-    let https = builder
+    let config = build_client_config(policy)?;
+    let https = HttpsConnectorBuilder::new()
+        .with_tls_config(config)
         .https_or_http()
         .enable_http1()
         .enable_http2()
@@ -77,6 +38,49 @@ pub fn build_upstream_client(policy: &UpstreamTlsPolicy) -> Result<HttpsClient, 
         .build(https))
 }
 
+/// The TLS configuration itself, for callers that make their own connector.
+///
+/// The HTTPS upstream-proxy connector needs the same trust decisions as the direct client: an
+/// internal CA or an explicit insecure mode must not stop at the target and silently not apply to
+/// the proxy in front of it. One function therefore owns the decision for both.
+pub fn build_client_config(policy: &UpstreamTlsPolicy) -> Result<ClientConfig, String> {
+    validate(policy)?;
+
+    // `ClientConfig::builder()` panics when no process default is installed. Installing ring here
+    // is idempotent, and it makes this function safe to call from a test or an embedding that never
+    // constructed a TLS server first.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    Ok(match &policy.verification {
+        UpstreamTlsVerification::NativeRoots => ClientConfig::builder()
+            .with_native_roots()
+            .map_err(|e| format!("could not load the native trust store: {e}"))?
+            .with_no_client_auth(),
+        UpstreamTlsVerification::CustomCa { path } => ClientConfig::builder()
+            .with_root_certificates(load_custom_ca(path)?)
+            .with_no_client_auth(),
+        UpstreamTlsVerification::Insecure { reason } => {
+            tracing::warn!(
+                reason = %reason,
+                "upstream certificate verification is DISABLED; this engine will accept any \
+                 certificate presented by a target or by an HTTPS parent proxy"
+            );
+            let mut config = ClientConfig::builder()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth();
+            config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(AcceptAnyCertificate));
+            config
+        }
+    })
+}
+
+/// Trust exactly the certificates in `path`.
+///
+/// The bundle is the root set, not an addition to the native roots: a deployment that installs an
+/// internal CA expects the public roots to stop applying, and mixing them would hide a chain that
+/// is only complete because an unrelated public root happened to be present.
 /// Check a policy without building a client.
 ///
 /// The runtime rejects a policy it cannot honour **before** storing it. That ordering matters when
@@ -101,11 +105,6 @@ pub fn validate(policy: &UpstreamTlsPolicy) -> Result<(), String> {
     }
 }
 
-/// Trust exactly the certificates in `path`.
-///
-/// The bundle is the root set, not an addition to the native roots: a deployment that installs an
-/// internal CA expects the public roots to stop applying, and mixing them would hide a chain that
-/// is only complete because an unrelated public root happened to be present.
 fn load_custom_ca(path: &std::path::Path) -> Result<RootCertStore, String> {
     let pem = std::fs::read(path).map_err(|e| {
         format!(

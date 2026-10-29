@@ -167,7 +167,6 @@ pub fn should_bypass(upstream: &UpstreamProxyConfig, host: &str, ip: Option<IpAd
 // ── Direct Connector ────────────────────────────────────
 
 use crate::proxy::http_utils::HttpsClient;
-use hyper_rustls::ConfigBuilderExt;
 
 /// Direct outbound connector (no upstream proxy).
 pub struct DirectConnector {
@@ -355,6 +354,7 @@ impl HttpUpstreamConnector {
     pub async fn new(
         config: &UpstreamProxyConfig,
         direct_client: Arc<crate::proxy::http_utils::HttpsClient>,
+        tls_policy: &relay_core_api::policy::UpstreamTlsPolicy,
     ) -> Result<Self, UpstreamError> {
         let url = Url::parse(&config.proxy_url)
             .map_err(|e| UpstreamError::Unreachable(format!("invalid proxy URL: {}", e)))?;
@@ -371,11 +371,12 @@ impl HttpUpstreamConnector {
 
         let proxy_auth = upstream_proxy_authorization(config);
 
+        // HTTPS targets reached through this plaintext parent still need the same target-trust
+        // decision as a direct connection; otherwise a custom CA or an explicit insecure mode would
+        // silently not apply whenever a parent proxy is configured.
         let tls_config = Arc::new(
-            rustls::ClientConfig::builder()
-                .with_native_roots()
-                .map_err(|e| UpstreamError::Tls(e.to_string()))?
-                .with_no_client_auth(),
+            crate::proxy::upstream_tls::build_client_config(tls_policy)
+                .map_err(UpstreamError::Tls)?,
         );
 
         Ok(Self {
@@ -654,6 +655,7 @@ impl HttpsUpstreamConnector {
     pub async fn new(
         config: &UpstreamProxyConfig,
         direct_client: Arc<crate::proxy::http_utils::HttpsClient>,
+        tls_policy: &relay_core_api::policy::UpstreamTlsPolicy,
     ) -> Result<Self, UpstreamError> {
         let url = Url::parse(&config.proxy_url)
             .map_err(|e| UpstreamError::Unreachable(format!("invalid proxy URL: {}", e)))?;
@@ -671,11 +673,12 @@ impl HttpsUpstreamConnector {
 
         let proxy_auth = upstream_proxy_authorization(config);
 
+        // The parent proxy is part of the same trust decision as a target: an internal CA or an
+        // explicit insecure mode must apply to it too, or a deployment trusts its targets but not
+        // the proxy it was told to use.
         let tls_config = Arc::new(
-            rustls::ClientConfig::builder()
-                .with_native_roots()
-                .map_err(|e| UpstreamError::Tls(e.to_string()))?
-                .with_no_client_auth(),
+            crate::proxy::upstream_tls::build_client_config(tls_policy)
+                .map_err(UpstreamError::Tls)?,
         );
 
         Ok(Self {

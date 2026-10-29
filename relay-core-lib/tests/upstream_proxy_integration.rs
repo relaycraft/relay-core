@@ -269,9 +269,13 @@ async fn test_upstream_http_proxy_absolute_uri() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config, test_client())
-        .await
-        .unwrap();
+    let connector = HttpUpstreamConnector::new(
+        &config,
+        test_client(),
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .await
+    .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -312,9 +316,13 @@ async fn test_upstream_proxy_connect_refused() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config, test_client())
-        .await
-        .unwrap();
+    let connector = HttpUpstreamConnector::new(
+        &config,
+        test_client(),
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .await
+    .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -350,9 +358,13 @@ async fn test_upstream_proxy_unreachable() {
         fail_open: false,
     };
 
-    let connector = HttpUpstreamConnector::new(&config, test_client())
-        .await
-        .unwrap();
+    let connector = HttpUpstreamConnector::new(
+        &config,
+        test_client(),
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .await
+    .unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -406,9 +418,13 @@ async fn a_bypassed_host_is_dialled_directly() {
         bypass_hosts: vec![target.ip().to_string()],
         fail_open: false,
     };
-    let connector = HttpUpstreamConnector::new(&config, test_client())
-        .await
-        .unwrap();
+    let connector = HttpUpstreamConnector::new(
+        &config,
+        test_client(),
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .await
+    .unwrap();
 
     let req = Request::builder()
         .method("GET")
