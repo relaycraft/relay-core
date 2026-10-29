@@ -47,6 +47,7 @@ fn make_flow(url: &str) -> Flow {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,

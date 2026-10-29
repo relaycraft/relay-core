@@ -38,6 +38,7 @@ fn sample_flow() -> Flow {
                 cookies: vec![],
                 query: vec![("q".to_string(), "1".to_string())],
                 body: None,
+                trailers: Vec::new(),
             },
             response: None,
             error: None,

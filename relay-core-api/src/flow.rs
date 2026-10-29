@@ -354,6 +354,14 @@ pub struct HttpRequest {
     pub cookies: Vec<Cookie>,
     pub query: Vec<(String, String)>,
     pub body: Option<BodyData>,
+    /// Trailers that arrived after the request body.
+    ///
+    /// Request trailers are rare but real (chunked uploads and some gRPC shapes), and they used to
+    /// be forwarded while being silently absent from the capture: `TapBody` already saw the frames
+    /// and had nowhere to put them. They are carried separately from `body` for the same reason as
+    /// responses: they arrive last, after the bytes have streamed upstream.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trailers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,6 +533,15 @@ pub enum FlowUpdate {
         flow_id: String,
         trailers: Vec<(String, String)>,
     },
+    /// Trailers that arrived after the **request** body.
+    ///
+    /// The same shape as [`Self::ResponseTrailers`] and separate for the same reason: they belong
+    /// to the other end of the exchange. A chunked upload's trailers used to be forwarded and then
+    /// dropped from the capture because `HttpRequest` had no field for them.
+    RequestTrailers {
+        flow_id: String,
+        trailers: Vec<(String, String)>,
+    },
     /// A stage of the exchange was reached, declared where it was reached.
     ///
     /// This exists because three typed events (roadmap §4-4) had no producer, and the roadmap is
@@ -623,6 +640,7 @@ mod tests {
                 cookies: vec![],
                 query: vec![],
                 body: None,
+                trailers: Vec::new(),
             },
             response,
             error: error.map(str::to_string),
@@ -691,6 +709,7 @@ mod tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 handshake_response: response(status, vec![]),
                 messages: vec![],

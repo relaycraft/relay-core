@@ -206,6 +206,7 @@ impl ProbeServer {
                         Ok(FlowUpdate::WebSocketMessage { flow_id, .. })
                         | Ok(FlowUpdate::HttpBody { flow_id, .. })
                         | Ok(FlowUpdate::ResponseTrailers { flow_id, .. })
+                        | Ok(FlowUpdate::RequestTrailers { flow_id, .. })
                         | Ok(FlowUpdate::BodyBudgetExceeded { flow_id, .. })
                         | Ok(FlowUpdate::SseEvent { flow_id, .. })
                         | Ok(FlowUpdate::Stage { flow_id, .. })

@@ -276,6 +276,7 @@ fn connect_flow(
         cookies: Vec::new(),
         query: Vec::new(),
         body: None,
+        trailers: Vec::new(),
     };
 
     Flow {

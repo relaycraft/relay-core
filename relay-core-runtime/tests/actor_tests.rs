@@ -57,6 +57,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: None,
             error: None,
@@ -99,6 +100,7 @@ fn create_test_ws_flow(url: &str) -> Flow {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             handshake_response: HttpResponse {
                 status: 101,
@@ -393,6 +395,41 @@ async fn test_core_state_update_http_body_request_and_response() {
             .and_then(|r| r.body.as_ref())
             .map(|b| b.content.as_str()),
         Some("response-body")
+    );
+}
+
+/// Request trailers are written to the request side, not to the response side.
+#[tokio::test]
+async fn request_trailers_are_stored_on_the_request() {
+    let state = CoreState::new(None).await;
+    let flow = create_test_flow("http://example.com/upload", "POST");
+    let flow_id = flow.id.to_string();
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+    state.set_request_trailers(
+        flow_id.clone(),
+        vec![("x-checksum".to_string(), "abc".to_string())],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+    let found = state
+        .get_flow(flow_id)
+        .await
+        .expect("flow should be available");
+    let Layer::Http(http) = found.layer else {
+        panic!("expected http flow");
+    };
+    assert_eq!(
+        http.request.trailers,
+        vec![("x-checksum".to_string(), "abc".to_string())],
+        "request trailers belong on the request"
+    );
+    assert!(
+        http.response
+            .as_ref()
+            .is_none_or(|response| response.trailers.is_empty()),
+        "the response side must not receive request trailers"
     );
 }
 

@@ -40,6 +40,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: None,
             error: None,

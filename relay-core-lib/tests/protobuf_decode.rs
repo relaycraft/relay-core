@@ -316,6 +316,7 @@ fn grpc_flow() -> Flow {
                 cookies: vec![],
                 query: vec![],
                 body: Some(grpc_body(&hello_request_bytes())),
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,

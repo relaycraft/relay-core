@@ -232,6 +232,7 @@ mod tests {
                     body: None,
                     cookies: vec![],
                     query: vec![],
+                    trailers: Vec::new(),
                 },
                 response: None,
                 error: None,
@@ -274,6 +275,7 @@ mod tests {
                     body: None,
                     cookies: vec![],
                     query: vec![],
+                    trailers: Vec::new(),
                 },
                 handshake_response: HttpResponse {
                     status: 101,

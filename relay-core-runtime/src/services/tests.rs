@@ -50,6 +50,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
                 cookies: vec![],
                 query: vec![],
                 body: None,
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,

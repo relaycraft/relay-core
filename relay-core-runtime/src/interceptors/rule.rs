@@ -756,6 +756,7 @@ mod intercept_resolution_tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 response: None,
                 error: None,
@@ -810,6 +811,7 @@ mod intercept_resolution_tests {
                         size: 14,
                         grpc: None,
                     }),
+                    trailers: Vec::new(),
                 }),
             });
 
@@ -917,6 +919,7 @@ mod intercept_resolution_tests {
                         size: 14,
                         grpc: None,
                     }),
+                    trailers: Vec::new(),
                 }),
             });
 

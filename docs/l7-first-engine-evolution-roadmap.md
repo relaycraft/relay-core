@@ -1300,10 +1300,17 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   （SSE 帧 `response-trailers`，含 round-trip 测试）。此前 trailers **能透传但从不记录**——
   客户端能看到 `grpc-status`，而 API/MCP 的捕获**看不到**，即「知道发生过一次调用，不知道是否成功」。
   实现要点：trailers 在 body 之后到达，因此不能进原始快照，走**增量更新**；`TapBody` 在
-  `ServerToClient` 方向上发出该更新（请求方向 trailers 暂未记录——`HttpRequest` 尚无该字段）。
+  `ServerToClient` 方向上发出该更新。
   脱敏同样覆盖（`grpc-message` 是服务端自由文本，可按敏感名屏蔽）。
   契约：`wire_matrix_h2c_upstream_is_reachable` 现在同时断言**转发到客户端**与**记录进 Flow**，
   以及 `tap.rs` 的单测（既报 body 也报 trailers）。已双向验证。
+- ✅ **请求方向 trailers 也已记录**（2026-10-30）：`HttpRequest.trailers`（可加字段）+
+  `FlowUpdate::RequestTrailers`（SSE 帧 `request-trailers`）。`TapBody` 现在按方向选择更新类型，
+  不再只处理响应方向；`SetRequestTrailers` 写入 request 而非 response，脱敏同 headers。
+  此前它们被**转发后丢弃**，捕获无法回答客户端到底发了什么。
+  契约：`request_trailers_are_recorded_on_the_flow`（真实 chunked 上传经代理）、
+  `request_trailers_are_stored_on_the_request`（写入正确的方向）、
+  `test_tap_body_records_request_trailers` 与 SSE round-trip。
 - ✅ **gRPC 消息级 framing 已端到端落地**（2026-09-16；本节此前为 🟡，且其「根因」结论是**错的**）。
   解析层：`relay-core-api/src/grpc.rs`（5 字节前缀 → `{index, length, compressed}` + `unparsed_bytes`；
   单条/多条/空体/二进制/截断报错/尾部残字节，7 个单测；`application/grpc-web` **有意排除**——它复用
@@ -1322,7 +1329,8 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   「丢唤醒」也是误读：阻塞在满通道上的 `await` 与空闲在 `kevent` 在栈上长得一样。
   四次错误结论与两条教训的完整记录见
   [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis。
-- ⬜ 请求方向的 trailers 未记录；RST_STREAM/GOAWAY/取消、`:authority` 与 CONNECT 目标不一致的诊断未做。
+- ✅ 请求方向的 trailers 已记录（2026-10-30）。⬜ 仍缺：RST_STREAM/GOAWAY/取消、
+  `:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
   （此前恒为 builder 默认的 HTTP/1.1）。新增 `parse_http_version` 解析 `Flow` 中
@@ -1362,11 +1370,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **979 passed / 0 failed / 0 ignored**（51 个套件），
+  `cargo test --workspace` 为 **982 passed / 0 failed / 0 ignored**（52 个套件），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
-  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **5 个**，
-  **0 个 `#[ignore]`**。
+  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **5 个** +
+  `request_trailers_test.rs` **1 个**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。

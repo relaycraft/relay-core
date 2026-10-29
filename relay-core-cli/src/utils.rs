@@ -162,6 +162,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                                 grpc: None,
                             }
                         }),
+                        trailers: Vec::new(),
                     },
                     response: Some(relay_core_api::flow::HttpResponse {
                         status,

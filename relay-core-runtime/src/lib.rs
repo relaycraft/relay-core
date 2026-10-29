@@ -1419,6 +1419,16 @@ impl CoreState {
         }
     }
 
+    pub fn set_request_trailers(&self, flow_id: String, trailers: Vec<(String, String)>) {
+        if let Err(e) = self
+            .flow_store
+            .try_send(FlowStoreMessage::SetRequestTrailers { flow_id, trailers })
+        {
+            error!("FlowStore dropped request trailers: {}", e);
+            self.flows_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// P1: Tag a flow as budget-exceeded (body too large for full rule inspection)
     pub fn tag_flow_budget_exceeded(&self, flow_id: String, direction: Direction) {
         if let Err(e) = self
@@ -1949,6 +1959,7 @@ impl CoreState {
                     | FlowUpdate::HttpBody { flow_id, .. }
                     | FlowUpdate::BodyBudgetExceeded { flow_id, .. }
                     | FlowUpdate::ResponseTrailers { flow_id, .. }
+                    | FlowUpdate::RequestTrailers { flow_id, .. }
                     | FlowUpdate::SseEvent { flow_id, .. }
                     | FlowUpdate::Stage { flow_id, .. }
                     | FlowUpdate::StreamReset { flow_id, .. } => {
@@ -1980,6 +1991,9 @@ impl CoreState {
                     }
                     FlowUpdate::ResponseTrailers { flow_id, trailers } => {
                         state.set_response_trailers(flow_id, trailers);
+                    }
+                    FlowUpdate::RequestTrailers { flow_id, trailers } => {
+                        state.set_request_trailers(flow_id, trailers);
                     }
                     FlowUpdate::Stage { flow_id, stage, at } => {
                         // The proxy declares the stage where it reaches it; this is a translation, not
@@ -2234,24 +2248,13 @@ fn redact_flow_update(update: FlowUpdate, redaction: &RedactionPolicy) -> FlowUp
         // `grpc-message` and friends are server-authored free text and can echo request content, so
         // they go through the same name-based screening as headers.
         FlowUpdate::StreamReset { flow_id, detail } => FlowUpdate::StreamReset { flow_id, detail },
+        FlowUpdate::RequestTrailers { flow_id, trailers } => FlowUpdate::RequestTrailers {
+            flow_id,
+            trailers: redact_trailers(trailers, redaction),
+        },
         FlowUpdate::ResponseTrailers { flow_id, trailers } => FlowUpdate::ResponseTrailers {
             flow_id,
-            trailers: trailers
-                .into_iter()
-                .map(|(name, value)| {
-                    let redacted = if redaction.enabled
-                        && redaction
-                            .sensitive_header_names
-                            .iter()
-                            .any(|n| n.eq_ignore_ascii_case(&name))
-                    {
-                        "[REDACTED]".to_string()
-                    } else {
-                        value
-                    };
-                    (name, redacted)
-                })
-                .collect(),
+            trailers: redact_trailers(trailers, redaction),
         },
     }
 }
@@ -2265,6 +2268,7 @@ pub(crate) fn redact_flow(mut flow: Flow, redaction: &RedactionPolicy) -> Flow {
             redact_http_request(&mut http.request, redaction);
             if let Some(response) = &mut http.response {
                 redact_headers(&mut response.headers, redaction);
+                redact_headers(&mut response.trailers, redaction);
                 response.body = response
                     .body
                     .take()
@@ -2323,9 +2327,20 @@ fn redact_http_request(
     redaction: &RedactionPolicy,
 ) {
     redact_headers(&mut request.headers, redaction);
+    redact_headers(&mut request.trailers, redaction);
     redact_query_pairs(&mut request.query, redaction);
     request.url = redact_url(&request.url, redaction);
     request.body = request.body.take().map(|body| redact_body(body, redaction));
+}
+
+/// Trailer values are free text (a gRPC `grpc-message` can echo request content), so they follow
+/// the same name-based screening as headers.
+fn redact_trailers(
+    mut trailers: Vec<(String, String)>,
+    redaction: &RedactionPolicy,
+) -> Vec<(String, String)> {
+    redact_headers(&mut trailers, redaction);
+    trailers
 }
 
 fn redact_headers(headers: &mut [(String, String)], redaction: &RedactionPolicy) {
@@ -2615,6 +2630,7 @@ mod tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 response: Some(HttpResponse {
                     status,
@@ -2690,6 +2706,7 @@ mod tests {
                         size: 19,
                         grpc: None,
                     }),
+                    trailers: Vec::new(),
                 },
                 response: Some(HttpResponse {
                     status: 200,

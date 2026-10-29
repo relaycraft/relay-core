@@ -51,7 +51,7 @@
 |---|---|---|---|
 | §3 数据面与 Mutation Pipeline | **Partial** | 头/状态/body/编码的改写都真的到线路了，且失败与超预算有结构化原因 | 没有「显式 Mutation 类型」；`BodyObservation` 策略不是真正决定保留的开关 |
 | §4 Connection/Stream/Message 模型 | **Partial**（2026-10-11 由 Skeleton 升） | `connection_id` / `parent_flow_id` / `protocol_stack` 已交付并有线路契约；CONNECT 现在是一条带 `connect` 标签的 Flow（记录但默认不进列表） | **`stream_id` 仍缺，且已判定不该造**：没有任何应用层代理实现它，hyper 也不暴露（证据见路线图 §4-1）；Message 级已齐（WS frame 与被代理 SSE 事件均为增量），typed event 10 个变体全部有生产者（含 2026-10-28 的 `RuleEvaluated`） |
-| §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；trailer 无线路断言；half-close 无处理 |
+| §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；请求方向 trailers 已记录并有线路用例（2026-10-30），响应 trailers 由 `wire_matrix_h2c_upstream_is_reachable` 断言；half-close 无处理 |
 | §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手都可观测；`permessage-deflate` 现为**显式降级**（双向剥离 + `ws-extensions-stripped` 标签 + 指标），不再是静默破坏 | 帧级修改仍无线路断言；Socket.IO/帧级双视图未做 |
 | §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | `Last-Event-ID` 辅助分析未做；事件**记录进响应**（`HttpResponse.sse_events`，上限 500）并在详情页 Messages 面板展示（实时 + 事后两条路都已通） |

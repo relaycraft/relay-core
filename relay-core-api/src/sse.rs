@@ -31,6 +31,8 @@ pub mod event_name {
     pub const FLOW_EVENT: &str = "flow-event";
     /// Trailers that arrived after a response body.
     pub const RESPONSE_TRAILERS: &str = "response-trailers";
+    /// Trailers that arrived after the request body.
+    pub const REQUEST_TRAILERS: &str = "request-trailers";
     /// An HTTP/2 stream reset, distinct from a body that ended short.
     pub const STREAM_RESET: &str = "stream-reset";
     /// One event parsed out of a proxied `text/event-stream` response.
@@ -104,6 +106,9 @@ pub struct ResponseTrailersFrame {
     /// The trailers, in the order they arrived.
     pub trailers: Vec<(String, String)>,
 }
+
+/// Payload of `event: request-trailers`; the shape is identical to the response frame.
+pub type RequestTrailersFrame = ResponseTrailersFrame;
 
 /// Payload of `event: stage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +193,13 @@ impl FlowUpdate {
                     trailers: trailers.clone(),
                 },
             ),
+            FlowUpdate::RequestTrailers { flow_id, trailers } => encode(
+                event_name::REQUEST_TRAILERS,
+                &RequestTrailersFrame {
+                    flow_id: flow_id.clone(),
+                    trailers: trailers.clone(),
+                },
+            ),
             FlowUpdate::Stage { flow_id, stage, at } => encode(
                 event_name::STAGE,
                 &StageFrame {
@@ -256,6 +268,13 @@ pub fn parse_update(event: &str, data: &str) -> Option<FlowUpdate> {
         event_name::RESPONSE_TRAILERS => {
             let frame: ResponseTrailersFrame = serde_json::from_str(data).ok()?;
             Some(FlowUpdate::ResponseTrailers {
+                flow_id: frame.flow_id,
+                trailers: frame.trailers,
+            })
+        }
+        event_name::REQUEST_TRAILERS => {
+            let frame: RequestTrailersFrame = serde_json::from_str(data).ok()?;
+            Some(FlowUpdate::RequestTrailers {
                 flow_id: frame.flow_id,
                 trailers: frame.trailers,
             })
@@ -380,6 +399,10 @@ mod tests {
                     ("grpc-status".to_string(), "0".to_string()),
                     ("grpc-message".to_string(), "OK".to_string()),
                 ],
+            },
+            FlowUpdate::RequestTrailers {
+                flow_id: "flow-upload".to_string(),
+                trailers: vec![("x-checksum".to_string(), "abc".to_string())],
             },
             FlowUpdate::StreamReset {
                 flow_id: "flow-reset".to_string(),

@@ -44,6 +44,7 @@ fn test_flow_to_flow_index_conversion() {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,
@@ -209,6 +210,7 @@ fn test_websocket_flow_to_detail_conversion() {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             handshake_response: HttpResponse {
                 status: 101,
@@ -332,6 +334,7 @@ fn test_flow_to_flow_index_without_response_defaults() {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: None,
             error: None,
@@ -404,6 +407,7 @@ fn test_flow_detail_http_har_compat_fields() {
                 }),
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 302,
@@ -478,6 +482,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
                 }),
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,
@@ -554,6 +559,7 @@ fn test_flow_detail_request_query_string_uses_struct_field() {
                     ("q".to_string(), "hello".to_string()),
                     ("lang".to_string(), "zh".to_string()),
                 ],
+                trailers: Vec::new(),
             },
             response: None,
             error: None,
@@ -604,6 +610,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,
@@ -665,6 +672,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             handshake_response: HttpResponse {
                 status: 101,
@@ -768,6 +776,7 @@ fn http_flow(status: Option<u16>, error: Option<&str>, start_offset_ms: i64) -> 
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: status.map(|status| HttpResponse {
                 status,

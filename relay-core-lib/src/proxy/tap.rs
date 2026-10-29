@@ -282,11 +282,10 @@ impl Body for TapBody {
                 }
 
                 // Trailers arrive after the body, so they cannot be part of the original snapshot and
-                // are reported as an incremental update. Only the response direction is recorded:
-                // gRPC puts the outcome of a call there, and `HttpRequest` has no trailers field yet.
-                if self.direction == Direction::ServerToClient
-                    && let Some(trailers) = frame.trailers_ref()
-                {
+                // are reported as an incremental update. Both directions are recorded now: the
+                // response side carries a gRPC call's outcome, and the request side was previously
+                // forwarded while being dropped from the capture (the model had no field for it).
+                if let Some(trailers) = frame.trailers_ref() {
                     let trailers: Vec<(String, String)> = trailers
                         .iter()
                         .map(|(k, v)| {
@@ -297,11 +296,18 @@ impl Body for TapBody {
                         })
                         .collect();
                     if !trailers.is_empty() {
+                        let update = match self.direction {
+                            Direction::ClientToServer => FlowUpdate::RequestTrailers {
+                                flow_id: self.flow_id.clone(),
+                                trailers,
+                            },
+                            Direction::ServerToClient => FlowUpdate::ResponseTrailers {
+                                flow_id: self.flow_id.clone(),
+                                trailers,
+                            },
+                        };
                         // Non-blocking on purpose: a slow consumer must not stall the body stream.
-                        let _ = self.on_flow.try_send(FlowUpdate::ResponseTrailers {
-                            flow_id: self.flow_id.clone(),
-                            trailers,
-                        });
+                        let _ = self.on_flow.try_send(update);
                     }
                 }
 
@@ -557,6 +563,53 @@ mod tests {
             recorded_trailers,
             Some(vec![("x-trailer".to_string(), "value".to_string())]),
             "trailers must be reported as an incremental update, not only forwarded"
+        );
+    }
+
+    /// The request direction has the same obligation as the response one: trailers that were
+    /// forwarded must also be recorded, or a capture cannot answer what the client actually sent.
+    #[tokio::test]
+    async fn test_tap_body_records_request_trailers() {
+        let body: HttpBody = DataThenTrailers { phase: 0 }.boxed();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+
+        let mut tap = TapBody::new(
+            body,
+            "test-flow".to_string(),
+            tx,
+            Direction::ClientToServer,
+            4096,
+            vec![],
+            None,
+        );
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        loop {
+            match Pin::new(&mut tap).poll_frame(&mut cx) {
+                Poll::Ready(Some(Ok(_))) => {}
+                Poll::Ready(Some(Err(e))) => panic!("unexpected error: {e}"),
+                Poll::Ready(None) => break,
+                Poll::Pending => panic!("unexpected pending"),
+            }
+        }
+
+        let mut request_trailers: Option<Vec<(String, String)>> = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                FlowUpdate::RequestTrailers { trailers, .. } => request_trailers = Some(trailers),
+                FlowUpdate::ResponseTrailers { .. } => {
+                    panic!("a client->server body must not report response trailers")
+                }
+                FlowUpdate::HttpBody { .. } => {}
+                other => panic!("unexpected update: {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            request_trailers,
+            Some(vec![("x-trailer".to_string(), "value".to_string())]),
+            "request trailers must be recorded in their own direction"
         );
     }
 

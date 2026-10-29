@@ -258,6 +258,7 @@ mod tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 response: status.map(|s| HttpResponse {
                     status: s,
@@ -547,6 +548,7 @@ mod connect_visibility_tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 response: Some(HttpResponse {
                     status: 200,

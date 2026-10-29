@@ -133,6 +133,18 @@ impl<R: Runtime> TauriFlowSink<R> {
                         eprintln!("Failed to emit flow-response-trailers event: {}", e);
                     }
                 }
+                FlowUpdate::RequestTrailers { flow_id, trailers } => {
+                    #[derive(serde::Serialize, Clone)]
+                    #[serde(rename_all = "camelCase")]
+                    struct RequestTrailersEvent {
+                        flow_id: String,
+                        trailers: Vec<(String, String)>,
+                    }
+                    let event = RequestTrailersEvent { flow_id, trailers };
+                    if let Err(e) = self.app_handle.emit("flow-request-trailers", event) {
+                        eprintln!("Failed to emit flow-request-trailers event: {}", e);
+                    }
+                }
                 FlowUpdate::StreamReset { flow_id, detail } => {
                     #[derive(serde::Serialize, Clone)]
                     #[serde(rename_all = "camelCase")]
@@ -280,6 +292,7 @@ mod tests {
                     body: None,
                     cookies: vec![],
                     query: vec![],
+                    trailers: Vec::new(),
                 },
                 response: None,
                 error: None,

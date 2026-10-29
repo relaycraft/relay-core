@@ -42,6 +42,7 @@ fn flow_with_timing(timing: ResponseTiming) -> Flow {
                 cookies: vec![],
                 query: vec![],
                 body: None,
+                trailers: Vec::new(),
             },
             response: Some(HttpResponse {
                 status: 200,

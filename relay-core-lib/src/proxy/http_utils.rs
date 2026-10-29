@@ -236,6 +236,7 @@ pub fn create_initial_flow(
         cookies: meta.cookies,
         query: meta.query,
         body: req_body,
+        trailers: Vec::new(),
     };
 
     let mut flow = if is_websocket {
@@ -1030,6 +1031,7 @@ mod tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 response: Some(HttpResponse {
                     status,

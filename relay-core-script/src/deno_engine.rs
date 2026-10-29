@@ -1559,6 +1559,7 @@ mod hook_timeout_tests {
                     body: None,
                     cookies: vec![],
                     query: vec![],
+                    trailers: Vec::new(),
                 },
                 response: None,
                 error: None,

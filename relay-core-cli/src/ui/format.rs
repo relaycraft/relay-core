@@ -452,6 +452,7 @@ mod tests {
                     } else {
                         None
                     },
+                    trailers: Vec::new(),
                 },
                 response: Some(HttpResponse {
                     status: 200,

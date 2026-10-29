@@ -259,6 +259,7 @@ mod tests {
                         size,
                         grpc: None,
                     }),
+                    trailers: Vec::new(),
                 },
                 response: None,
                 error: None,
@@ -314,6 +315,7 @@ mod tests {
                     cookies: vec![],
                     query: vec![],
                     body: None,
+                    trailers: Vec::new(),
                 },
                 handshake_response: HttpResponse {
                     status: 101,

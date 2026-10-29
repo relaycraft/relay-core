@@ -284,6 +284,13 @@ fn print_update(update: &relay_core_api::flow::FlowUpdate) {
                 event.data.len()
             );
         }
+        FlowUpdate::RequestTrailers { flow_id, trailers } => {
+            info!(
+                "[Request trailers] [{}] {} trailer(s)",
+                flow_id,
+                trailers.len()
+            );
+        }
         FlowUpdate::ResponseTrailers { flow_id, trailers } => {
             let status = trailers.iter().find_map(|(name, value)| {
                 name.eq_ignore_ascii_case("grpc-status")

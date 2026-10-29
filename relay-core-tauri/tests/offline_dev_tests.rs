@@ -45,6 +45,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
                 body: None,
                 cookies: vec![],
                 query: vec![],
+                trailers: Vec::new(),
             },
             response: None,
             error: None,
@@ -71,6 +72,7 @@ fn create_ws_flow(url: &str) -> Flow {
             body: None,
             cookies: vec![],
             query: vec![],
+            trailers: Vec::new(),
         },
         handshake_response: HttpResponse {
             status: 101,
