@@ -108,6 +108,7 @@ pub async fn handle_websocket_handshake<B>(
     policy_rx: watch::Receiver<ProxyPolicy>,
     target_addr: Option<SocketAddr>,
     loop_detector: Arc<LoopDetector>,
+    tls: Option<crate::proxy::tls::TlsHandshake>,
 ) -> Result<Response<HttpBody>, Infallible>
 where
     B: hyper::body::Body + Send + 'static,
@@ -124,7 +125,15 @@ where
     }
 
     // Create Initial Flow for WebSocket Handshake
-    let mut flow = create_initial_flow(meta.clone(), None, client_addr, is_mitm, true, &origin);
+    let mut flow = create_initial_flow(
+        meta.clone(),
+        None,
+        client_addr,
+        is_mitm,
+        true,
+        &origin,
+        tls.as_ref(),
+    );
 
     // The handshake's request head is known here, and the 101 below is this engine's answer, so both
     // stages are declared from this path rather than inferred from the flow's snapshots.

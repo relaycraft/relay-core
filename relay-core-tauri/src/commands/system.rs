@@ -428,6 +428,8 @@ mod tests {
                     enabled: Some(true),
                     ..Default::default()
                 }),
+                tls: None,
+                upstream_tls: None,
                 upstream: None,
                 retention: None,
             },

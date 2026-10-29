@@ -117,6 +117,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                     tls: url_str.starts_with("https://"),
                     tls_version: None,
                     sni: None,
+                    alpn: None,
                 },
                 layer: relay_core_api::flow::Layer::Http(relay_core_api::flow::HttpLayer {
                     request: relay_core_api::flow::HttpRequest {

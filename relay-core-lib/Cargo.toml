@@ -23,6 +23,7 @@ http-body-util.workspace = true
 bytes.workspace = true
 h2.workspace = true
 rustls.workspace = true
+rustls-pemfile = "2"
 tokio-rustls.workspace = true
 rcgen.workspace = true
 serde.workspace = true

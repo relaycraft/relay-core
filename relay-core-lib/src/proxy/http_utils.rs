@@ -178,6 +178,10 @@ impl ExchangeOrigin {
 }
 
 /// Build the flow for one HTTP exchange (roadmap §4-1 relationship fields included).
+///
+/// `tls` carries what the terminated handshake actually established. It is separate from `is_mitm`
+/// because "TLS was terminated" and "these are the facts of that handshake" are different claims:
+/// a caller that could not observe SNI must leave it empty rather than repeat the CONNECT target.
 pub fn create_initial_flow(
     meta: RequestMeta,
     req_body: Option<BodyData>,
@@ -185,6 +189,7 @@ pub fn create_initial_flow(
     is_mitm: bool,
     is_websocket: bool,
     origin: &ExchangeOrigin,
+    tls: Option<&crate::proxy::tls::TlsHandshake>,
 ) -> Flow {
     let flow_id = Uuid::new_v4();
     let start_time = Utc::now();
@@ -218,8 +223,9 @@ pub fn create_initial_flow(
         server_host,
         protocol: TransportProtocol::TCP,
         tls: is_mitm,
-        tls_version: None,
-        sni: None,
+        tls_version: tls.and_then(|t| t.version.clone()),
+        sni: tls.and_then(|t| t.sni.clone()),
+        alpn: tls.and_then(|t| t.alpn.clone()),
     };
 
     let http_request = HttpRequest {
@@ -1013,6 +1019,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -1078,6 +1085,7 @@ mod tests {
             false,
             false,
             &super::ExchangeOrigin::new(uuid::Uuid::new_v4()),
+            None,
         );
 
         assert_eq!(
@@ -1104,6 +1112,7 @@ mod tests {
             true,
             false,
             &super::ExchangeOrigin::new(uuid::Uuid::new_v4()),
+            None,
         );
         assert_eq!(
             flow.network.server_host.as_deref(),

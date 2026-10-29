@@ -34,6 +34,12 @@ pub struct RedactionPolicyPatch {
 pub struct ProxyPolicyPatch {
     #[serde(default)]
     pub redaction: Option<RedactionPolicyPatch>,
+    /// Full replacement of the TLS handling policy; absent leaves it unchanged.
+    #[serde(default)]
+    pub tls: Option<TlsPolicy>,
+    /// Full replacement of the target certificate verification policy; absent leaves it unchanged.
+    #[serde(default)]
+    pub upstream_tls: Option<UpstreamTlsPolicy>,
     #[serde(default)]
     pub upstream: Option<UpstreamProxyConfig>,
     /// Storage bounds to change. Absent fields stay as they are; `null` removes that bound.
@@ -243,6 +249,21 @@ pub struct ProxyPolicy {
     #[serde(default)]
     pub redaction: RedactionPolicy,
 
+    /// What to do with the TLS carried inside a CONNECT tunnel (roadmap §8).
+    ///
+    /// The default intercepts every tunnel, which is the historical behaviour. A host that pins
+    /// certificates can only work if its target is listed in `passthrough_hosts`, because that is
+    /// the only mode in which the client sees the upstream certificate instead of ours.
+    #[serde(default, skip_serializing_if = "TlsPolicy::is_empty")]
+    pub tls: TlsPolicy,
+
+    /// How the engine verifies the certificate of a **target** it originates TLS to (roadmap §8.5).
+    ///
+    /// Always serialized, including the default: an operator reading `GET /api/v1/policy` must be
+    /// able to confirm that verification was not disabled, rather than infer it from a missing key.
+    #[serde(default)]
+    pub upstream_tls: UpstreamTlsPolicy,
+
     /// Upstream (parent) proxy configuration. None = direct connection mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<UpstreamProxyConfig>,
@@ -270,6 +291,66 @@ pub struct ProxyPolicy {
     /// sets policy, and because a bound a user cannot reach is not a bound at all.
     #[serde(default)]
     pub retention: RetentionPolicy,
+}
+
+/// Per-target decision for the TLS inside a CONNECT tunnel.
+///
+/// Matching is on the CONNECT authority, not on the ClientHello SNI: the authority is available
+/// before any byte of the tunnel is read, so a `drop` decision can answer the CONNECT instead of
+/// accepting an upgrade and then closing it. Entries accept `host`, `host:port`, `[ipv6]:port`,
+/// `*.example.com`, a literal IP, or `cidr:10.0.0.0/8`; a bare host matches every port. `drop`
+/// wins over `passthrough`, and an empty list means intercept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsPolicy {
+    /// Targets whose TLS is spliced end-to-end, so the client validates the upstream certificate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passthrough_hosts: Vec<String>,
+
+    /// Targets refused at CONNECT time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop_hosts: Vec<String>,
+}
+
+impl TlsPolicy {
+    /// No list is configured, so the policy is the default one.
+    ///
+    /// Used to keep the default policy payload byte-identical to what it was before this field
+    /// existed: a consumer that compares or logs the object should not see an empty section appear.
+    pub fn is_empty(&self) -> bool {
+        self.passthrough_hosts.is_empty() && self.drop_hosts.is_empty()
+    }
+}
+
+/// How target certificates are verified when this engine originates TLS.
+///
+/// This is deliberately separate from [`TlsPolicy`]: that one decides *whether* a CONNECT tunnel is
+/// terminated, while this one decides whether the certificate **this engine is shown when it dials
+/// out** is checked. Conflating them would make "passthrough for a pinned client" look like a
+/// verification setting, and it is not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamTlsPolicy {
+    #[serde(default)]
+    pub verification: UpstreamTlsVerification,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum UpstreamTlsVerification {
+    /// Compare against the operating system trust store. The default.
+    #[default]
+    NativeRoots,
+    /// Trust exactly the certificates in this PEM bundle, in addition to nothing else.
+    ///
+    /// Additive to nothing: a deployment that installs an internal CA usually means *only* that CA
+    /// for the targets it serves, and silently keeping the public roots would hide a missing chain.
+    CustomCa { path: PathBuf },
+    /// Accept any certificate. Requires a reason and is announced on every rebuild.
+    ///
+    /// It exists because some lab and pinned-development setups have no alternative; it is not a
+    /// fallback. Nothing in the engine retries insecurely after a verification failure.
+    Insecure { reason: String },
 }
 
 /// When to stop sending requests to an upstream that keeps failing.
@@ -428,6 +509,8 @@ impl Default for ProxyPolicy {
             quic_mode: QuicMode::Downgrade,
             quic_downgrade_clear_cache: false,
             redaction: RedactionPolicy::default(),
+            tls: TlsPolicy::default(),
+            upstream_tls: UpstreamTlsPolicy::default(),
             upstream: None,
             retention: RetentionPolicy::default(),
             capture_exclude: Vec::new(),
@@ -457,6 +540,12 @@ impl ProxyPolicy {
     pub fn apply_patch(&mut self, patch: ProxyPolicyPatch) {
         if let Some(redaction_patch) = patch.redaction {
             self.redaction.apply_patch(redaction_patch);
+        }
+        if let Some(tls) = patch.tls {
+            self.tls = tls;
+        }
+        if let Some(upstream_tls) = patch.upstream_tls {
+            self.upstream_tls = upstream_tls;
         }
         if let Some(upstream) = patch.upstream {
             self.upstream = Some(upstream);
@@ -707,6 +796,8 @@ mod tests {
         };
         policy.apply_patch(ProxyPolicyPatch {
             redaction: None,
+            tls: None,
+            upstream_tls: None,
             upstream: Some(upstream.clone()),
             retention: None,
         });
@@ -739,7 +830,103 @@ mod tests {
     fn proxy_policy_serialization_hides_upstream_when_none() {
         let policy = ProxyPolicy::default();
         let json = serde_json::to_string(&policy).unwrap();
-        assert!(!json.contains("upstream"));
+        // Match the key, not the substring: `upstream_tls` is always present and must not make a
+        // missing `upstream` look present.
+        assert!(!json.contains("\"upstream\":"));
+    }
+
+    #[test]
+    fn an_empty_tls_section_is_omitted_from_the_policy_payload() {
+        let json = serde_json::to_string(&ProxyPolicy::default()).unwrap();
+        assert!(
+            !json.contains("\"tls\""),
+            "the default payload must stay byte-identical for consumers that log it"
+        );
+    }
+
+    #[test]
+    fn a_tls_patch_replaces_both_lists_and_rejects_unknown_fields() {
+        let mut policy = ProxyPolicy::default();
+        let patch: ProxyPolicyPatch = serde_json::from_value(serde_json::json!({
+            "tls": {
+                "passthrough_hosts": ["*.pinned.example", "127.0.0.1:8443"],
+                "drop_hosts": ["telemetry.example"]
+            }
+        }))
+        .expect("a tls patch is a known field");
+        policy.apply_patch(patch);
+
+        assert_eq!(
+            policy.tls.passthrough_hosts,
+            vec!["*.pinned.example".to_string(), "127.0.0.1:8443".to_string()]
+        );
+        assert_eq!(policy.tls.drop_hosts, vec!["telemetry.example".to_string()]);
+
+        // A later empty object is a deliberate reset, not a no-op.
+        let reset: ProxyPolicyPatch =
+            serde_json::from_value(serde_json::json!({ "tls": {} })).expect("empty tls");
+        policy.apply_patch(reset);
+        assert!(policy.tls.is_empty());
+
+        let err = serde_json::from_value::<ProxyPolicyPatch>(serde_json::json!({
+            "tls": { "ignore_hosts": ["x"] }
+        }))
+        .expect_err("an unknown key inside tls must be refused");
+        assert!(err.to_string().contains("unknown field"), "got {err}");
+    }
+
+    #[test]
+    fn upstream_tls_defaults_to_native_roots_and_is_always_visible() {
+        let policy = ProxyPolicy::default();
+        assert_eq!(
+            policy.upstream_tls.verification,
+            UpstreamTlsVerification::NativeRoots
+        );
+
+        // Unlike the per-target `tls` section, this one is always serialized: an operator must be
+        // able to confirm from the API that verification was not disabled.
+        let json = serde_json::to_value(&policy).expect("policy serializes");
+        assert_eq!(json["upstream_tls"]["verification"]["mode"], "native_roots");
+    }
+
+    #[test]
+    fn an_upstream_tls_patch_replaces_verification_and_rejects_unknown_modes() {
+        let mut policy = ProxyPolicy::default();
+        let patch: ProxyPolicyPatch = serde_json::from_value(serde_json::json!({
+            "upstream_tls": {
+                "verification": { "mode": "custom_ca", "path": "/etc/relaycore/internal.pem" }
+            }
+        }))
+        .expect("custom_ca is a known mode");
+        policy.apply_patch(patch);
+        assert_eq!(
+            policy.upstream_tls.verification,
+            UpstreamTlsVerification::CustomCa {
+                path: "/etc/relaycore/internal.pem".into()
+            }
+        );
+
+        let insecure: ProxyPolicyPatch = serde_json::from_value(serde_json::json!({
+            "upstream_tls": { "verification": { "mode": "insecure", "reason": "lab" } }
+        }))
+        .expect("insecure is a known mode");
+        policy.apply_patch(insecure);
+        assert_eq!(
+            policy.upstream_tls.verification,
+            UpstreamTlsVerification::Insecure {
+                reason: "lab".to_string()
+            }
+        );
+
+        let err = serde_json::from_value::<ProxyPolicyPatch>(serde_json::json!({
+            "upstream_tls": { "verification": { "mode": "browser_roots" } }
+        }))
+        .expect_err("an unknown verification mode must be refused");
+        assert!(
+            err.to_string().contains("unknown variant")
+                || err.to_string().contains("unknown field"),
+            "got {err}"
+        );
     }
 
     #[test]

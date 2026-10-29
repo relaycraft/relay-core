@@ -381,6 +381,8 @@ function HeadersView(props: { flow: Flow }) {
           <span class="text-text">{props.flow.network.tls ? props.flow.network.tls_version ?? 'yes' : 'no'}</span>
           <span class="text-text-dim">SNI:</span>
           <span class="text-text">{props.flow.network.sni ?? '-'}</span>
+          <span class="text-text-dim">ALPN:</span>
+          <span class="text-text">{props.flow.network.alpn ?? '-'}</span>
         </div>
       </section>
     </div>

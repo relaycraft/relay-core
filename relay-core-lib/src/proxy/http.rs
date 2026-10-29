@@ -77,6 +77,35 @@ pub async fn handle_request(
         // the key a host filters on — recording it and listing it in a request list are separate
         // decisions (see `docs/decisions/0010`).
         let mut connect = connect_flow(&req, &host, client_addr, origin.connection_id);
+
+        // Decide from the CONNECT authority, before the upgrade: `drop` has to be answerable as a
+        // status code, and a passthrough tunnel must not be terminated even for one byte.
+        let decision = {
+            let policy = policy_rx.borrow();
+            crate::proxy::tls::decide(&host, &policy.tls)
+        };
+
+        if decision == crate::proxy::tls::TlsDecision::Drop {
+            crate::metrics::inc_proxy_tls_dropped();
+            connect.tags.push("tls-blocked".to_string());
+            connect.end_time = Some(chrono::Utc::now());
+            connect.close_reason = Some(CloseReason::PolicyDrop {
+                detail: "TLS interception refused by policy".to_string(),
+            });
+            if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(connect))).await {
+                tracing::warn!("Could not publish the blocked CONNECT flow: {e}");
+            }
+            return Ok(create_error_response(
+                StatusCode::FORBIDDEN,
+                "TLS interception is disabled for this host",
+            ));
+        }
+
+        if decision == crate::proxy::tls::TlsDecision::Passthrough {
+            crate::metrics::inc_proxy_tls_passthrough();
+            connect.tags.push("tls-passthrough".to_string());
+        }
+
         let tunnel_origin = origin.inside_tunnel(connect.id);
         let finish_on = on_flow.clone();
         if let Err(e) = on_flow
@@ -91,6 +120,11 @@ pub async fn handle_request(
 
         tokio::task::spawn(async move {
             let outcome = match hyper::upgrade::on(req).await {
+                Ok(upgraded) if decision == crate::proxy::tls::TlsDecision::Passthrough => {
+                    tunnel::handle_passthrough_tunnel(upgraded, host, connector)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
                 Ok(upgraded) => tunnel::handle_tunnel(
                     upgraded,
                     host,
@@ -121,9 +155,16 @@ pub async fn handle_request(
                 Err(reason) => {
                     tracing::error!("Tunnel error: {reason}");
                     connect.end_time = Some(chrono::Utc::now());
-                    connect.close_reason = Some(CloseReason::ParserError {
-                        detail: reason.clone(),
-                    });
+                    // A passthrough tunnel never parses anything, so its failures are connect/splice
+                    // failures — reporting them as `ParserError` would blame a parser that never ran.
+                    connect.close_reason =
+                        Some(if decision == crate::proxy::tls::TlsDecision::Passthrough {
+                            CloseReason::UpstreamClosed
+                        } else {
+                            CloseReason::ParserError {
+                                detail: reason.clone(),
+                            }
+                        });
                     if let Layer::Http(http) = &mut connect.layer {
                         http.error = Some(reason.clone());
                     }
@@ -149,6 +190,7 @@ pub async fn handle_request(
         target_addr,
         loop_detector,
         circuit_breaker,
+        None,
     )
     .await
 }
@@ -214,6 +256,7 @@ fn connect_flow(
         tls: false,
         tls_version: None,
         sni: None,
+        alpn: None,
     };
 
     let request = HttpRequest {
@@ -326,6 +369,7 @@ pub(crate) async fn handle_http_request<B>(
     target_addr: Option<SocketAddr>,
     loop_detector: Arc<LoopDetector>,
     circuit_breaker: Arc<CircuitBreaker>,
+    tls: Option<crate::proxy::tls::TlsHandshake>,
 ) -> Result<Response<HttpBody>, Infallible>
 where
     B: Body + Send + Sync + Unpin + 'static,
@@ -350,7 +394,15 @@ where
     let meta = parse_request_meta(&req, is_mitm);
 
     // Note: We don't read body here for streaming support
-    let mut flow = create_initial_flow(meta, None, client_addr, is_mitm, false, &origin);
+    let mut flow = create_initial_flow(
+        meta,
+        None,
+        client_addr,
+        is_mitm,
+        false,
+        &origin,
+        tls.as_ref(),
+    );
 
     // P1a: Mark budget exceeded for oversized requests
     if request_budget_exceeded {
@@ -374,6 +426,7 @@ where
             policy_rx,
             target_addr,
             loop_detector,
+            tls.clone(),
         )
         .await;
     }

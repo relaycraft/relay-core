@@ -55,6 +55,16 @@ pub static PROXY_SSE_EVENTS_DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
 /// keep this" apart from "the stream was cut short", which are different problems.
 pub static PROXY_SSE_TRUNCATED_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
+/// CONNECT tunnels spliced end-to-end by policy (roadmap §8).
+///
+/// Counted here rather than inferred from the `tls-passthrough` tag because the tag describes one
+/// recorded flow, while a consumer watching a Prometheus series needs the rate: a spike means a
+/// certificate-pinned client started working, or somebody widened the passthrough list.
+pub static PROXY_TLS_PASSTHROUGH_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// CONNECT tunnels refused by policy before any byte was forwarded.
+pub static PROXY_TLS_DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
 /// Increment the dropped flows counter
 pub fn inc_flows_dropped() {
     FLOWS_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -131,6 +141,26 @@ pub fn inc_proxy_stream_mode_degrade() {
 /// O4: Get the current count of degraded streams
 pub fn get_proxy_stream_mode_degrade() -> usize {
     PROXY_STREAM_MODE_DEGRADE_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Increment the TLS passthrough counter.
+pub fn inc_proxy_tls_passthrough() {
+    PROXY_TLS_PASSTHROUGH_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Get the current count of passthrough tunnels.
+pub fn get_proxy_tls_passthrough() -> usize {
+    PROXY_TLS_PASSTHROUGH_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Increment the TLS-drop counter.
+pub fn inc_proxy_tls_dropped() {
+    PROXY_TLS_DROPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Get the current count of CONNECT tunnels refused by TLS policy.
+pub fn get_proxy_tls_dropped() -> usize {
+    PROXY_TLS_DROPPED_TOTAL.load(Ordering::Relaxed)
 }
 
 /// Add bytes sent (client→proxy→upstream direction)

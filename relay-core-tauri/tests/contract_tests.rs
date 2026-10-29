@@ -30,6 +30,7 @@ fn test_flow_to_flow_index_conversion() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -197,6 +198,7 @@ fn test_websocket_flow_to_detail_conversion() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::WebSocket(WebSocketLayer {
             handshake_request: HttpRequest {
@@ -319,6 +321,7 @@ fn test_flow_to_flow_index_without_response_defaults() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -385,6 +388,7 @@ fn test_flow_detail_http_har_compat_fields() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -455,6 +459,7 @@ fn test_flow_detail_post_data_and_response_content_preserve_base64_encoding() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -535,6 +540,7 @@ fn test_flow_detail_request_query_string_uses_struct_field() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -587,6 +593,7 @@ fn test_flow_detail_redirect_url_empty_without_location_header() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -647,6 +654,7 @@ fn test_flow_index_websocket_fields_reflect_handshake_and_message_count() {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::WebSocket(WebSocketLayer {
             handshake_request: HttpRequest {
@@ -749,6 +757,7 @@ fn http_flow(status: Option<u16>, error: Option<&str>, start_offset_ms: i64) -> 
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {

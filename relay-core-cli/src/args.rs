@@ -322,6 +322,31 @@ pub enum Commands {
         /// Allow fallback to direct connection when upstream is unreachable
         #[arg(long, default_value_t = false)]
         upstream_fail_open: bool,
+
+        /// Comma-separated CONNECT targets whose TLS is passed through without interception
+        ///
+        /// Accepts host, host:port, [ipv6]:port, *.example.com, an IP literal, or cidr:10.0.0.0/8.
+        /// Use this for clients that pin certificates; they cannot work through a MITM proxy.
+        #[arg(long)]
+        tls_passthrough: Option<String>,
+
+        /// Comma-separated CONNECT targets refused outright, before any byte is forwarded
+        #[arg(long)]
+        tls_drop: Option<String>,
+
+        /// PEM bundle trusted for target certificates, instead of the OS trust store
+        ///
+        /// A bundle that cannot be read fails startup: silently falling back to the native roots
+        /// would trust a different set of peers than the operator asked for.
+        #[arg(long, conflicts_with = "upstream_insecure")]
+        upstream_ca: Option<PathBuf>,
+
+        /// DISABLE target certificate verification. The value is the reason, and it is logged
+        ///
+        /// For lab and pinned-development setups only. Nothing retries insecurely after a
+        /// verification failure, and the mode is visible in GET /api/v1/policy.
+        #[arg(long, conflicts_with = "upstream_ca")]
+        upstream_insecure: Option<String>,
     },
     /// Manage Certificate Authority
     Ca {

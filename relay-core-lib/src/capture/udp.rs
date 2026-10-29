@@ -242,6 +242,7 @@ impl UdpSessionManager {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Udp(UdpLayer {
                 payload_size: session.bytes_transferred.load(Ordering::Relaxed),
@@ -397,6 +398,7 @@ impl UdpProxy {
                                         tls: false,
                                         tls_version: None,
                                         sni: None,
+                                        alpn: None,
                                     },
                                     layer: Layer::Udp(UdpLayer {
                                         payload_size: len,
@@ -521,6 +523,7 @@ impl UdpProxy {
                             tls: false,
                             tls_version: None,
                             sni: None,
+                            alpn: None,
                         },
                         layer: Layer::Udp(UdpLayer {
                             payload_size: len,
@@ -795,6 +798,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Udp(UdpLayer {
                 payload_size: 0,
@@ -867,6 +871,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Udp(UdpLayer {
                 payload_size: 100,

@@ -29,6 +29,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {

@@ -149,6 +149,7 @@ fn dummy_flow() -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: relay_core_api::flow::Layer::Unknown,
         tags: vec![],

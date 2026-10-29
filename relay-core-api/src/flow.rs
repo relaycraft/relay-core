@@ -275,8 +275,25 @@ pub struct NetworkInfo {
     pub server_host: Option<String>,
     pub protocol: TransportProtocol,
     pub tls: bool,
+    /// The version negotiated by the terminated TLS session (e.g. `TLSv1.3`).
+    ///
+    /// Recorded from the `ServerConnection` after the handshake, never guessed: a flow that never
+    /// terminated TLS leaves both this and [`Self::sni`] at `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_version: Option<String>,
+    /// The server name the client asked for in its ClientHello.
+    ///
+    /// This is the value the client sent, which is not always the CONNECT target: a client may
+    /// tunnel to an IP literal and still name a host (or name nothing at all for an IP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sni: Option<String>,
+    /// The ALPN protocol the TLS session agreed on (`h2`, `http/1.1`, …).
+    ///
+    /// Distinct from the HTTP version hyper parsed: ALPN is what both peers agreed to negotiate,
+    /// while the request version is what was actually spoken. A flow that did not terminate TLS
+    /// leaves this at `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -563,6 +580,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer,
             tags: vec![],

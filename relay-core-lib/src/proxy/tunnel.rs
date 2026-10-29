@@ -201,6 +201,43 @@ pub async fn handle_tunnel(
     }
 }
 
+/// Splice a CONNECT tunnel to its target without terminating TLS.
+///
+/// Nothing inside is parsed, recorded, or rewritten: the client's handshake reaches the upstream and
+/// the client validates the upstream certificate. That is the only mode in which a certificate-pinned
+/// client can work, and the reason the policy exists (roadmap §8).
+///
+/// The CONNECT flow itself is still recorded by the caller, tagged `tls-passthrough`, so the capture
+/// can answer "this tunnel existed and was not inspected" instead of showing nothing at all.
+pub async fn handle_passthrough_tunnel(
+    upgraded: Upgraded,
+    host: String,
+    connector: Arc<dyn OutboundConnector>,
+) -> crate::error::Result<()> {
+    let (hostname, port) = crate::proxy::tls::parse_authority(&host).ok_or_else(|| {
+        crate::error::RelayError::Proxy(format!("invalid CONNECT authority '{host}'"))
+    })?;
+
+    let mut upstream = connector
+        .open_tunnel(&hostname, port)
+        .await
+        .map_err(|e| crate::error::RelayError::Proxy(format!("passthrough {host}: {e}")))?;
+    let mut client = TokioIo::new(upgraded);
+
+    // `copy_bidirectional` returns when both directions are done, including the half-close case
+    // where one peer shuts down its write side but still expects to read. It is the whole job: no
+    // sniffing, no framing, no idle timeout — an idle tunnel is a legitimate tunnel.
+    let (client_to_upstream, upstream_to_client) =
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .map_err(crate::error::RelayError::Io)?;
+
+    tracing::debug!(
+        "passthrough tunnel {host} closed after {client_to_upstream} bytes up / {upstream_to_client} bytes down"
+    );
+    Ok(())
+}
+
 /// Read the client's first bytes without losing them.
 ///
 /// Returns the bytes read so far and the stream, so the caller can hand both to whichever server
@@ -255,9 +292,12 @@ async fn serve_tls_tunnel(
     circuit_breaker: Arc<CircuitBreaker>,
 ) -> crate::error::Result<()> {
     // 1. Get cached server config for `host` (generates on miss)
-    // Strip port if present for certificate generation (SNI / CN)
-    let hostname = host.split(':').next().unwrap_or(&host);
-    let server_config = ca.gen_server_config(hostname).await?;
+    // Strip the port for certificate generation (SNI / CN). The authority parser handles the
+    // bracketed IPv6 form; splitting on ':' used to turn `[::1]:443` into `[`.
+    let hostname = crate::proxy::tls::parse_authority(&host)
+        .map(|(host, _)| host)
+        .unwrap_or_else(|| host.clone());
+    let server_config = ca.gen_server_config(&hostname).await?;
 
     // 2. Configure Server TLS
     // ALPN protocols (h2, http/1.1) are already configured in gen_server_config
@@ -273,6 +313,27 @@ async fn serve_tls_tunnel(
                 ));
             }
         };
+
+    // The handshake itself is the only honest source for these three facts. They are copied onto
+    // every flow the tunnel produces, because a flow is what a consumer reads: recording them only
+    // in a log would leave the API unable to answer "which SNI did this client send?".
+    let handshake = {
+        let (_, connection) = tls_stream.get_ref();
+        crate::proxy::tls::TlsHandshake {
+            sni: connection.server_name().map(str::to_string),
+            alpn: connection
+                .alpn_protocol()
+                .map(|protocol| String::from_utf8_lossy(protocol).into_owned()),
+            version: connection
+                .protocol_version()
+                .map(crate::proxy::tls::protocol_version_name),
+        }
+    };
+    info!(
+        "MITM tunnel for {} negotiated {:?} / {:?} (SNI {:?})",
+        host, handshake.version, handshake.alpn, handshake.sni
+    );
+
     let tls_io = TokioIo::new(tls_stream);
 
     if let Err(err) = tunnel_builder()
@@ -291,6 +352,7 @@ async fn serve_tls_tunnel(
                 target_addr,
                 loop_detector,
                 circuit_breaker,
+                Some(handshake),
             )),
         )
         .await
@@ -338,6 +400,7 @@ async fn serve_plaintext_tunnel(
                 target_addr,
                 loop_detector,
                 circuit_breaker,
+                None,
             )),
         )
         .await
@@ -398,6 +461,7 @@ fn request_service(
     target_addr: Option<SocketAddr>,
     loop_detector: Arc<LoopDetector>,
     circuit_breaker: Arc<CircuitBreaker>,
+    tls: Option<crate::proxy::tls::TlsHandshake>,
 ) -> impl Fn(hyper::Request<hyper::body::Incoming>) -> TunnelFuture + Clone + Send + 'static {
     move |req| {
         let host = host.clone();
@@ -408,6 +472,7 @@ fn request_service(
         let policy_rx = policy_rx.clone();
         let loop_detector = loop_detector.clone();
         let circuit_breaker = circuit_breaker.clone();
+        let tls = tls.clone();
 
         Box::pin(async move {
             // Inside the tunnel the request target is origin-form (`GET /`), so the authority has to
@@ -438,6 +503,7 @@ fn request_service(
                 target_addr,
                 loop_detector,
                 circuit_breaker,
+                tls,
             )
             .await
         })

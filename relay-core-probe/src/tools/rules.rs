@@ -187,14 +187,24 @@ pub fn patch_policy_schema() -> Tool {
     tool(
         ToolSpec::write(
         "patch_policy",
-        "Partially update proxy policy. Accepted fields are `redaction`, `upstream`, and \
-         `retention`. A retention field you omit stays as it is; `null` removes that bound. \
+        "Partially update proxy policy. Accepted fields are `redaction`, `tls`, `upstream_tls`, \
+         `upstream`, and `retention`. A retention field you omit stays as it is; `null` removes that bound. \
          The default keeps 5000 flows and drops anything older than 7 days. Any other field is \
          rejected and the current policy is left unchanged. To change fields such as \
          request_timeout_ms, send a full policy via update_policy. \
+         `tls` is `passthrough_hosts` and `drop_hosts`: CONNECT targets whose TLS is spliced \
+         end-to-end (so a certificate-pinned client can work), or refused outright. Entries are \
+         host, host:port, [ipv6]:port, a hostname glob, an IP, or `cidr:`; a bare host means any port, \
+         and `drop` wins over `passthrough`. An omitted or empty `tls` object intercepts every tunnel. \
+         `upstream_tls.verification` decides whether the certificate of a **target** this engine \
+         dials is checked: `{\"mode\":\"native_roots\"}` (default), \
+         `{\"mode\":\"custom_ca\",\"path\":\"/path/bundle.pem\"}` (trust exactly that bundle), or \
+         `{\"mode\":\"insecure\",\"reason\":\"...\"}` (accept anything; the reason is required and logged). \
+         It applies to later connections. An unreadable bundle or an empty reason is rejected before the policy is stored, so the reported policy never claims a trust setting the engine is not using. \
          `upstream` is `proxy_url`, optional `auth` (`username`, `password`), `bypass_hosts`, and `fail_open`. \
          A bypass entry is an IP, a `cidr:` network, or a hostname glob, and a matching host is dialled directly. \
-         `get_policy` shows the write immediately. A new proxy URL, auth, `fail_open`, or `bypass_hosts` applies to later requests. \
+         `get_policy` shows the write immediately. A new proxy URL, auth, `fail_open`, `bypass_hosts`, `tls`, or \
+         `upstream_tls` applies to later connections. \
          If the new proxy URL cannot be resolved and `fail_open` is false, the previous connector stays in use.",
         json!({
             "type": "object",
@@ -202,7 +212,7 @@ pub fn patch_policy_schema() -> Tool {
             "properties": {
                 "patch": {
                     "type": "object",
-                    "description": "ProxyPolicyPatch. Accepted: redaction, upstream, retention. Example: {\"retention\": {\"max_flows\": 5000, \"max_age_secs\": 604800}}"
+                    "description": "ProxyPolicyPatch. Accepted: redaction, tls, upstream_tls, upstream, retention. Example: {\"upstream_tls\": {\"verification\": {\"mode\": \"custom_ca\", \"path\": \"/etc/relaycore/internal.pem\"}}}"
                 }
             }
         }),

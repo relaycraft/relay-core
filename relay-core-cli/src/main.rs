@@ -157,6 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 upstream_auth_user: None,
                 upstream_bypass: None,
                 upstream_fail_open: false,
+                tls_passthrough: None,
+                tls_drop: None,
+                upstream_ca: None,
+                upstream_insecure: None,
             })
             .await?;
         }
@@ -189,6 +193,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             upstream_auth_user,
             upstream_bypass,
             upstream_fail_open,
+            tls_passthrough,
+            tls_drop,
+            upstream_ca,
+            upstream_insecure,
         } => {
             commands::run::execute(commands::run::RunOptions {
                 listen,
@@ -227,6 +235,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 upstream_auth_user,
                 upstream_bypass,
                 upstream_fail_open,
+                tls_passthrough,
+                tls_drop,
+                upstream_ca,
+                upstream_insecure,
             })
             .await?;
         }

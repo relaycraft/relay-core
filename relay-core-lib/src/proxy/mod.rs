@@ -28,7 +28,9 @@ pub mod outbound;
 pub mod server;
 pub mod tap;
 pub mod throttle;
+pub mod tls;
 pub mod tunnel;
+pub mod upstream_tls;
 pub mod websocket;
 
 pub use server::start_proxy;

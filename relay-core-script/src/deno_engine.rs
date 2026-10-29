@@ -1548,6 +1548,7 @@ mod hook_timeout_tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {

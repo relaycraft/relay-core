@@ -27,6 +27,7 @@ fn sample_flow() -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -257,6 +258,8 @@ fn test_redaction_patch_partial_update_keeps_unspecified_fields() {
             redact_bodies: Some(true),
             ..Default::default()
         }),
+        tls: None,
+        upstream_tls: None,
         upstream: None,
         retention: None,
     });

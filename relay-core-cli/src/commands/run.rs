@@ -58,6 +58,10 @@ pub struct RunOptions {
     pub upstream_auth_user: Option<String>,
     pub upstream_bypass: Option<String>,
     pub upstream_fail_open: bool,
+    pub tls_passthrough: Option<String>,
+    pub tls_drop: Option<String>,
+    pub upstream_ca: Option<PathBuf>,
+    pub upstream_insecure: Option<String>,
 }
 
 pub async fn execute(options: RunOptions) -> Result<()> {
@@ -106,6 +110,10 @@ pub async fn execute(options: RunOptions) -> Result<()> {
         upstream_auth_user: options.upstream_auth_user.clone(),
         upstream_bypass: options.upstream_bypass.clone(),
         upstream_fail_open: options.upstream_fail_open,
+        tls_passthrough: options.tls_passthrough.clone(),
+        tls_drop: options.tls_drop.clone(),
+        upstream_ca: options.upstream_ca.clone(),
+        upstream_insecure: options.upstream_insecure.clone(),
         idle_timeout_secs: 0,
     };
 

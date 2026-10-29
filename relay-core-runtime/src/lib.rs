@@ -126,6 +126,10 @@ pub struct CoreMetrics {
     pub proxy_sse_truncated_total: usize,
     /// WebSocket handshakes whose extension offer was stripped (roadmap §7.1).
     pub proxy_ws_extensions_stripped_total: usize,
+    /// CONNECT tunnels spliced end-to-end by TLS policy.
+    pub proxy_tls_passthrough_total: usize,
+    /// CONNECT tunnels refused by TLS policy before any byte was forwarded.
+    pub proxy_tls_dropped_total: usize,
     /// O4: Total bodies degraded from tap to pass-through
     pub proxy_stream_mode_degrade_total: usize,
     /// O4: Total bytes transmitted to upstream (client→proxy→server)
@@ -163,6 +167,8 @@ relay_core_proxy_sse_events_total {}\n\
 relay_core_proxy_sse_events_dropped_total {}\n\
 relay_core_proxy_sse_truncated_total {}\n\
 relay_core_proxy_ws_extensions_stripped_total {}\n\
+relay_core_proxy_tls_passthrough_total {}\n\
+relay_core_proxy_tls_dropped_total {}\n\
 relay_core_proxy_stream_mode_degrade_total {}\n\
 relay_core_proxy_bytes_sent_total {}\n\
 relay_core_proxy_bytes_recv_total {}\n",
@@ -190,6 +196,8 @@ relay_core_proxy_bytes_recv_total {}\n",
             self.proxy_sse_events_dropped_total,
             self.proxy_sse_truncated_total,
             self.proxy_ws_extensions_stripped_total,
+            self.proxy_tls_passthrough_total,
+            self.proxy_tls_dropped_total,
             self.proxy_stream_mode_degrade_total,
             self.proxy_bytes_sent_total,
             self.proxy_bytes_recv_total,
@@ -535,6 +543,8 @@ impl CoreState {
             proxy_sse_truncated_total: relay_core_lib::metrics::get_proxy_sse_truncated(),
             proxy_ws_extensions_stripped_total:
                 relay_core_lib::metrics::get_proxy_ws_extensions_stripped(),
+            proxy_tls_passthrough_total: relay_core_lib::metrics::get_proxy_tls_passthrough(),
+            proxy_tls_dropped_total: relay_core_lib::metrics::get_proxy_tls_dropped(),
             proxy_stream_mode_degrade_total: relay_core_lib::metrics::get_proxy_stream_mode_degrade(
             ),
             proxy_bytes_sent_total: relay_core_lib::metrics::get_bytes_sent(),
@@ -1182,6 +1192,27 @@ impl CoreState {
     }
 
     pub fn update_policy_from(&self, actor: AuditActor, target: String, policy: ProxyPolicy) {
+        // Validate before storing. A policy that names an unreadable CA bundle must not be reported
+        // by the API while the running proxy keeps older (possibly insecure) trust settings: that
+        // is the exact discrepancy a security setting must not have.
+        if let Err(error) = relay_core_lib::proxy::upstream_tls::validate(&policy.upstream_tls) {
+            tracing::error!(
+                actor = ?actor,
+                target = %target,
+                "policy rejected: {error}"
+            );
+            // A rejected security setting is an event worth keeping: "who tried to change trust,
+            // and why it was refused" otherwise exists only in a log line.
+            self.record_audit_event(AuditEvent::new(
+                actor,
+                AuditEventKind::PolicyUpdated,
+                target,
+                AuditOutcome::Failed,
+                json!({ "rejected": error }),
+            ));
+            return;
+        }
+
         let details = json!({
             "strict_http_semantics": policy.strict_http_semantics,
             "request_timeout_ms": policy.request_timeout_ms,
@@ -2573,6 +2604,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -2633,6 +2665,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -3226,6 +3259,34 @@ mod tests {
         assert_eq!(event.details["transparent_enabled"], true);
     }
 
+    /// A policy naming an unreadable CA bundle must leave the previous policy in force. Storing it
+    /// would make the API report `custom_ca` while the client still trusted whatever came before.
+    #[test]
+    fn an_unreadable_ca_bundle_is_rejected_instead_of_stored() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should build");
+        let state = runtime.block_on(CoreState::new(None));
+        let before = state.policy_snapshot().upstream_tls;
+
+        state.update_policy_from(
+            AuditActor::Runtime,
+            "policy".to_string(),
+            ProxyPolicy {
+                upstream_tls: relay_core_api::policy::UpstreamTlsPolicy {
+                    verification: relay_core_api::policy::UpstreamTlsVerification::CustomCa {
+                        path: "/nonexistent/relaycore-ca.pem".into(),
+                    },
+                },
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            state.policy_snapshot().upstream_tls,
+            before,
+            "the rejected policy must not be visible or take effect"
+        );
+    }
+
     #[test]
     fn patch_policy_updates_redaction_without_replacing_other_fields() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime should build");
@@ -3241,6 +3302,8 @@ mod tests {
                     redact_bodies: Some(true),
                     ..Default::default()
                 }),
+                tls: None,
+                upstream_tls: None,
                 upstream: None,
                 retention: None,
             },

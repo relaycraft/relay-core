@@ -46,6 +46,7 @@ fn create_test_flow(url: &str, method: &str) -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -87,6 +88,7 @@ fn create_test_ws_flow(url: &str) -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::WebSocket(WebSocketLayer {
             handshake_request: HttpRequest {

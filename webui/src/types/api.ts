@@ -30,6 +30,9 @@ export interface NetworkInfo {
   tls: boolean;
   tls_version: string | null;
   sni: string | null;
+  /** ALPN protocol negotiated by the terminated TLS session (`h2`, `http/1.1`); absent when no TLS
+   *  was terminated or the capture predates the field. */
+  alpn?: string | null;
 }
 
 export interface BodyData {
@@ -378,11 +381,20 @@ export interface UpstreamProxyConfig {
   fail_open: boolean;
 }
 
+export interface UpstreamTlsPolicy {
+  verification:
+    | { mode: 'native_roots' }
+    | { mode: 'custom_ca'; path: string }
+    | { mode: 'insecure'; reason: string };
+}
+
 export interface ProxyPolicy {
   strict_http_semantics: boolean;
   transparent_enabled: boolean;
   quic_mode: string;
   redaction: RedactionPolicy;
+  /** How certificates presented by targets are verified. Absent on very old engines. */
+  upstream_tls?: UpstreamTlsPolicy;
   /** Omitted — not `null` — when no upstream proxy is configured, so read it with `?.`. */
   upstream?: UpstreamProxyConfig;
   max_body_size: number;

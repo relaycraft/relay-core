@@ -39,6 +39,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: Layer::Http(HttpLayer {
             request: HttpRequest {
@@ -298,6 +299,8 @@ async fn policy_service_trait_read_and_write() {
                 redact_bodies: Some(true),
                 ..Default::default()
             }),
+            tls: None,
+            upstream_tls: None,
             upstream: None,
             retention: None,
         },

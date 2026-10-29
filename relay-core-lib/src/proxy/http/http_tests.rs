@@ -40,6 +40,7 @@ fn create_test_flow() -> Flow {
             tls: false,
             tls_version: None,
             sni: None,
+            alpn: None,
         },
         layer: relay_core_api::flow::Layer::Unknown,
         tags: vec![],
@@ -103,6 +104,7 @@ async fn test_request_timeout() {
         None, // target_addr
         loop_detector,
         circuit_breaker,
+        None,
     )
     .await
     .unwrap();
@@ -256,6 +258,7 @@ async fn test_timeout_sets_trace_timeout_type() {
         None,
         loop_detector,
         circuit_breaker,
+        None,
     )
     .await
     .unwrap();
@@ -333,6 +336,7 @@ async fn test_circuit_breaker_sets_trace() {
         None,
         loop_detector,
         Arc::new(cb),
+        None,
     )
     .await
     .unwrap();
@@ -410,6 +414,7 @@ async fn test_throttle_wires_into_http_pipeline() {
         None,
         loop_detector,
         circuit_breaker,
+        None,
     )
     .await
     .unwrap();

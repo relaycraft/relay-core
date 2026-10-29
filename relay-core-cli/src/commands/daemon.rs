@@ -101,6 +101,14 @@ pub struct DaemonOptions {
     pub upstream_bypass: Option<String>,
     /// Fall back to a direct connection when the upstream is unreachable.
     pub upstream_fail_open: bool,
+    /// Comma-separated CONNECT targets whose TLS is not intercepted.
+    pub tls_passthrough: Option<String>,
+    /// Comma-separated CONNECT targets refused outright.
+    pub tls_drop: Option<String>,
+    /// PEM bundle trusted for target certificates instead of the OS trust store.
+    pub upstream_ca: Option<PathBuf>,
+    /// Reason for disabling target certificate verification, if it was disabled.
+    pub upstream_insecure: Option<String>,
     /// Stop the proxy after this many seconds without captured traffic. `0` (the default) means
     /// never: the proxy is only stopped by an explicit command.
     ///
@@ -146,6 +154,10 @@ impl Default for DaemonOptions {
             upstream_auth_user: None,
             upstream_bypass: None,
             upstream_fail_open: false,
+            tls_passthrough: None,
+            tls_drop: None,
+            upstream_ca: None,
+            upstream_insecure: None,
             idle_timeout_secs: 0,
         }
     }
@@ -435,50 +447,105 @@ type ScriptWatcher = notify::RecommendedWatcher;
 #[cfg(not(feature = "script"))]
 type ScriptWatcher = ();
 
-/// Apply the policy a host asked for before any traffic flows: the upstream proxy, and the rule
-/// that the engine's own control endpoints are not "user traffic".
+/// Apply the policy a host asked for before any traffic flows: the upstream proxy, the per-target
+/// TLS handling, and the rule that the engine's own control endpoints are not "user traffic".
 fn apply_startup_policy(state: &Arc<CoreState>, options: &DaemonOptions) -> Result<()> {
-    let Some(upstream_url) = options.upstream.as_deref() else {
-        return Ok(());
+    let mut patch = relay_core_api::policy::ProxyPolicyPatch {
+        redaction: None,
+        tls: None,
+        upstream_tls: None,
+        upstream: None,
+        retention: None,
     };
+    let mut described = Vec::new();
 
-    let auth = options.upstream_auth_user.as_ref().map(|user| {
-        let password = std::env::var("RELAYCORE_UPSTREAM_PASSWORD").unwrap_or_default();
-        if password.is_empty() {
-            tracing::warn!(
-                target: "relay_core_daemon",
-                "RELAYCORE_UPSTREAM_PASSWORD is empty while --upstream-auth-user is set; \
-                 upstream authentication will fail"
-            );
+    if let Some(upstream_url) = options.upstream.as_deref() {
+        let auth = options.upstream_auth_user.as_ref().map(|user| {
+            let password = std::env::var("RELAYCORE_UPSTREAM_PASSWORD").unwrap_or_default();
+            if password.is_empty() {
+                tracing::warn!(
+                    target: "relay_core_daemon",
+                    "RELAYCORE_UPSTREAM_PASSWORD is empty while --upstream-auth-user is set; \
+                     upstream authentication will fail"
+                );
+            }
+            relay_core_api::policy::UpstreamAuth::new(user.clone(), password)
+        });
+
+        patch.upstream = Some(relay_core_api::policy::UpstreamProxyConfig {
+            proxy_url: upstream_url.to_string(),
+            auth,
+            bypass_hosts: split_csv(options.upstream_bypass.as_deref()),
+            fail_open: options.upstream_fail_open,
+        });
+        described.push("--upstream");
+    }
+
+    // A TLS list is independent of the upstream proxy: a host may pass one target through while
+    // still sending everything else to a parent. Coupling the two would make either flag silently
+    // ineffective whenever the other was absent.
+    let passthrough_hosts = split_csv(options.tls_passthrough.as_deref());
+    let drop_hosts = split_csv(options.tls_drop.as_deref());
+    if !passthrough_hosts.is_empty() || !drop_hosts.is_empty() {
+        patch.tls = Some(relay_core_api::policy::TlsPolicy {
+            passthrough_hosts,
+            drop_hosts,
+        });
+        described.push("--tls-*");
+    }
+
+    // Target verification is independent of both the parent proxy and the CONNECT policy: a
+    // deployment may trust an internal CA while still sending everything through a parent.
+    match (&options.upstream_ca, &options.upstream_insecure) {
+        (Some(path), _) => {
+            if !path.is_file() {
+                anyhow::bail!("--upstream-ca {} is not a readable file", path.display());
+            }
+            patch.upstream_tls = Some(relay_core_api::policy::UpstreamTlsPolicy {
+                verification: relay_core_api::policy::UpstreamTlsVerification::CustomCa {
+                    path: path.clone(),
+                },
+            });
+            described.push("--upstream-ca");
         }
-        relay_core_api::policy::UpstreamAuth::new(user.clone(), password)
-    });
+        (None, Some(reason)) => {
+            if reason.trim().is_empty() {
+                anyhow::bail!(
+                    "--upstream-insecure needs a reason; refusing to disable certificate                      verification silently"
+                );
+            }
+            patch.upstream_tls = Some(relay_core_api::policy::UpstreamTlsPolicy {
+                verification: relay_core_api::policy::UpstreamTlsVerification::Insecure {
+                    reason: reason.clone(),
+                },
+            });
+            described.push("--upstream-insecure");
+        }
+        (None, None) => {}
+    }
 
-    let bypass_hosts: Vec<String> = options
-        .upstream_bypass
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .map(|host| host.trim().to_string())
-        .filter(|host| !host.is_empty())
-        .collect();
+    if patch.upstream.is_none() && patch.tls.is_none() && patch.upstream_tls.is_none() {
+        return Ok(());
+    }
 
     state.patch_policy_from(
         relay_core_runtime::audit::AuditActor::Runtime,
-        "daemon --upstream".to_string(),
-        relay_core_api::policy::ProxyPolicyPatch {
-            redaction: None,
-            upstream: Some(relay_core_api::policy::UpstreamProxyConfig {
-                proxy_url: upstream_url.to_string(),
-                auth,
-                bypass_hosts,
-                fail_open: options.upstream_fail_open,
-            }),
-            retention: None,
-        },
+        format!("daemon {}", described.join(" ")),
+        patch,
     );
-    tracing::info!(target: "relay_core_daemon", upstream = upstream_url, "upstream proxy configured");
+    tracing::info!(target: "relay_core_daemon", options = %described.join(" "), "startup policy configured");
     Ok(())
+}
+
+/// Split a comma-separated option into trimmed, non-empty entries.
+fn split_csv(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Keep the daemon's own endpoints out of the flow list.
@@ -996,6 +1063,81 @@ fn spawn_idle_stop(controller: Arc<CoreProxyController>, timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_lists_are_split_and_trimmed() {
+        assert_eq!(
+            split_csv(Some("a.example, *.b.example ,,")),
+            vec!["a.example".to_string(), "*.b.example".to_string()]
+        );
+        assert!(split_csv(None).is_empty());
+        assert!(split_csv(Some("  ")).is_empty());
+    }
+
+    /// A TLS list must not be coupled to `--upstream`: listing one pinned host is a complete
+    /// instruction on its own, and the old early-return meant the flag did nothing without an
+    /// upstream proxy.
+    #[tokio::test]
+    async fn tls_policy_is_applied_without_an_upstream_proxy() {
+        let state = Arc::new(relay_core_runtime::CoreState::new(None).await);
+        let options = DaemonOptions {
+            tls_passthrough: Some("pinned.example, 10.0.0.0/8".to_string()),
+            tls_drop: Some("telemetry.example".to_string()),
+            ..DaemonOptions::default()
+        };
+
+        apply_startup_policy(&state, &options).expect("startup policy applies");
+
+        let policy = state.policy_snapshot();
+        assert_eq!(
+            policy.tls.passthrough_hosts,
+            vec!["pinned.example".to_string(), "10.0.0.0/8".to_string()]
+        );
+        assert_eq!(policy.tls.drop_hosts, vec!["telemetry.example".to_string()]);
+        assert!(
+            policy.upstream.is_none(),
+            "no upstream was configured, so none may appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn insecure_upstream_verification_requires_a_reason() {
+        let state = Arc::new(relay_core_runtime::CoreState::new(None).await);
+
+        let options = DaemonOptions {
+            upstream_insecure: Some("lab fixture".to_string()),
+            ..DaemonOptions::default()
+        };
+        apply_startup_policy(&state, &options).expect("a reasoned insecure policy applies");
+        assert_eq!(
+            state.policy_snapshot().upstream_tls.verification,
+            relay_core_api::policy::UpstreamTlsVerification::Insecure {
+                reason: "lab fixture".to_string()
+            }
+        );
+
+        let blank = DaemonOptions {
+            upstream_insecure: Some("   ".to_string()),
+            ..DaemonOptions::default()
+        };
+        assert!(
+            apply_startup_policy(&state, &blank).is_err(),
+            "an empty reason must not disable verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_upstream_ca_file_is_rejected_before_startup() {
+        let state = Arc::new(relay_core_runtime::CoreState::new(None).await);
+        let options = DaemonOptions {
+            upstream_ca: Some(PathBuf::from("/nonexistent/relaycore-ca.pem")),
+            ..DaemonOptions::default()
+        };
+        assert!(
+            apply_startup_policy(&state, &options).is_err(),
+            "a bundle that cannot be read must fail startup rather than fall back"
+        );
+    }
 
     #[test]
     fn an_unconfigured_idle_timeout_never_stops_the_proxy() {

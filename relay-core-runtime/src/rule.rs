@@ -221,6 +221,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -262,6 +263,7 @@ mod tests {
                 tls: false,
                 tls_version: None,
                 sni: None,
+                alpn: None,
             },
             layer: Layer::WebSocket(WebSocketLayer {
                 handshake_request: HttpRequest {

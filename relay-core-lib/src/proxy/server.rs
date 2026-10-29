@@ -1,6 +1,4 @@
 use hyper::service::service_fn;
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,54 +49,74 @@ where
     let startup_policy = policy.borrow().clone();
     info!("Proxy Policy: {:?}", startup_policy);
 
-    // Initialize HTTP Client (shared) — used by DirectConnector
-    let client = if let Some(c) = client {
-        c
-    } else {
-        let https = HttpsConnectorBuilder::new()
-            .with_native_roots()?
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .build();
-        let client: HttpsClient = Client::builder(hyper_util::rt::TokioExecutor::new())
-            .timer(hyper_util::rt::TokioTimer::new())
-            .pool_idle_timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(32)
-            .http2_initial_stream_window_size(2 * 1024 * 1024)
-            .http2_initial_connection_window_size(4 * 1024 * 1024)
-            .http2_keep_alive_interval(Duration::from_secs(20))
-            .http2_keep_alive_timeout(Duration::from_secs(10))
-            .build(https);
-        Arc::new(client)
+    // Initialize the outbound HTTP client from the policy. An explicitly injected client wins:
+    // tests and embedders use that to control trust themselves, and a policy that silently ignored
+    // the injected client would make the parameter meaningless.
+    let injected_client = client.is_some();
+    let mut current_client = match client {
+        Some(client) => client,
+        None => Arc::new(
+            crate::proxy::upstream_tls::build_upstream_client(&startup_policy.upstream_tls)
+                .map_err(crate::error::RelayError::Proxy)?,
+        ),
     };
 
     // Initialize OutboundConnector based on ProxyPolicy.upstream.
-    // Later changes to `upstream` replace it; each accepted connection reads the current one.
-    let connector = match build_outbound(startup_policy.upstream.as_ref(), client.clone()).await {
-        Ok(connector) => connector,
-        Err(error) => {
-            tracing::error!("{error}, aborting startup (fail_open=false)");
-            return Err(crate::error::RelayError::Proxy(error));
-        }
-    };
+    // Later changes to `upstream` or `upstream_tls` replace it; each accepted connection reads the
+    // current one.
+    let connector =
+        match build_outbound(startup_policy.upstream.as_ref(), current_client.clone()).await {
+            Ok(connector) => connector,
+            Err(error) => {
+                tracing::error!("{error}, aborting startup (fail_open=false)");
+                return Err(crate::error::RelayError::Proxy(error));
+            }
+        };
     let (connector_tx, connector_rx) = watch::channel(connector);
     {
         let mut policy_updates = policy.clone();
-        let client = client.clone();
         tokio::spawn(async move {
-            let mut applied = policy_updates.borrow().upstream.clone();
+            let mut applied_upstream = policy_updates.borrow().upstream.clone();
+            let mut applied_upstream_tls = policy_updates.borrow().upstream_tls.clone();
             loop {
                 if policy_updates.changed().await.is_err() {
                     break;
                 }
-                let next = policy_updates.borrow().upstream.clone();
-                if !upstream_config_changed(&applied, &next) {
+                let (next_upstream, next_upstream_tls) = {
+                    let policy = policy_updates.borrow();
+                    (policy.upstream.clone(), policy.upstream_tls.clone())
+                };
+                let upstream_changed = upstream_config_changed(&applied_upstream, &next_upstream);
+                let tls_changed = applied_upstream_tls != next_upstream_tls;
+                if !upstream_changed && !tls_changed {
                     continue;
                 }
-                match build_outbound(next.as_ref(), client.clone()).await {
+
+                // A new verification policy means a new client: hyper's connection pool is part of
+                // the client, and reusing it would keep serving connections built under the old
+                // trust settings — exactly when an operator tightened them.
+                let next_client = if injected_client {
+                    current_client.clone()
+                } else if tls_changed {
+                    match crate::proxy::upstream_tls::build_upstream_client(&next_upstream_tls) {
+                        Ok(client) => Arc::new(client),
+                        Err(error) => {
+                            tracing::error!(
+                                "upstream TLS policy was not applied ({error}); the previous client \
+                                 and connector stay in use"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    current_client.clone()
+                };
+
+                match build_outbound(next_upstream.as_ref(), next_client.clone()).await {
                     Ok(connector) => {
-                        applied = next;
+                        applied_upstream = next_upstream;
+                        applied_upstream_tls = next_upstream_tls;
+                        current_client = next_client;
                         let _ = connector_tx.send(connector);
                     }
                     Err(error) => {
@@ -200,6 +218,7 @@ where
                     tls: false,
                     tls_version: None,
                     sni: None,
+                    alpn: None,
                 },
                 layer: Layer::Tcp(TcpLayer {
                     bytes_up: 0,

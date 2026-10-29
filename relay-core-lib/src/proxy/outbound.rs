@@ -30,6 +30,12 @@ pub enum UpstreamError {
     Io(#[from] std::io::Error),
 }
 
+/// The byte stream an outbound tunnel hands back: a plain socket, a CONNECT-through-parent socket,
+/// or a TLS session to a parent proxy. The caller only splices bytes, so it must not care which.
+pub trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + ?Sized> AsyncReadWrite for T {}
+pub type TunnelIo = Box<dyn AsyncReadWrite + Unpin + Send>;
+
 /// Outbound connector — sends a RelayCore-processed HTTP request to the target,
 /// optionally through an upstream proxy.
 #[async_trait]
@@ -41,6 +47,23 @@ pub trait OutboundConnector: Send + Sync {
         target_port: u16,
         flow: &mut Flow,
     ) -> Result<Response<Incoming>, UpstreamError>;
+
+    /// Open a raw tunnel to `host:port`, for a CONNECT the policy passes through untouched.
+    ///
+    /// The default is a direct TCP connection. A connector that routes through a parent proxy
+    /// overrides this, because a passthrough tunnel that ignored the parent configuration would
+    /// reach a target the rest of the engine cannot — a silent bypass of the operator's network
+    /// policy, and the kind of inconsistency that is only noticed from the far side.
+    async fn open_tunnel(&self, host: &str, port: u16) -> Result<TunnelIo, UpstreamError> {
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::net::TcpStream::connect((host, port)),
+        )
+        .await
+        .map_err(|_| UpstreamError::Unreachable(format!("connect to {host}:{port} timed out")))?
+        .map_err(UpstreamError::Io)?;
+        Ok(Box::new(stream))
+    }
 
     /// Returns the upstream proxy URL if this connector routes through one.
     /// Used for circuit breaker keying and status reporting.
@@ -487,6 +510,31 @@ impl OutboundConnector for HttpUpstreamConnector {
             .await
     }
 
+    async fn open_tunnel(
+        &self,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<TunnelIo, UpstreamError> {
+        if host_is_bypassed(&self.bypass, target_host) {
+            return self.direct.open_tunnel(target_host, target_port).await;
+        }
+
+        let mut stream = TcpStream::connect(self.proxy_addr)
+            .await
+            .map_err(|e| UpstreamError::Unreachable(format!("TCP connect to upstream: {e}")))?;
+        let status = Self::send_connect_inner(
+            &mut stream,
+            target_host,
+            target_port,
+            self.proxy_authorization.as_deref(),
+        )
+        .await?;
+        if !(200..300).contains(&status) {
+            return Err(UpstreamError::ConnectRefused { status });
+        }
+        Ok(Box::new(stream))
+    }
+
     fn upstream_proxy_url(&self) -> Option<&str> {
         Some(&self.proxy_url)
     }
@@ -711,6 +759,38 @@ impl OutboundConnector for HttpsUpstreamConnector {
             .await
             .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
         Ok(resp)
+    }
+
+    async fn open_tunnel(
+        &self,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<TunnelIo, UpstreamError> {
+        if host_is_bypassed(&self.bypass, target_host) {
+            return self.direct.open_tunnel(target_host, target_port).await;
+        }
+
+        let connector = tokio_rustls::TlsConnector::from(self.tls_client_config.clone());
+        let proxy_server_name = rustls::pki_types::ServerName::try_from(self.proxy_host.clone())
+            .map_err(|e| UpstreamError::Tls(format!("invalid proxy server name: {e}")))?;
+        let stream = TcpStream::connect(self.proxy_addr)
+            .await
+            .map_err(|e| UpstreamError::Unreachable(format!("TCP connect to upstream: {e}")))?;
+        let mut proxy_tls = connector
+            .connect(proxy_server_name, stream)
+            .await
+            .map_err(|e| UpstreamError::Tls(e.to_string()))?;
+        let status = HttpUpstreamConnector::send_connect_inner(
+            &mut proxy_tls,
+            target_host,
+            target_port,
+            self.proxy_authorization.as_deref(),
+        )
+        .await?;
+        if !(200..300).contains(&status) {
+            return Err(UpstreamError::ConnectRefused { status });
+        }
+        Ok(Box::new(proxy_tls))
     }
 
     fn upstream_proxy_url(&self) -> Option<&str> {

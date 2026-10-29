@@ -220,6 +220,7 @@ mod tests {
                 tls: true,
                 tls_version: Some("TLS1.3".to_string()),
                 sni: Some("example.com".to_string()),
+                alpn: None,
             },
             layer: Layer::Http(HttpLayer {
                 request: HttpRequest {
@@ -274,6 +275,7 @@ mod tests {
                 tls: true,
                 tls_version: Some("TLS1.3".to_string()),
                 sni: Some("ws.example.com".to_string()),
+                alpn: None,
             },
             layer: Layer::WebSocket(WebSocketLayer {
                 handshake_request: HttpRequest {

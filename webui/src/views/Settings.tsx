@@ -3,6 +3,7 @@ import { store } from '@/lib/store';
 import { getPolicy, patchPolicy } from '@/lib/api';
 import { showTunnels, setShowTunnels } from '@/lib/tunnels';
 import type { ProxyPolicy } from '@/types/api';
+import { verificationIsInsecure, verificationLabel } from '@/lib/policy';
 
 /** Bytes the way a person reads them: `10485760 bytes` is `10 MiB`. */
 function formatBytes(bytes: number): string {
@@ -155,6 +156,27 @@ export default function SettingsView() {
                     one row per HTTPS destination is left out of the list unless asked for.
                   </p>
                 </div>
+              </section>
+
+              <section class="border border-border/60 rounded-md overflow-hidden">
+                <h3 class="px-2 py-1 text-[12px] font-bold text-text-dim uppercase tracking-wide bg-surface-alt border-b border-border/60">
+                  TLS
+                </h3>
+                <div class="grid grid-cols-[minmax(0,12rem)_1fr] gap-x-3 gap-y-1 p-3">
+                  <span class="text-text-dim">Target verification</span>
+                  <span class={verificationIsInsecure(p()) ? 'text-error font-bold' : ''}>
+                    {verificationLabel(p())}
+                  </span>
+                </div>
+                <Show when={p().upstream_tls?.verification.mode === 'insecure'}>
+                  <p class="px-3 pb-3 text-error text-[12px]">
+                    Certificate verification is DISABLED
+                    {p().upstream_tls?.verification.mode === 'insecure'
+                      ? `: ${(p().upstream_tls?.verification as { reason: string }).reason}`
+                      : ''}
+                    . Any certificate presented by a target is accepted.
+                  </p>
+                </Show>
               </section>
 
               <section class="border border-border/60 rounded-md overflow-hidden">
