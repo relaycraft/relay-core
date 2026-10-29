@@ -52,7 +52,7 @@
 | §3 数据面与 Mutation Pipeline | **Partial** | 头/状态/body/编码的改写都真的到线路了，且失败与超预算有结构化原因 | 没有「显式 Mutation 类型」；`BodyObservation` 策略不是真正决定保留的开关 |
 | §4 Connection/Stream/Message 模型 | **Partial**（2026-10-11 由 Skeleton 升） | `connection_id` / `parent_flow_id` / `protocol_stack` 已交付并有线路契约；CONNECT 现在是一条带 `connect` 标签的 Flow（记录但默认不进列表） | **`stream_id` 仍缺，且已判定不该造**：没有任何应用层代理实现它，hyper 也不暴露（证据见路线图 §4-1）；Message 级已齐（WS frame 与被代理 SSE 事件均为增量），typed event 10 个变体全部有生产者（含 2026-10-28 的 `RuleEvaluated`） |
 | §5 HTTP/1.x 与 Body 编解码 | **Working** | H1.0/H1.1、chunked、gzip/deflate/br/zstd 解压→规则→重编码闭环 | 请求方向 Content-Encoding 不解码（有意，已锁测试）；请求方向 trailers 已记录并有线路用例（2026-10-30），响应 trailers 由 `wire_matrix_h2c_upstream_is_reachable` 断言；half-close 无处理 |
-| §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；无 RST_STREAM/GOAWAY |
+| §6 HTTP/2 | **Working** | 明文 h2c **双向可用**（入站含 CONNECT 隧道内 + 出站含 h2c-only 上游）；TLS 后的 H2 亦有线路断言。两种 h2c 形态 mitmproxy 都不支持 | trailers 现已**记录进 Flow**；仍无 gRPC **消息级解析**；RST_STREAM 现记录为 `CloseReason::Reset` 并有线路用例，GOAWAY 仍归为 `UpstreamClosed`（未细分） |
 | §7.1 WebSocket | **Working** | 握手改写、帧替换、会话结束/失败握手都可观测；`permessage-deflate` 现为**显式降级**（双向剥离 + `ws-extensions-stripped` 标签 + 指标），不再是静默破坏 | 帧级修改仍无线路断言；Socket.IO/帧级双视图未做 |
 | §7.2 SSE（作为被代理流量） | **Working**（2026-10-11 由 Absent 升） | 按 WHATWG 规则增量解析流经代理的 `text/event-stream`：`event`/`id`/`retry`/`data`、跨 chunk 的 UTF-8 与行边界、每事件 1 MiB 上限与丢弃计数、事件级实时推送（`event: sse-event`）、流结束状态 | `Last-Event-ID` 辅助分析未做；事件**记录进响应**（`HttpResponse.sse_events`，上限 500）并在详情页 Messages 面板展示（实时 + 事后两条路都已通） |
 | §8 TLS / PKI | **Partial**（2026-10-30 更新） | CA 生成/加载/按主机签发、MITM 端到端可用；按目标的 passthrough/drop（0012）；SNI/ALPN/版本写入 Flow；**出站验证策略** native roots / custom CA / explicit insecure（0013，策略先验证后入库、运行中生效） | 上游证书链与握手错误原因不可观察；`connect_time_ms`/`ssl_time_ms` 仍为 `None`；按**客户端**的决策未做；passthrough 不解析握手（按设计）；HTTPS 父代理与目标共用同一策略（custom CA 需同时包含二者）；Web UI 的 insecure 标记无截图级验证 |
@@ -164,7 +164,7 @@
 | mitmproxy 差分（3 个 fixture） | **在 CI 里静默跳过** | 代码在 `mitmdump` 缺失时打印 skip 后**返回成功**（`mitmproxy_differential.rs:87-92`）；`.github/workflows/` 从不设置 `REQUIRE_MITMPROXY`，也从不安装 mitmproxy ⇒ ubuntu 上 3 个测试记为 **ok**。本机装了 mitmdump，因此本地 3/3 真实通过 |
 | soak（`stability_test.sh`，默认 2h） | 未接任何 workflow，且仍指向已饱和的 Python 上游 | grep `.github/workflows` 无命中 |
 | fuzz | 无 `fuzz/` 目录、无 `cargo-fuzz`/`arbitrary`；只有 6+5 个确定性对抗用例 | `content_encoding.rs`、`rule/engine/loader.rs` |
-| HTTP/2 | **已有两处线路断言** | `wire_matrix_h2c_ingress_is_captured_and_forwarded`（明文 h2c）；`test_https_mitm_h2`（TLS 后两并发 stream + 规则改写 + 版本）。**仍缺**：CONNECT 隧道内的 h2c、RST_STREAM/GOAWAY |
+| HTTP/2 | **已有两处线路断言** | `wire_matrix_h2c_ingress_is_captured_and_forwarded`（明文 h2c）；`test_https_mitm_h2`（TLS 后两并发 stream + 规则改写 + 版本）。**已补**：出站 RST_STREAM 的 `CloseReason::Reset` 线路用例（`h2_reset_test.rs`）；**仍缺**：GOAWAY/取消的独立语义 |
 | 透明捕获 | **零平台级覆盖** | `linux_tproxy.rs` / `macos_pf.rs` / `windows.rs` 各 0 个测试；测试全用 mock |
 | UDP E2E | 唯一两个用例是 `#[cfg(not(target_os = "linux"))]` ⇒ **在唯一阻塞门禁平台上被跳过**。**根因已查清**：`UdpProxy::run` 在 Linux 上**无条件**启用 TPROXY（`capture/udp.rs`），因此连「带显式 `remote_addr` 的普通 UDP 转发」也需要 `CAP_NET_ADMIN` + iptables 规则。把该调用限定到透明路径即可让两个用例在 Linux 跑起来 | `udp_integration_test.rs:45,101` |
 | 覆盖率门禁 | 仍**无阈值**，但数值已可见 | `ci.yml` 现在把 `cargo llvm-cov --summary-only` 的输出发到 job summary（此前数字既不可见也不阻断）。**未擅自填阈值**：阈值必须来自一次真实测量，而本机未装 `cargo-llvm-cov`；填一个猜的数字要么当场失败要么毫无意义。下一步明确：跑一次拿到基线 → 加 `--fail-under-lines` |

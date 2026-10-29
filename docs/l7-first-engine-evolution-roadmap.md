@@ -326,7 +326,7 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    - RelayCore → upstream
    - H2 ↔ H1 协议转换
 2. stream 级 Flow ID 和 connection 归属
-3. 并发 streams、reset、GOAWAY、取消
+3. 并发 streams、reset、GOAWAY、取消（🟡 reset 已记录为 `CloseReason::Reset`）
 4. flow control 与背压
 5. header pseudo-fields 正确映射
 6. gRPC 所需的 framing 基础不被破坏
@@ -1329,7 +1329,8 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   「丢唤醒」也是误读：阻塞在满通道上的 `await` 与空闲在 `kevent` 在栈上长得一样。
   四次错误结论与两条教训的完整记录见
   [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis。
-- ✅ 请求方向的 trailers 已记录（2026-10-30）。⬜ 仍缺：RST_STREAM/GOAWAY/取消、
+- ✅ 请求方向的 trailers 已记录（2026-10-30）。✅ 出站 RST_STREAM 现记录为 `CloseReason::Reset`
+  （2026-10-30，`h2_reset_test.rs`）；⬜ 仍缺：GOAWAY/取消的细分、
   `:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
@@ -1370,12 +1371,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **987 passed / 0 failed / 0 ignored**（52 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **990 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
   `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **6 个** +
-  `request_trailers_test.rs` **1 个**，**0 个 `#[ignore]`**。
+  `request_trailers_test.rs` **1 个** + `h2_reset_test.rs` **1 个**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
@@ -1413,7 +1414,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `wire_matrix_h2c_inside_a_connect_tunnel_is_captured`（CONNECT 隧道内 h2c）、
   `wire_matrix_h2c_upstream_is_reachable`（h2c-only 上游 + trailer 端到端）、
   `test_https_mitm_h2`（TLS 后两并发 stream + 规则改写 + 版本）。
-  **仍缺**：RST_STREAM/GOAWAY/取消的语义断言。
+  **已补**：出站 RST_STREAM → `Reset` 的线路用例；**仍缺**：GOAWAY/取消的语义断言。
 - 透明捕获三个平台 provider（`linux_tproxy.rs` / `macos_pf.rs` / `windows.rs`）**各有 0 个测试**，
   测试全部基于 mock ⇒ 「Linux/macOS 可用」目前没有平台级证据
 - ✅ **MCP 资源订阅已实现**（本节此前写「不可订阅却在推送」，已过期）：

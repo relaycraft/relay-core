@@ -195,6 +195,32 @@ pub async fn handle_request(
     .await
 }
 
+/// Classify an outbound failure from the error text hyper/h2 produced.
+///
+/// `UpstreamError` erases the hyper error into an `io::Error`, so the typed cause is gone by the
+/// time the proxy decides how to end the flow. The text is the remaining evidence, and the two
+/// outcomes it must separate are genuine: `RST_STREAM`/CANCEL means *this exchange* was refused by
+/// a live peer, while a closed connection means the peer went away. Reporting both as
+/// `UpstreamClosed` made "retry the request" and "the upstream is gone" indistinguishable.
+///
+/// This is deliberately conservative: unknown text stays `UpstreamClosed`, because inventing a
+/// reset that did not happen is worse than a less specific true statement.
+fn upstream_close_reason(error: &crate::proxy::outbound::UpstreamError) -> CloseReason {
+    if matches!(error, crate::proxy::outbound::UpstreamError::Reset { .. }) {
+        return CloseReason::Reset;
+    }
+    let text = error.to_string().to_ascii_lowercase();
+    if text.contains("stream error")
+        || text.contains("rst_stream")
+        || text.contains("reset")
+        || text.contains("cancel")
+    {
+        CloseReason::Reset
+    } else {
+        CloseReason::UpstreamClosed
+    }
+}
+
 /// Declare one stage of an exchange's life, from the place that reached it.
 ///
 /// A declaration rather than an inference (roadmap §4-4, §24.8): the typed event model exists so a
@@ -655,9 +681,11 @@ where
             if let Layer::Http(http) = &mut flow.layer {
                 http.error = Some(format!("Upstream Error: {}", e));
             }
-            // The exchange is finishing: record it so duration_ms can be computed.
+            // The exchange is finishing: record it so duration_ms can be computed. A stream that
+            // the peer reset is not the same event as a connection that closed, and the difference
+            // is what tells a reader whether to retry, so it is classified rather than flattened.
             flow.end_time = Some(chrono::Utc::now());
-            flow.close_reason = Some(CloseReason::UpstreamClosed);
+            flow.close_reason = Some(upstream_close_reason(&e));
             if let Err(e) = on_flow.send(FlowUpdate::Full(Box::new(flow.clone()))).await {
                 tracing::error!("Failed to send flow update on upstream error: {}", e);
             }

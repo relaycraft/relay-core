@@ -28,6 +28,37 @@ pub enum UpstreamError {
     Tls(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// The peer reset this stream (HTTP/2 RST_STREAM / CANCEL) while the connection stayed alive.
+    ///
+    /// A separate variant because it changes what a caller should do: the upstream is reachable and
+    /// answered; this particular exchange was refused.
+    #[error("upstream reset the stream: {detail}")]
+    Reset { detail: String },
+}
+
+/// Keep the typed HTTP/2 reset instead of erasing it into an opaque `io::Error`.
+///
+/// `hyper::Error`'s `Display` is only "http2 error", so a caller that receives the erased form
+/// cannot tell a per-stream reset from a broken connection. The source chain still carries the
+/// `h2::Error`, and its `is_reset()` is the fact the flow's close reason needs.
+fn is_h2_reset(error: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(h2) = error.downcast_ref::<h2::Error>() {
+        return h2.is_reset();
+    }
+    error.source().is_some_and(is_h2_reset)
+}
+
+fn map_hyper_error<E>(error: E) -> UpstreamError
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    if is_h2_reset(&error) {
+        UpstreamError::Reset {
+            detail: format!("{error:?}"),
+        }
+    } else {
+        UpstreamError::Io(std::io::Error::other(error))
+    }
 }
 
 /// The byte stream an outbound tunnel hands back: a plain socket, a CONNECT-through-parent socket,
@@ -296,10 +327,7 @@ impl OutboundConnector for DirectConnector {
             let authority = format!("{target_host}:{target_port}");
             match self.h2c_sender(&authority, target_host, target_port).await {
                 Ok(mut sender) => {
-                    return sender
-                        .send_request(req)
-                        .await
-                        .map_err(|e| UpstreamError::Io(std::io::Error::other(e)));
+                    return sender.send_request(req).await.map_err(map_hyper_error);
                 }
                 Err(reason) => {
                     // The upstream is not speaking h2c. Fall back rather than fail: the request is
@@ -310,10 +338,7 @@ impl OutboundConnector for DirectConnector {
             }
         }
 
-        self.client
-            .request(req)
-            .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))
+        self.client.request(req).await.map_err(map_hyper_error)
     }
 }
 
@@ -566,9 +591,7 @@ impl HttpUpstreamConnector {
             }
             req_builder = req_builder.header(name, value);
         }
-        let req = req_builder
-            .body(body)
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+        let req = req_builder.body(body).map_err(map_hyper_error)?;
 
         let stream = TcpStream::connect(self.proxy_addr)
             .await
@@ -577,17 +600,14 @@ impl HttpUpstreamConnector {
 
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
             .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+            .map_err(map_hyper_error)?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
                 tracing::debug!("upstream http1 connection error: {}", e);
             }
         });
 
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+        let resp = sender.send_request(req).await.map_err(map_hyper_error)?;
         Ok(resp)
     }
 
@@ -623,17 +643,14 @@ impl HttpUpstreamConnector {
         // 3. Send the actual HTTP request over TLS
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
             .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+            .map_err(map_hyper_error)?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
                 tracing::debug!("upstream tunnel http1 connection error: {}", e);
             }
         });
 
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+        let resp = sender.send_request(req).await.map_err(map_hyper_error)?;
         Ok(resp)
     }
 }
@@ -750,17 +767,14 @@ impl OutboundConnector for HttpsUpstreamConnector {
         // 5. Send the actual HTTP request
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
             .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+            .map_err(map_hyper_error)?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
                 tracing::debug!("https-upstream tunnel http1 connection error: {}", e);
             }
         });
 
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| UpstreamError::Io(std::io::Error::other(e)))?;
+        let resp = sender.send_request(req).await.map_err(map_hyper_error)?;
         Ok(resp)
     }
 

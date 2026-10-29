@@ -473,3 +473,34 @@ impl crate::interceptor::Interceptor for ThrottleTestInterceptor {
         ))
     }
 }
+
+#[test]
+fn a_stream_reset_is_not_flattened_into_a_closed_connection() {
+    use crate::proxy::outbound::UpstreamError;
+    assert_eq!(
+        upstream_close_reason(&UpstreamError::Reset {
+            detail: "stream error: stream ID 1; CANCEL".to_string()
+        }),
+        CloseReason::Reset,
+        "a peer that cancels one stream is still alive"
+    );
+    assert_eq!(
+        upstream_close_reason(&UpstreamError::Io(std::io::Error::other(
+            "connection error: received GOAWAY"
+        ))),
+        CloseReason::UpstreamClosed,
+        "GOAWAY ends the connection, not one exchange"
+    );
+}
+
+#[test]
+fn an_unrecognised_upstream_failure_stays_upstream_closed() {
+    use crate::proxy::outbound::UpstreamError;
+    assert_eq!(
+        upstream_close_reason(&UpstreamError::Io(std::io::Error::other(
+            "connection refused"
+        ))),
+        CloseReason::UpstreamClosed,
+        "unknown text must not be guessed into a reset"
+    );
+}
