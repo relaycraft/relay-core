@@ -16,6 +16,14 @@ pub trait FlowReadService: Send + Sync {
     async fn search_flows(&self, query: FlowQuery) -> Vec<FlowSummary>;
     /// Delete captured flows and summaries. Returns `(flows, summaries)` removed.
     async fn clear_captured_flows(&self) -> Result<(u64, u64), String>;
+
+    /// Recent rule evaluations for one flow, from the runtime's bounded in-memory index.
+    ///
+    /// The default is empty for adapters that do not keep one; a caller must not read that as
+    /// "no rules were evaluated" unless the implementation says it supports traces.
+    fn rule_trace(&self, _id: &str) -> crate::services::rule_trace::RuleTraceSnapshot {
+        Default::default()
+    }
 }
 
 #[async_trait]
@@ -32,6 +40,10 @@ impl FlowReadService for CoreState {
 
     async fn search_flows(&self, query: FlowQuery) -> Vec<FlowSummary> {
         CoreState::search_flows(self, query).await
+    }
+
+    fn rule_trace(&self, id: &str) -> crate::services::rule_trace::RuleTraceSnapshot {
+        CoreState::rule_trace(self, id)
     }
 
     async fn clear_captured_flows(&self) -> Result<(u64, u64), String> {

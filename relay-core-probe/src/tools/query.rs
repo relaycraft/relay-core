@@ -58,6 +58,38 @@ pub fn get_flow_schema() -> Tool {
     ))
 }
 
+pub fn get_flow_rule_trace_schema() -> Tool {
+    tool(ToolSpec::read_only(
+        "get_flow_rule_trace",
+        "Rule evaluations recorded for one flow, oldest first. Includes rules that were evaluated \
+         and did NOT match, rules skipped for a body budget, and failures with their reason—which \
+         is what answers \"why did my rule not fire\". The trace is in-memory and bounded: it exists \
+         only for the running process, keeps the most recent 100 evaluations per flow and the most \
+         recent 256 flows, and `truncated` says whether older events were dropped.",
+        json!({
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": { "type": "string", "description": "Flow UUID" }
+            }
+        }),
+    ))
+}
+
+pub async fn get_flow_rule_trace(
+    ctx: &Arc<ProbeContext>,
+    args: Value,
+) -> Result<ToolOutcome, ToolError> {
+    let id = require_str(&args, "id")?;
+    let snapshot = ctx.flows.rule_trace(&id);
+    ok_json(&json!({
+        "flow_id": id,
+        "events": snapshot.events,
+        "truncated": snapshot.truncated,
+        "note": "In-memory trace for the running process only; not persisted with the flow."
+    }))
+}
+
 pub fn get_metrics_schema() -> Tool {
     tool(ToolSpec::read_only(
         "get_metrics",

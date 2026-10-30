@@ -47,9 +47,9 @@ fn all_tool_schemas_registered() {
     let schemas = tools::tool_list();
     let names: Vec<&str> = schemas.iter().map(|t| t.name.as_ref()).collect();
 
-    // 18 traffic/policy tools plus the 3 lifecycle tools an agent needs in order to control the
+    // 19 traffic/policy tools plus the 3 lifecycle tools an agent needs in order to control the
     // proxy it is reading traffic from.
-    assert_eq!(schemas.len(), 21, "registered tools: {names:?}");
+    assert_eq!(schemas.len(), 22, "registered tools: {names:?}");
 
     for expected in [
         "proxy_status",
@@ -57,6 +57,7 @@ fn all_tool_schemas_registered() {
         "proxy_stop",
         "search_flows",
         "get_flow",
+        "get_flow_rule_trace",
         "get_metrics",
         "replay_flow",
         "export_har",
@@ -131,6 +132,33 @@ async fn search_flows_with_filters() {
 }
 
 // ── get_flow ──
+
+#[tokio::test]
+async fn flow_rule_trace_returns_non_matching_evaluations() {
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::rule::{RuleOutcome, RuleStage};
+
+    let state = Arc::new(CoreState::new(None).await);
+    let ctx = Arc::new(ProbeContext::new(state.clone()));
+    let flow_id = uuid::Uuid::new_v4();
+    state.publish_flow_event(FlowEvent::RuleEvaluated {
+        flow_id,
+        direction: relay_core_api::flow::Direction::ClientToServer,
+        rule_id: "post-only".to_string(),
+        stage: RuleStage::RequestHeaders,
+        matched: false,
+        duration_us: 3,
+        outcome: RuleOutcome::NotMatched,
+    });
+
+    let outcome = tools::get_flow_rule_trace(&ctx, json!({ "id": flow_id.to_string() }))
+        .await
+        .expect("the trace is readable");
+    assert_eq!(outcome.structured["flow_id"], flow_id.to_string());
+    assert_eq!(outcome.structured["events"][0]["rule_id"], "post-only");
+    assert_eq!(outcome.structured["events"][0]["matched"], false);
+    assert_eq!(outcome.structured["truncated"], false);
+}
 
 #[tokio::test]
 async fn get_flow_nonexistent_errors() {
@@ -703,6 +731,7 @@ fn observation_tools_are_marked_read_only() {
         "proxy_status",
         "search_flows",
         "get_flow",
+        "get_flow_rule_trace",
         "get_metrics",
         "export_har",
         "get_pending_intercepts",

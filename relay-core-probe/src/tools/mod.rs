@@ -12,7 +12,9 @@ pub mod script;
 // Re-export all public tool functions for external testing
 pub use intercept::{get_pending_intercepts, resume_flow, set_intercept};
 pub use lifecycle::{lifecycle_tool_schemas, proxy_control_hint};
-pub use query::{clear_flows, export_har, get_flow, get_metrics, replay_flow, search_flows};
+pub use query::{
+    clear_flows, export_har, get_flow, get_flow_rule_trace, get_metrics, replay_flow, search_flows,
+};
 pub use rules::{
     delete_rule, get_policy, list_rules, mock_url, patch_policy, set_rule, update_policy,
 };
@@ -100,6 +102,7 @@ pub fn tool_list() -> Vec<Tool> {
     let rest = vec![
         query::search_flows_schema(),
         query::get_flow_schema(),
+        query::get_flow_rule_trace_schema(),
         query::get_metrics_schema(),
         query::replay_flow_schema(),
         query::export_har_schema(),
@@ -138,6 +141,7 @@ pub async fn dispatch(
     match name {
         "search_flows" => query::search_flows(ctx, args).await,
         "get_flow" => query::get_flow(ctx, args).await,
+        "get_flow_rule_trace" => query::get_flow_rule_trace(ctx, args).await,
         "get_metrics" => query::get_metrics(ctx).await,
         "replay_flow" => query::replay_flow(ctx, args).await,
         "export_har" => query::export_har(ctx, args).await,

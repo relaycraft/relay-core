@@ -1146,9 +1146,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
     `every_evaluated_rule_reaches_the_event_stream`（runtime）、
     `a_stage_that_matches_nothing_reports_only_the_evaluation`（真实事件通道，断言「只有评估、没有变更」）、
     `every_flow_event_round_trips_through_its_frame`、`flowEvents.test.ts` 2 个用例。
-  - 🟡 `RuleTrace`（`api/rule.rs`）作为**聚合容器**仍无构造点：其价值（按 flow 懒加载详细日志）
-    已由逐条 `RuleEvaluated` 事件取代，保留类型是为了不破坏已导出的 API；
-    若后续引入「按 flow 查询 trace」端点，应在那里构造它，而不是再复制一条事件通道。
+  - ✅ **按 flow 查询已有入口**（2026-10-30）：运行时保留有界的逐规则评估
+    （`RuleTraceStore`：最多 256 个 flow × 每个 100 条，旧事件先丢），MCP 工具
+    `get_flow_rule_trace` 返回 `{flow_id, events, truncated, note}`。它回答「当时为什么没匹配」，
+    且明确说明「仅本进程、未持久化」。
+  - 🟡 `RuleTrace`（`api/rule.rs`）作为**聚合容器**仍无构造点：其价值已被逐条 `RuleEvaluated`
+    事件与 `RuleTraceSnapshot` 取代，保留类型是为了不破坏已导出的 API；不要再复制一条事件通道。
 
 ### 24.7 模型与时间语义失真
 
@@ -1381,7 +1384,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **992 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **997 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +

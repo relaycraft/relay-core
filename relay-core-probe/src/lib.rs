@@ -28,13 +28,17 @@
 //!
 //! ## Stable tools (v2)
 //! - `proxy_status` / `proxy_start` / `proxy_stop` — proxy lifecycle of the owning daemon
-//! - `search_flows` / `get_flow` / `get_metrics` — read-only, no side effects
+//! - `search_flows` / `get_flow` / `get_flow_rule_trace` / `get_metrics` — read-only, no side effects
 //! - `replay_flow` / `export_har` — flow replay and HAR export
 //! - `set_rule` / `list_rules` / `delete_rule` / `mock_url` — rule engine management
 //! - `set_intercept` / `get_pending_intercepts` / `resume_flow` — breakpoint flow
 //! - `get_policy` / `update_policy` / `patch_policy` — policy management
 //! - `clear_flows` — drop captured history without touching rules or audit
 //! - `get_script` / `set_script` — read and load Deno scripts for dynamic modification
+//!
+//! `get_flow_rule_trace` reads the runtime's bounded in-memory trace: every evaluated rule,
+//! including ones that did not match, were skipped, or failed. It is diagnostic state for the
+//! running process, not part of the persisted flow.
 //!
 //! # Quick start
 //! ```no_run

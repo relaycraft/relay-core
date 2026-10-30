@@ -387,6 +387,8 @@ pub struct CoreState {
     ca_cert_path: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// `.proto` directory compiled for detail reads. Not consulted while forwarding.
     proto_schemas: Mutex<relay_core_lib::protobuf::ProtoSchemaCache>,
+    /// Recent per-flow rule evaluations, for readers that ask after the events have gone by.
+    rule_traces: Arc<Mutex<crate::services::rule_trace::RuleTraceStore>>,
 }
 
 /// Removes the proxy listen port from `capture_exclude` when `run_proxy` returns.
@@ -485,6 +487,9 @@ impl CoreState {
             proxy_exclude_port: AtomicU16::new(0),
             ca_cert_path: std::sync::Mutex::new(None),
             proto_schemas: Mutex::new(relay_core_lib::protobuf::ProtoSchemaCache::new()),
+            rule_traces: Arc::new(Mutex::new(
+                crate::services::rule_trace::RuleTraceStore::default(),
+            )),
         };
         state.ensure_retention_task();
         state
@@ -1456,7 +1461,45 @@ impl CoreState {
     /// Never blocks and never fails the caller: with no subscribers this is a no-op, which keeps a
     /// headless run from paying for a channel nobody reads.
     pub fn publish_flow_event(&self, event: FlowEvent) {
+        // Keep the diagnostic copy before broadcasting: a consumer that asks later cannot subscribe
+        // to the past, and this is the only place every evaluation passes through.
+        if let FlowEvent::RuleEvaluated {
+            flow_id,
+            rule_id,
+            stage,
+            matched,
+            duration_us,
+            outcome,
+            ..
+        } = &event
+            && let Ok(mut traces) = self.rule_traces.lock()
+        {
+            traces.record(
+                *flow_id,
+                relay_core_api::rule::RuleExecutionEvent {
+                    rule_id: rule_id.clone(),
+                    stage: stage.clone(),
+                    matched: *matched,
+                    duration_us: *duration_us,
+                    outcome: outcome.clone(),
+                },
+            );
+        }
         let _ = self.flow_event_broadcast_tx.send(event);
+    }
+
+    /// Recent rule evaluations for `flow_id`, oldest first.
+    ///
+    /// Synchronous because the store is an in-memory index, not the flow store actor: a reader
+    /// should not be able to deadlock a diagnostic query behind a busy proxy.
+    pub fn rule_trace(&self, flow_id: &str) -> crate::services::rule_trace::RuleTraceSnapshot {
+        let Ok(id) = uuid::Uuid::parse_str(flow_id) else {
+            return Default::default();
+        };
+        self.rule_traces
+            .lock()
+            .map(|traces| traces.snapshot(id))
+            .unwrap_or_default()
     }
 
     pub fn subscribe_audit_events(&self) -> broadcast::Receiver<AuditEvent> {
@@ -1540,8 +1583,15 @@ impl CoreState {
             .send(FlowStoreMessage::ClearCaptured { respond_to: tx })
             .await
             .map_err(|e| format!("flow store is gone: {e}"))?;
-        rx.await
-            .map_err(|e| format!("flow store dropped the clear: {e}"))?
+        let cleared = rx
+            .await
+            .map_err(|e| format!("flow store dropped the clear: {e}"))??;
+        // A trace belongs to a captured flow; keeping it after the flow is gone would make the tool
+        // answer for an ID that `search_flows` no longer returns.
+        if let Ok(mut traces) = self.rule_traces.lock() {
+            traces.clear();
+        }
+        Ok(cleared)
     }
 
     pub fn redact_flow_update_for_output(&self, update: FlowUpdate) -> FlowUpdate {
@@ -3790,6 +3840,38 @@ mod tests {
     }
 
     /// Clearing history removes flows and summaries and leaves audit rows alone.
+    #[tokio::test]
+    async fn rule_evaluations_are_queryable_after_the_event_stream_moves_on() {
+        use relay_core_api::event::FlowEvent;
+        use relay_core_api::rule::{RuleOutcome, RuleStage};
+
+        let state = CoreState::new(None).await;
+        let flow_id = uuid::Uuid::new_v4();
+        let event = |rule_id: &str, matched: bool, outcome: RuleOutcome| FlowEvent::RuleEvaluated {
+            flow_id,
+            direction: relay_core_api::flow::Direction::ClientToServer,
+            rule_id: rule_id.to_string(),
+            stage: RuleStage::RequestHeaders,
+            matched,
+            duration_us: 7,
+            outcome,
+        };
+        state.publish_flow_event(event("did-not-match", false, RuleOutcome::NotMatched));
+        state.publish_flow_event(event("executed", true, RuleOutcome::MatchedAndExecuted));
+
+        let trace = state.rule_trace(&flow_id.to_string());
+        assert_eq!(trace.events.len(), 2, "every evaluation is kept");
+        assert_eq!(trace.events[0].rule_id, "did-not-match");
+        assert!(!trace.events[0].matched);
+        assert_eq!(trace.events[1].outcome, RuleOutcome::MatchedAndExecuted);
+        assert!(!trace.truncated);
+
+        assert!(
+            state.rule_trace("not-a-uuid").events.is_empty(),
+            "an invalid id is empty, not an error"
+        );
+    }
+
     #[tokio::test]
     async fn clear_captured_flows_drops_history_and_keeps_audit() {
         let url = sqlite_url();

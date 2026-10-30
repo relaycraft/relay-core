@@ -5,6 +5,7 @@ pub mod intercept;
 pub mod policy;
 pub mod proxy;
 pub mod rule;
+pub mod rule_trace;
 #[cfg(feature = "script")]
 pub mod script;
 pub mod status;
