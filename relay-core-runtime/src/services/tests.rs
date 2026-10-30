@@ -67,6 +67,7 @@ fn sample_flow(host: &str, path: &str) -> Flow {
                     ssl_time_ms: None,
                 },
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             error: None,
         }),

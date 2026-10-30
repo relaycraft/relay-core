@@ -195,6 +195,37 @@ pub async fn handle_request(
     .await
 }
 
+/// Move what the outbound transport measured onto the response.
+///
+/// The connector writes into `Flow.meta` because the flow has no response yet at that point; this is
+/// the first place a response exists. Fields stay `None`/empty when the handshake belonged to a
+/// different (pooled) exchange, so the capture never presents stale measurements as this request's.
+fn apply_upstream_handshake(flow: &mut Flow) {
+    let connect_ms = flow
+        .meta
+        .get("upstream_connect_ms")
+        .and_then(|value| value.parse::<u64>().ok());
+    let ssl_ms = flow
+        .meta
+        .get("upstream_ssl_ms")
+        .and_then(|value| value.parse::<u64>().ok());
+    let certificates: Vec<String> = flow
+        .meta
+        .get("upstream_tls_certificates")
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default();
+
+    let Layer::Http(http) = &mut flow.layer else {
+        return;
+    };
+    let Some(response) = &mut http.response else {
+        return;
+    };
+    response.timing.connect_time_ms = connect_ms;
+    response.timing.ssl_time_ms = ssl_ms;
+    response.upstream_certificates = certificates;
+}
+
 /// Classify an outbound failure from the error text hyper/h2 produced.
 ///
 /// `UpstreamError` erases the hyper error into an `io::Error`, so the typed cause is gone by the
@@ -338,6 +369,7 @@ fn connect_flow(
                     ssl_time_ms: None,
                 },
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             error: None,
         }),
@@ -748,6 +780,7 @@ where
         res_parts.version,
         &res_parts.headers,
     );
+    apply_upstream_handshake(&mut flow);
     declare_stage(&on_flow, &flow, ExchangeStage::ResponseHeaders).await;
 
     // Decide the response body's plan from two explicit inputs: whether a stage will inspect it

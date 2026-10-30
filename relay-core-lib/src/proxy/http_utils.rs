@@ -8,9 +8,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::{Request, Response, StatusCode};
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
 use relay_core_api::flow::{
     BodyData, Cookie, Flow, HttpLayer, HttpRequest, HttpResponse, Layer, NetworkInfo,
     TransportProtocol, WebSocketLayer,
@@ -22,7 +19,7 @@ use std::sync::atomic::AtomicU64;
 use url::Url;
 use uuid::Uuid;
 
-pub type HttpsClient = Client<HttpsConnector<HttpConnector>, HttpBody>;
+pub use crate::proxy::outbound_client::HttpsClient;
 
 #[derive(Clone, Debug)]
 pub struct RequestMeta {
@@ -263,6 +260,7 @@ pub fn create_initial_flow(
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 },
                 messages: vec![],
                 closed: false,
@@ -709,6 +707,7 @@ pub fn update_flow_with_response_headers(
             ssl_time_ms: None,
         },
         sse_events: vec![],
+        upstream_certificates: Vec::new(),
     };
 
     match &mut flow.layer {
@@ -924,6 +923,7 @@ mod tests {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         }
     }
 
@@ -1052,6 +1052,7 @@ mod tests {
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 }),
                 error: None,
             }),

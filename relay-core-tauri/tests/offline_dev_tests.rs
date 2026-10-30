@@ -89,6 +89,7 @@ fn create_ws_flow(url: &str) -> Flow {
             },
             cookies: vec![],
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         },
         messages: vec![],
         closed: false,

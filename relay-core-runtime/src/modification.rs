@@ -67,6 +67,7 @@ pub fn apply_flow_modification(
                 },
                 cookies: vec![],
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             Layer::WebSocket(ws) => ws.handshake_response.clone(),
             _ => return InterceptionResult::Continue,
@@ -203,6 +204,7 @@ mod tests {
                 },
                 cookies: vec![],
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             });
         }
         flow
@@ -252,6 +254,7 @@ mod tests {
                     },
                     cookies: vec![],
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 },
                 messages: vec![],
                 closed: false,

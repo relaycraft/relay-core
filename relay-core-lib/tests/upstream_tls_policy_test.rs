@@ -431,3 +431,61 @@ async fn an_https_parent_proxy_follows_the_same_trust_policy() {
         "the parent's self-signed certificate must be refused by default: {body}"
     );
 }
+
+/// A new TLS connection must record how long TCP and TLS took, and the chain the peer presented.
+///
+/// The facts live on the connection and are copied into the response by hyper; the timestamp check
+/// in the connector is what keeps a pooled connection from attributing an older handshake to a
+/// later request.
+#[tokio::test]
+async fn a_new_tls_connection_records_timing_and_the_peer_chain() {
+    let upstream = spawn_tls_upstream("METADATA").await;
+    let policy = ProxyPolicy {
+        upstream_tls: UpstreamTlsPolicy {
+            verification: UpstreamTlsVerification::Insecure {
+                reason: "self-signed fixture".to_string(),
+            },
+        },
+        ..ProxyPolicy::default()
+    };
+    let (proxy_port, _policy_tx, mut flows) = start_proxy_with_updates(policy).await;
+
+    let (status, body) = request_through_proxy(proxy_port, upstream.addr.port()).await;
+    assert_eq!(status, 200, "the request must succeed: {body}");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut observed = None;
+    while tokio::time::Instant::now() < deadline && observed.is_none() {
+        match tokio::time::timeout(Duration::from_millis(200), flows.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) => {
+                if let relay_core_api::flow::Layer::Http(http) = &flow.layer
+                    && http.request.url.path() == "/verify"
+                    && let Some(response) = &http.response
+                {
+                    observed = Some((
+                        response.timing.connect_time_ms,
+                        response.timing.ssl_time_ms,
+                        response.upstream_certificates.clone(),
+                    ));
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let (connect_ms, ssl_ms, chain) = observed.expect("the exchange must be recorded");
+    assert!(
+        connect_ms.is_some(),
+        "a newly established TCP connection must report its connect time"
+    );
+    assert!(
+        ssl_ms.is_some(),
+        "a newly established TLS connection must report its handshake time"
+    );
+    assert!(
+        !chain.is_empty(),
+        "the peer chain must be recorded when this engine performed the handshake"
+    );
+}

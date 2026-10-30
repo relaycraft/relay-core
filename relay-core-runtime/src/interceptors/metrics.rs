@@ -52,6 +52,7 @@ impl Interceptor for MetricsInterceptor {
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 };
 
                 return InterceptionResult::MockResponse(response);
@@ -86,6 +87,7 @@ impl Interceptor for MetricsInterceptor {
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 };
 
                 return InterceptionResult::MockResponse(response);

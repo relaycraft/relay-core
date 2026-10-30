@@ -212,6 +212,7 @@ pub fn load_flows_har(path: &PathBuf) -> Result<Vec<Flow>> {
                             },
                         },
                         sse_events: vec![],
+                        upstream_certificates: Vec::new(),
                     }),
                     error: if status >= 400 {
                         Some(format!("HTTP {}", status))

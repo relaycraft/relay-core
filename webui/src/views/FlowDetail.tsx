@@ -383,6 +383,8 @@ function HeadersView(props: { flow: Flow }) {
           <span class="text-text">{props.flow.network.sni ?? '-'}</span>
           <span class="text-text-dim">ALPN:</span>
           <span class="text-text">{props.flow.network.alpn ?? '-'}</span>
+          <span class="text-text-dim">Upstream certs:</span>
+          <span class="tabular-nums">{res()?.upstream_certificates?.length ?? 0}</span>
         </div>
       </section>
     </div>

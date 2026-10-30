@@ -117,6 +117,7 @@ fn create_test_ws_flow(url: &str) -> Flow {
                     ssl_time_ms: None,
                 },
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             },
             messages: vec![],
             closed: false,
@@ -350,6 +351,7 @@ async fn test_core_state_update_http_body_request_and_response() {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         });
     }
     let flow_id = flow.id.to_string();
@@ -460,6 +462,7 @@ async fn test_full_snapshot_after_body_update_keeps_the_body() {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         });
     }
     let flow_id = flow.id.to_string();
@@ -808,6 +811,7 @@ async fn test_rule_interceptor_mock_websocket_message_replaces_frame() {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         },
         messages: vec![],
         closed: false,
@@ -1367,6 +1371,7 @@ async fn a_grpc_status_trailer_is_on_the_summary() {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         });
     }
     state.upsert_flow(Box::new(flow));

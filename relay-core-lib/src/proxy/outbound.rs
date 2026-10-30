@@ -342,7 +342,7 @@ impl OutboundConnector for DirectConnector {
         req: Request<HttpBody>,
         target_host: &str,
         target_port: u16,
-        _flow: &mut Flow,
+        flow: &mut Flow,
     ) -> Result<Response<Incoming>, UpstreamError> {
         if wants_plaintext_h2(&req) {
             let authority = format!("{target_host}:{target_port}");
@@ -359,7 +359,46 @@ impl OutboundConnector for DirectConnector {
             }
         }
 
-        self.client.request(req).await.map_err(map_hyper_error)
+        let started = std::time::Instant::now();
+        let response = self.client.request(req).await.map_err(map_hyper_error)?;
+        record_handshake(flow, started, &response);
+        Ok(response)
+    }
+}
+
+/// Attach what the transport observed to the flow, but only for a connection this request opened.
+///
+/// hyper copies a connection's `Connected` metadata into **every** response served on it, so a
+/// pooled request would otherwise inherit an older handshake's timing and chain. `connected_at`
+/// being before `request_started` is exactly the reused-connection case, and the fields stay `None`
+/// rather than reporting a measurement that belongs to another exchange.
+fn record_handshake(
+    flow: &mut Flow,
+    request_started: std::time::Instant,
+    response: &Response<Incoming>,
+) {
+    let Some(meta) = response
+        .extensions()
+        .get::<crate::proxy::outbound_client::HandshakeMeta>()
+    else {
+        return;
+    };
+    if meta.connected_at < request_started {
+        return;
+    }
+    flow.meta.insert(
+        "upstream_connect_ms".to_string(),
+        meta.connect_ms.to_string(),
+    );
+    if let Some(ssl_ms) = meta.ssl_ms {
+        flow.meta
+            .insert("upstream_ssl_ms".to_string(), ssl_ms.to_string());
+    }
+    if !meta.certificates.is_empty() {
+        flow.meta.insert(
+            "upstream_tls_certificates".to_string(),
+            serde_json::to_string(&meta.certificates).unwrap_or_default(),
+        );
     }
 }
 
@@ -420,10 +459,12 @@ impl HttpUpstreamConnector {
         // HTTPS targets reached through this plaintext parent still need the same target-trust
         // decision as a direct connection; otherwise a custom CA or an explicit insecure mode would
         // silently not apply whenever a parent proxy is configured.
-        let tls_config = Arc::new(
-            crate::proxy::upstream_tls::build_client_config(tls_policy)
-                .map_err(UpstreamError::Tls)?,
-        );
+        // This connector performs an HTTP/1.1 CONNECT and handshakes HTTP/1.1 with the target, so
+        // advertising h2 would negotiate a protocol it cannot drive.
+        let mut tls = crate::proxy::upstream_tls::build_client_config(tls_policy)
+            .map_err(UpstreamError::Tls)?;
+        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let tls_config = Arc::new(tls);
 
         Ok(Self {
             proxy_url: config.proxy_url.clone(),
@@ -714,10 +755,12 @@ impl HttpsUpstreamConnector {
         // The parent proxy is part of the same trust decision as a target: an internal CA or an
         // explicit insecure mode must apply to it too, or a deployment trusts its targets but not
         // the proxy it was told to use.
-        let tls_config = Arc::new(
-            crate::proxy::upstream_tls::build_client_config(tls_policy)
-                .map_err(UpstreamError::Tls)?,
-        );
+        // This connector performs an HTTP/1.1 CONNECT and handshakes HTTP/1.1 with the target, so
+        // advertising h2 would negotiate a protocol it cannot drive.
+        let mut tls = crate::proxy::upstream_tls::build_client_config(tls_policy)
+            .map_err(UpstreamError::Tls)?;
+        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let tls_config = Arc::new(tls);
 
         Ok(Self {
             proxy_url: config.proxy_url.clone(),

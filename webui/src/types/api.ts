@@ -114,6 +114,9 @@ export interface HttpResponse {
    * the flow is tagged `sse-events-capped` when the cap was reached.
    */
   sse_events?: SseStreamEvent[];
+  /** Base64 DER certificates the target presented, leaf first. Absent for a reused connection or
+   *  when no TLS handshake was performed for this exchange. */
+  upstream_certificates?: string[];
 }
 
 export interface HttpLayer {

@@ -392,6 +392,14 @@ pub struct HttpResponse {
     /// Capped (see [`MAX_RECORDED_SSE_EVENTS`]); a stream longer than the cap says so on the flow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sse_events: Vec<crate::sse_stream::SseEvent>,
+    /// The certificate chain the **target** presented, leaf first, base64-encoded DER.
+    ///
+    /// Recorded only when this engine performed the TLS handshake for this exchange (a direct
+    /// `https://` target on a newly established connection). A reused pooled connection, a parent
+    /// proxy's own TLS, and a passthrough tunnel say nothing here rather than repeat an older
+    /// handshake's chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_certificates: Vec<String>,
 }
 
 /// Most events recorded per response.
@@ -627,6 +635,7 @@ mod tests {
                 ssl_time_ms: None,
             },
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         }
     }
 

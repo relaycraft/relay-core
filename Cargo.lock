@@ -4883,6 +4883,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite 0.28.0",
+ "tower-service",
  "tracing",
  "url",
  "uuid",

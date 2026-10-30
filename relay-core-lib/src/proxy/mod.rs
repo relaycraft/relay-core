@@ -25,6 +25,7 @@ pub mod content_encoding;
 pub mod http;
 pub mod http_utils;
 pub mod outbound;
+pub mod outbound_client;
 pub mod server;
 pub mod tap;
 pub mod throttle;

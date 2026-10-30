@@ -1,5 +1,3 @@
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
 use rcgen::generate_simple_self_signed;
 use relay_core_api::flow::{CONNECT_TAG, FlowUpdate};
@@ -84,6 +82,17 @@ fn make_server_cert() -> (
 }
 
 // Helper to create a client that trusts everything (for testing)
+fn insecure_client() -> HttpsClient {
+    relay_core_lib::proxy::upstream_tls::build_upstream_client(
+        &relay_core_api::policy::UpstreamTlsPolicy {
+            verification: relay_core_api::policy::UpstreamTlsVerification::Insecure {
+                reason: "self-signed test upstream".to_string(),
+            },
+        },
+    )
+    .expect("insecure client")
+}
+
 fn make_insecure_client_config() -> ClientConfig {
     let root_store = rustls::RootCertStore::empty();
     // We don't actually add roots, we just disable verification
@@ -196,19 +205,8 @@ async fn test_https_mitm_h1() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(100);
     let on_flow = tx.clone();
 
-    // Inject insecure client
-    let insecure_config = make_insecure_client_config();
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(insecure_config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .build();
-    let client: HttpsClient = Client::builder(hyper_util::rt::TokioExecutor::new())
-        .timer(hyper_util::rt::TokioTimer::new())
-        .pool_idle_timeout(Duration::from_secs(60))
-        .build(https);
-    let client = Some(Arc::new(client));
+    // Inject an insecure client: the fixture upstreams use self-signed certificates.
+    let client = Some(Arc::new(insecure_client()));
 
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());
@@ -367,19 +365,8 @@ async fn test_https_mitm_h2() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<FlowUpdate>(100);
     let on_flow = tx.clone();
 
-    // Inject insecure client
-    let insecure_config = make_insecure_client_config();
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(insecure_config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .build();
-    let client: HttpsClient = Client::builder(hyper_util::rt::TokioExecutor::new())
-        .timer(hyper_util::rt::TokioTimer::new())
-        .pool_idle_timeout(Duration::from_secs(60))
-        .build(https);
-    let client = Some(Arc::new(client));
+    // Inject an insecure client: the fixture upstreams use self-signed certificates.
+    let client = Some(Arc::new(insecure_client()));
 
     tokio::spawn(async move {
         let (_policy_tx, policy_rx) = tokio::sync::watch::channel(ProxyPolicy::default());

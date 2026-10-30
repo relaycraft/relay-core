@@ -59,6 +59,7 @@ fn flow_with_timing(timing: ResponseTiming) -> Flow {
                 trailers: vec![],
                 timing,
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             error: None,
         }),

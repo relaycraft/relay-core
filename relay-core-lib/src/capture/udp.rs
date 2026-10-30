@@ -940,6 +940,7 @@ mod tests {
                 },
                 cookies: vec![],
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             })
         }
         async fn on_request(

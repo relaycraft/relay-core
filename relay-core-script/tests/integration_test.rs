@@ -214,6 +214,7 @@ async fn test_deno_script_on_response() {
             },
             cookies: vec![],
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         });
     }
 
@@ -1071,6 +1072,7 @@ async fn async_on_response_json_rewrite_replaces_the_body() {
             },
             cookies: vec![],
             sse_events: vec![],
+            upstream_certificates: Vec::new(),
         });
     }
     let body = Full::new(Bytes::from_static(b"{\"n\":1}"))

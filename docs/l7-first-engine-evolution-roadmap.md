@@ -464,10 +464,16 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    （reason 必填、每次构建都 warn、API 始终可见）。
    策略先验证后入库，坏 bundle 不会造成「API 说 custom_ca、实际仍用旧信任」的分离；运行中变更会重建
    client + connector。**边界**：`custom_ca` 会替换信任库，HTTPS 父代理与目标必须同时在该 bundle 内；Web UI 已在 Settings → TLS 显示验证模式
-   （insecure 时红色 `DISABLED` + 理由，无截图级验证）；**握手失败原因已记录为 `CloseReason::TlsError`**（2026-10-30），原始证书链仍不可观察。
+   （insecure 时红色 `DISABLED` + 理由，无截图级验证）；**握手失败原因已记录为 `CloseReason::TlsError`**，**原始证书链与 connect/ssl 时间也已记录**（2026-10-30，仅新建直连）。
 6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
-7. 🟡 **upstream 握手错误原因可观察**（2026-10-30，`CloseReason::TlsError` + 线路用例）；**原始证书链仍不记录**。
-8. 🟡 **TLS handshake timeout**：入站有 10s 超时；`connect_time_ms` / `ssl_time_ms` 仍无赋值点。
+7. ✅ **upstream 握手错误原因与原始证书链可观察**（2026-10-30）：
+   `CloseReason::TlsError` 携带原因；`HttpResponse.upstream_certificates` 保存目标链（leaf first，base64 DER）。
+   数据来自自建 TLS transport（`outbound_client.rs`），hyper 把连接元数据复制进 response extensions，
+   因此不需要第二条连接或握手后探测。**边界**：只对**新建**直连生效；池化复用、父代理自身 TLS、
+   passthrough 隧道不填（避免把旧握手算到本次请求）。
+8. ✅ **TLS 握手超时与 timing**（2026-10-30）：TCP 连接与 TLS 握手分别计时，
+   `ResponseTiming.connect_time_ms` / `ssl_time_ms` 在新建直连上真实可读，HAR 相应 phase 不再是 -1。
+   **边界**：复用连接、h2c 明文出站与父代理握手不产生这两个值（未测量比假 0 诚实）。
 9. ✅ **CA key 文件权限与加载失败策略**：`0600` 创建并修正旧文件，有断言测试（`tls/ca.rs`）。
 
 ### 可演进（E）
@@ -1177,7 +1183,8 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   契约由 `wire_matrix_a_finished_exchange_reports_its_close_reason_once`（**恰好一次**）、
   `wire_matrix_dropped_exchange_is_not_reported_as_completed`、
   `wire_matrix_failed_flow_records_its_end_time` 与 3 个 serde 兼容测试锁定，均已双向验证。
-- ⬜ `ResponseTiming.connect_time_ms` / `ssl_time_ms` 无任何赋值点 ⇒ HAR timing 只能填 0
+- ✅ `ResponseTiming.connect_time_ms` / `ssl_time_ms` 已有赋值点（2026-10-30，新建直连；HAR 同步可读）；
+  复用连接与父代理握手保持 `None`。
 - ✅ **`NetworkInfo.sni` / `tls_version` / `alpn` 已有写入方**（2026-10-28，决策 0012）：
   `serve_tls_tunnel` 在握手后从 `ServerConnection` 读取并写入隧道内的每个 Flow；
   已由 `tls_is_intercepted_by_default` 在线路上断言（SNI `localhost`、ALPN `http/1.1`、版本 `TLSv1.x`）。
@@ -1374,11 +1381,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **991 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **992 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
-  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **6 个** +
+  `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **7 个** +
   `request_trailers_test.rs` **1 个** + `h2_reset_test.rs` **1 个**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的

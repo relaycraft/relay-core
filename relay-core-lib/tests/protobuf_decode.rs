@@ -336,6 +336,7 @@ fn grpc_flow() -> Flow {
                 },
                 trailers: vec![],
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             error: None,
         }),

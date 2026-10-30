@@ -519,6 +519,7 @@ where
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 };
 
                 if let Layer::WebSocket(ws) = &mut flow.layer {

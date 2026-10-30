@@ -1,12 +1,10 @@
 use super::*;
 use crate::capture::loop_detection::LoopDetector;
-use crate::proxy::http_utils::HttpsClient;
 use crate::proxy::outbound::{DirectConnector, OutboundConnector};
 use chrono::Utc;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::client::legacy::Client;
 use relay_core_api::flow::Flow;
 use relay_core_api::flow::{NetworkInfo, TransportProtocol};
 use relay_core_api::policy::{ProxyPolicy, QuicMode};
@@ -115,13 +113,10 @@ async fn test_request_timeout() {
 
 fn create_dummy_connector() -> Arc<dyn OutboundConnector> {
     init_crypto();
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .unwrap()
-        .https_or_http()
-        .enable_http1()
-        .build();
-    let client: HttpsClient = Client::builder(hyper_util::rt::TokioExecutor::new()).build(https);
+    let client = crate::proxy::upstream_tls::build_upstream_client(
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .expect("native-roots client");
     Arc::new(DirectConnector::new(Arc::new(client)))
 }
 

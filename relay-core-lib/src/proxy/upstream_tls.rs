@@ -5,7 +5,7 @@
 //! that defaulted to native roots would quietly undo a deployment's custom CA.
 
 use crate::proxy::http_utils::HttpsClient;
-use hyper_rustls::{ConfigBuilderExt, HttpsConnectorBuilder};
+use hyper_rustls::ConfigBuilderExt;
 use hyper_util::client::legacy::Client;
 use relay_core_api::policy::{UpstreamTlsPolicy, UpstreamTlsVerification};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -20,13 +20,10 @@ use std::time::Duration;
 /// substituting the native roots for it would make the proxy appear to work while trusting a
 /// different set of peers than the policy says.
 pub fn build_upstream_client(policy: &UpstreamTlsPolicy) -> Result<HttpsClient, String> {
-    let config = build_client_config(policy)?;
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .build();
+    let mut config = build_client_config(policy)?;
+    // The direct transport speaks either version; the negotiated ALPN is what decides how the
+    // connection is driven. Connectors that hardcode an HTTP/1.1 handshake must not advertise h2.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Client::builder(hyper_util::rt::TokioExecutor::new())
         .timer(hyper_util::rt::TokioTimer::new())
         .pool_idle_timeout(Duration::from_secs(60))
@@ -35,7 +32,7 @@ pub fn build_upstream_client(policy: &UpstreamTlsPolicy) -> Result<HttpsClient, 
         .http2_initial_connection_window_size(4 * 1024 * 1024)
         .http2_keep_alive_interval(Duration::from_secs(20))
         .http2_keep_alive_timeout(Duration::from_secs(10))
-        .build(https))
+        .build(crate::proxy::outbound_client::TlsTransport::new(config)))
 }
 
 /// The TLS configuration itself, for callers that make their own connector.
@@ -51,7 +48,7 @@ pub fn build_client_config(policy: &UpstreamTlsPolicy) -> Result<ClientConfig, S
     // constructed a TLS server first.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    Ok(match &policy.verification {
+    let config = match &policy.verification {
         UpstreamTlsVerification::NativeRoots => ClientConfig::builder()
             .with_native_roots()
             .map_err(|e| format!("could not load the native trust store: {e}"))?
@@ -73,7 +70,8 @@ pub fn build_client_config(policy: &UpstreamTlsPolicy) -> Result<ClientConfig, S
                 .set_certificate_verifier(Arc::new(AcceptAnyCertificate));
             config
         }
-    })
+    };
+    Ok(config)
 }
 
 /// Trust exactly the certificates in `path`.

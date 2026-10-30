@@ -69,6 +69,7 @@ fn make_flow(url: &str) -> Flow {
                 },
                 cookies: vec![],
                 sse_events: vec![],
+                upstream_certificates: Vec::new(),
             }),
             error: None,
         }),

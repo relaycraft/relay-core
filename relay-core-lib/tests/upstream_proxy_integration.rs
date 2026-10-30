@@ -167,15 +167,11 @@ fn dummy_flow() -> Flow {
 
 fn test_client() -> Arc<relay_core_lib::proxy::http_utils::HttpsClient> {
     init_crypto();
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .unwrap()
-        .https_or_http()
-        .enable_http1()
-        .build();
     Arc::new(
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(https),
+        relay_core_lib::proxy::upstream_tls::build_upstream_client(
+            &relay_core_api::policy::UpstreamTlsPolicy::default(),
+        )
+        .expect("native-roots client"),
     )
 }
 
@@ -222,15 +218,10 @@ async fn test_direct_connector_basic_request() {
     init_crypto();
     let target_addr = start_target_server().await;
 
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .unwrap()
-        .https_or_http()
-        .enable_http1()
-        .build();
-    let client: relay_core_lib::proxy::http_utils::HttpsClient =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(https);
+    let client = relay_core_lib::proxy::upstream_tls::build_upstream_client(
+        &relay_core_api::policy::UpstreamTlsPolicy::default(),
+    )
+    .expect("native-roots client");
     let connector = DirectConnector::new(Arc::new(client));
 
     let req = Request::builder()

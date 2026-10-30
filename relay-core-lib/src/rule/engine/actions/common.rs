@@ -332,6 +332,7 @@ mod tests {
                         ssl_time_ms: None,
                     },
                     sse_events: vec![],
+                    upstream_certificates: Vec::new(),
                 },
                 messages: vec![],
                 closed: false,
