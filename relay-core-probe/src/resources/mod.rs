@@ -48,6 +48,11 @@ pub async fn read_resource(
 ) -> Result<Vec<ResourceContents>, ToolError> {
     if uri == "flows://" {
         flows_list(ctx).await
+    } else if let Some(id) = uri
+        .strip_prefix("flows://")
+        .and_then(|rest| rest.strip_suffix("/trace"))
+    {
+        flow_trace(ctx, id).await
     } else if let Some(id) = uri.strip_prefix("flows://") {
         flow_detail(ctx, id).await
     } else if uri == "rules://" {
@@ -113,6 +118,24 @@ async fn flows_list(ctx: &Arc<ProbeContext>) -> Result<Vec<ResourceContents>, To
     }
 
     Ok(vec![ResourceContents::text(md, "flows://")])
+}
+
+/// `flows://{id}/trace` — the bounded rule evaluations for one flow.
+async fn flow_trace(ctx: &Arc<ProbeContext>, id: &str) -> Result<Vec<ResourceContents>, ToolError> {
+    if ctx.flows.get_flow(id).await.is_none() {
+        return Err(ToolError::not_found(format!("Flow not found: {id}")));
+    }
+    let trace = ctx.flows.rule_trace(id);
+    let body = serde_json::json!({
+        "flow_id": id,
+        "events": trace.events,
+        "truncated": trace.truncated,
+        "note": "In-memory trace for the running process only; not persisted with the flow.",
+    });
+    Ok(vec![ResourceContents::text(
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+        format!("flows://{id}/trace"),
+    )])
 }
 
 async fn flow_detail(

@@ -455,6 +455,52 @@ async fn ca_install_guide_has_os_sections() {
 }
 
 #[tokio::test]
+async fn flow_trace_resource_reports_evaluations() {
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::rule::{RuleOutcome, RuleStage};
+
+    let state = Arc::new(CoreState::new(None).await);
+    let ctx = Arc::new(ProbeContext::new(state.clone()));
+    let flow_id = uuid::Uuid::new_v4();
+    let flow: relay_core_api::flow::Flow = serde_json::from_value(json!({
+        "id": flow_id.to_string(),
+        "start_time": "2026-05-20T10:00:00Z",
+        "end_time": null,
+        "network": {
+            "client_ip": "127.0.0.1", "client_port": 1, "server_ip": "0.0.0.0",
+            "server_port": 0, "protocol": "TCP", "tls": false,
+            "tls_version": null, "sni": null
+        },
+        "layer": { "type": "Http", "data": {
+            "request": { "method": "GET", "url": "https://example.com/", "version": "HTTP/1.1",
+                         "headers": [], "cookies": [], "query": [], "body": null },
+            "response": null, "error": null
+        }},
+        "tags": [], "meta": {}
+    }))
+    .expect("flow");
+    state.upsert_flow(Box::new(flow));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    state.publish_flow_event(FlowEvent::RuleEvaluated {
+        flow_id,
+        direction: relay_core_api::flow::Direction::ClientToServer,
+        rule_id: "post-only".to_string(),
+        stage: RuleStage::RequestHeaders,
+        matched: false,
+        duration_us: 2,
+        outcome: RuleOutcome::NotMatched,
+    });
+
+    let uri = format!("flows://{flow_id}/trace");
+    let contents = resources::read_resource(&ctx, &uri).await.unwrap();
+    let text = parse_resource_output(&contents);
+    let json: Value = serde_json::from_str(&text).expect("valid JSON");
+    assert_eq!(json["flow_id"], flow_id.to_string());
+    assert_eq!(json["events"][0]["rule_id"], "post-only");
+    assert_eq!(json["truncated"], false);
+}
+
+#[tokio::test]
 async fn unknown_resource_errors() {
     let ctx = new_ctx().await;
     assert!(resources::read_resource(&ctx, "unknown://x").await.is_err());

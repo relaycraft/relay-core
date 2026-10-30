@@ -36,7 +36,8 @@
 //! - `clear_flows` — drop captured history without touching rules or audit
 //! - `get_script` / `set_script` — read and load Deno scripts for dynamic modification
 //!
-//! `get_flow_rule_trace` reads the runtime's bounded in-memory trace: every evaluated rule,
+//! `get_flow_rule_trace` (and the `flows://{id}/trace` resource) reads the runtime's bounded
+//! in-memory trace: every evaluated rule,
 //! including ones that did not match, were skipped, or failed. It is diagnostic state for the
 //! running process, not part of the persisted flow.
 //!

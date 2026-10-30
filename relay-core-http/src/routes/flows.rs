@@ -17,6 +17,7 @@ pub fn router(ctx: Arc<HttpApiContext>) -> Router {
         .route("/api/v1/flows/export/har", get(export_har))
         .route("/api/v1/flows", get(search_flows))
         .route("/api/v1/flows/{id}/har", get(get_flow_har))
+        .route("/api/v1/flows/{id}/trace", get(get_flow_trace))
         .route("/api/v1/flows/{id}", get(get_flow))
         .route("/api/v1/flows/{id}/replay", post(replay_flow))
         .with_state(ctx)
@@ -72,6 +73,26 @@ async fn search_flows(
         limit,
         offset,
     })
+}
+
+/// GET /api/v1/flows/{id}/trace — rule evaluations for one captured flow.
+///
+/// The trace is diagnostic state for the running process, not part of the stored flow: it answers
+/// "why did this rule not fire" for a rule that was evaluated and declined. A missing flow is 404,
+/// not an empty trace, so "the flow is gone" and "no rules were evaluated" stay distinguishable.
+async fn get_flow_trace(
+    State(ctx): State<Arc<HttpApiContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if ctx.flows.get_flow(&id).await.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let snapshot = ctx.flows.rule_trace(&id);
+    Ok(Json(serde_json::json!({
+        "flow_id": id,
+        "events": snapshot.events,
+        "truncated": snapshot.truncated,
+    })))
 }
 
 async fn get_flow(
@@ -203,4 +224,99 @@ async fn export_har(
             "entries": entries
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::router;
+    use axum::{
+        body::{Body, to_bytes},
+        http::{Method, Request, StatusCode},
+    };
+    use relay_core_api::event::FlowEvent;
+    use relay_core_api::flow::{Direction, Flow};
+    use relay_core_api::rule::{RuleOutcome, RuleStage};
+    use relay_core_runtime::CoreState;
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn flow(id: &str) -> Flow {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "start_time": "2026-05-20T10:00:00Z",
+            "end_time": null,
+            "network": {
+                "client_ip": "127.0.0.1", "client_port": 1234,
+                "server_ip": "0.0.0.0", "server_port": 0,
+                "protocol": "TCP", "tls": false, "tls_version": null, "sni": null
+            },
+            "layer": { "type": "Http", "data": {
+                "request": {
+                    "method": "GET", "url": "https://example.com/",
+                    "version": "HTTP/1.1", "headers": [], "cookies": [], "query": [], "body": null
+                },
+                "response": null, "error": null
+            }},
+            "tags": [], "meta": {}
+        }))
+        .expect("sample flow")
+    }
+
+    #[tokio::test]
+    async fn a_flow_trace_reports_evaluations_and_404s_for_a_missing_flow() {
+        let state = Arc::new(CoreState::new(None).await);
+        let id = uuid::Uuid::new_v4().to_string();
+        state.upsert_flow(Box::new(flow(&id)));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        state.publish_flow_event(FlowEvent::RuleEvaluated {
+            flow_id: id.parse().expect("uuid"),
+            direction: Direction::ClientToServer,
+            rule_id: "post-only".to_string(),
+            stage: RuleStage::RequestHeaders,
+            matched: false,
+            duration_us: 4,
+            outcome: RuleOutcome::NotMatched,
+        });
+
+        let ctx = Arc::new(crate::server::HttpApiContext::new(state));
+        let app = router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/v1/flows/{id}/trace"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["flow_id"], id);
+        assert_eq!(json["events"][0]["rule_id"], "post-only");
+        assert_eq!(json["events"][0]["matched"], false);
+        assert_eq!(json["truncated"], false);
+
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/v1/flows/{}/trace", uuid::Uuid::new_v4()))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("request");
+        assert_eq!(
+            missing.status(),
+            StatusCode::NOT_FOUND,
+            "a missing flow must not look like an empty trace"
+        );
+    }
 }

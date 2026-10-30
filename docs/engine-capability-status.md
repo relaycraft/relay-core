@@ -67,7 +67,7 @@
 与 `proxy_retry_total` 早已从导出面**移除**（`metrics.rs` 有注释说明理由）。fuzz **明确不承诺**（决策 0011）；soak 不阻塞 PR 且仅限 Linux |
 | §16 Security / Privacy | **Partial**（2026-10-28 更新） | 落盘前脱敏（header/query **默认开启**，body opt-in）、MapLocal sandbox、env/fetch 白名单、API 默认 loopback、CA 私钥 `0600`、`cargo-deny` + Dependabot 已接 CI | `redact_bodies` 仍为 opt-in（改 body 会改变规则/脚本看到的载荷）；advisories 只报告、不阻塞发布（决策 0004） |
 | §17 Adapters 对齐 | **Partial** | 窄 service trait 存在，Tauri 特有字段留在 adapter | CLI **自带第二套控制面**；MCP 与 HTTP 各自重复实现 replay/HAR |
-| §18 MCP / AI-Native | **Partial**（2026-10-30 更新） | 22 个工具 + 5 个资源，类型化输出；**`get_flow_rule_trace` 可查逐规则评估（含未匹配）** | 资源**不可订阅**却在推送通知；写工具**无幂等**（每次新 UUID） |
+| §18 MCP / AI-Native | **Partial**（2026-10-30 更新） | 22 个工具 + 5 个资源，类型化输出；**`get_flow_rule_trace` / `flows://{id}/trace` 可查逐规则评估（含未匹配）** | 资源**不可订阅**却在推送通知；写工具**无幂等**（每次新 UUID） |
 | §19/§20 阶段计划 | **Partial** | Phase A 的数据面关口基本走完 | Phase A 的「关系字段/typed event 基础」未完成；§20「设计」桶里 DNS/SOCKS5/WireGuard/gRPC **无任何设计产物** |
 | **发布 / 分发 / Web UI**（路线图未治理） | **Working** | crates.io + npm（`@relay-core/cli`、`@relay-core/mcp` + 7 平台二进制包）+ 内嵌 Web UI | **不在任何规划文档范围内**；webui 未消费 `flow-event` |
 
