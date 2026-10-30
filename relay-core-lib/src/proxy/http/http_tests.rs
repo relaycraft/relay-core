@@ -494,6 +494,20 @@ fn a_stream_reset_is_not_flattened_into_a_closed_connection() {
 }
 
 #[test]
+fn a_tls_failure_keeps_its_reason_in_the_close_reason() {
+    use crate::proxy::outbound::UpstreamError;
+    assert_eq!(
+        upstream_close_reason(&UpstreamError::Tls(
+            "invalid peer certificate: UnknownIssuer".to_string()
+        )),
+        CloseReason::TlsError {
+            detail: "invalid peer certificate: UnknownIssuer".to_string()
+        },
+        "a rejected certificate is not a closed connection"
+    );
+}
+
+#[test]
 fn an_unrecognised_upstream_failure_stays_upstream_closed() {
     use crate::proxy::outbound::UpstreamError;
     assert_eq!(

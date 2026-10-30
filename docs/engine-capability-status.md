@@ -82,7 +82,7 @@
 | 层面 | 声明但无生产者的项 | 证据 |
 |---|---|---|
 | 事件 | ~~`FlowEvent::Started` / `HeadersReceived` / `BodyChunk` / `MessageReceived`~~ | **已修（2026-10-11/12）**：四者都有了真实生产者——SSE 事件给 `MessageReceived`，`FlowUpdate::Stage` 给 `Started`/`HeadersReceived`，`FlowUpdate::HttpBody` 给 `BodyChunk`（`truncated` 由观察者声明，不再靠猜） |
-| 关闭原因 | `CloseReason::TlsError` | 枚举有、映射有、`relay-core-lib` 内 0 个赋值点 |
+| 关闭原因 | `CloseReason::TlsError` | **已有生产者**（2026-10-30）：出站 TLS 校验失败写入 Flow；入站 MITM 握手失败仍无 Flow 可承载（§24.7） |
 | Flow 字段 | `ResponseTiming.connect_time_ms` / `ssl_time_ms`、`NetworkInfo.sni`、`tls_version` | 生产代码只写 `None`（`proxy/server.rs:171-172` 为 TODO） |
 | 指标 | `proxy_invalid_method_total`、`proxy_retry_total` | **已修**：两者都**无任何增量点** ⇒ **永远显示健康**。已从导出面移除（原因写在 `relay-core-lib/src/metrics.rs`），并计入「禁止宣传不存在的能力」类 |
 
@@ -238,7 +238,7 @@ CARGO_TARGET_DIR="$PWD/target-dsh" RELAY_CORE_BIN="$PWD/target-dsh/release/relay
 
 1. **止血三类「声明但无效」**（§21-1，最高优先）：
    `BodyObservation` 真正成为保留的开关（或改口径、删承诺）；从 Prometheus 面移除或补上那 18 个恒零指标；
-   `CloseReason::TlsError` 与 `connect_time_ms`/`ssl_time_ms`/`sni` 二选一：**要么补生产者，要么删字段**。
+   `CloseReason::TlsError` 已有出站生产者（2026-10-30）；`connect_time_ms`/`ssl_time_ms` 仍未赋值，仍需补或删。
 2. **修文档失真**（§22-8，成本极低、收益即时）：重写 `wire_matrix` 的 Action 覆盖表与顶部说明；
    修正 §24.1 的 `SetResponseStatus` 声明；把 §24.10 的计数与「无字节断言」更新为实测值。
 2b. **安全面三件事（成本极低，风险最高）**：CA 私钥改 `0600` 并加断言测试；

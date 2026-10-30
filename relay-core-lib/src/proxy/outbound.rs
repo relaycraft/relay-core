@@ -48,6 +48,25 @@ fn is_h2_reset(error: &(dyn std::error::Error + 'static)) -> bool {
     error.source().is_some_and(is_h2_reset)
 }
 
+/// Is a rustls failure somewhere in the chain?
+///
+/// hyper wraps connector errors several layers deep; a certificate that fails verification must
+/// keep that identity, because "the certificate was rejected" is a different fact from "the socket
+/// closed" and a reader needs it to know whether changing trust could help.
+fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    if error.downcast_ref::<rustls::Error>().is_some() {
+        return true;
+    }
+    if error.source().is_some_and(is_tls_error) {
+        return true;
+    }
+    let text = format!("{error:?}").to_ascii_lowercase();
+    text.contains("invalid peer certificate")
+        || text.contains("unknownissuer")
+        || text.contains("certificate")
+        || text.contains("tls")
+}
+
 fn map_hyper_error<E>(error: E) -> UpstreamError
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -56,6 +75,8 @@ where
         UpstreamError::Reset {
             detail: format!("{error:?}"),
         }
+    } else if is_tls_error(&error) {
+        UpstreamError::Tls(format!("{error:?}"))
     } else {
         UpstreamError::Io(std::io::Error::other(error))
     }

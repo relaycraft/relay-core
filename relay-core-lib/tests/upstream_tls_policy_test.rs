@@ -153,7 +153,11 @@ async fn start_proxy_with(policy: ProxyPolicy) -> u16 {
 /// Start the proxy and also return the policy channel, so a test can change trust mid-run.
 async fn start_proxy_with_updates(
     policy: ProxyPolicy,
-) -> (u16, tokio::sync::watch::Sender<ProxyPolicy>) {
+) -> (
+    u16,
+    tokio::sync::watch::Sender<ProxyPolicy>,
+    tokio::sync::mpsc::Receiver<FlowUpdate>,
+) {
     init_crypto();
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -163,7 +167,7 @@ async fn start_proxy_with_updates(
 
     let source = TcpCaptureSource::new(listener);
     let ca = Arc::new(CertificateAuthority::new().expect("create CA"));
-    let (flow_tx, _flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
+    let (flow_tx, flow_rx) = tokio::sync::mpsc::channel::<FlowUpdate>(64);
     let (policy_tx, policy_rx) = tokio::sync::watch::channel(policy);
 
     tokio::spawn(async move {
@@ -181,7 +185,7 @@ async fn start_proxy_with_updates(
         .await;
     });
     tokio::time::sleep(Duration::from_millis(150)).await;
-    (proxy_port, policy_tx)
+    (proxy_port, policy_tx, flow_rx)
 }
 
 /// One forward-proxy request for an `https://` target the proxy must dial itself.
@@ -222,7 +226,8 @@ async fn request_through_proxy_to(proxy_port: u16, host: &str, target_port: u16)
 #[tokio::test]
 async fn a_self_signed_target_is_rejected_under_the_default_policy() {
     let upstream = spawn_tls_upstream("SHOULD-NOT-BE-TRUSTED").await;
-    let proxy_port = start_proxy_with(ProxyPolicy::default()).await;
+    let (proxy_port, _policy_tx, mut flows) =
+        start_proxy_with_updates(ProxyPolicy::default()).await;
 
     let (status, body) = request_through_proxy(proxy_port, upstream.addr.port()).await;
     assert_ne!(
@@ -233,6 +238,37 @@ async fn a_self_signed_target_is_rejected_under_the_default_policy() {
         !body.contains("SHOULD-NOT-BE-TRUSTED"),
         "the upstream body must not reach the client"
     );
+
+    // The rejection must be recorded as a TLS failure with its reason, not as a generic upstream
+    // close: "the certificate is not trusted" is what tells a reader that changing trust may help.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut recorded: Option<relay_core_api::event::CloseReason> = None;
+    while tokio::time::Instant::now() < deadline && recorded.is_none() {
+        match tokio::time::timeout(Duration::from_millis(200), flows.recv()).await {
+            Ok(Some(FlowUpdate::Full(flow))) => {
+                if let relay_core_api::flow::Layer::Http(http) = &flow.layer
+                    && http.request.url.path() == "/verify"
+                    && let Some(reason) = flow.close_reason.clone()
+                {
+                    recorded = Some(reason);
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    match recorded {
+        Some(relay_core_api::event::CloseReason::TlsError { detail }) => {
+            let detail = detail.to_ascii_lowercase();
+            assert!(
+                detail.contains("certificate") || detail.contains("unknownissuer"),
+                "the TLS reason should name the certificate failure, got {detail}"
+            );
+        }
+        other => panic!("expected a TlsError close reason, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -317,7 +353,7 @@ async fn a_custom_ca_does_not_fall_back_to_the_native_roots() {
 #[tokio::test]
 async fn tightening_or_relaxing_verification_applies_without_a_restart() {
     let upstream = spawn_tls_upstream("AFTER-POLICY-CHANGE").await;
-    let (proxy_port, policy_tx) = start_proxy_with_updates(ProxyPolicy::default()).await;
+    let (proxy_port, policy_tx, _flows) = start_proxy_with_updates(ProxyPolicy::default()).await;
 
     // The default rejects the self-signed target...
     let (status, body) = request_through_proxy(proxy_port, upstream.addr.port()).await;

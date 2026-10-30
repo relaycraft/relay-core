@@ -464,9 +464,9 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    （reason 必填、每次构建都 warn、API 始终可见）。
    策略先验证后入库，坏 bundle 不会造成「API 说 custom_ca、实际仍用旧信任」的分离；运行中变更会重建
    client + connector。**边界**：`custom_ca` 会替换信任库，HTTPS 父代理与目标必须同时在该 bundle 内；Web UI 已在 Settings → TLS 显示验证模式
-   （insecure 时红色 `DISABLED` + 理由，无截图级验证）；原始证书链与握手错误仍不可观察。
+   （insecure 时红色 `DISABLED` + 理由，无截图级验证）；**握手失败原因已记录为 `CloseReason::TlsError`**（2026-10-30），原始证书链仍不可观察。
 6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
-7. ⬜ **原始 upstream 证书链和错误原因可观察**。
+7. 🟡 **upstream 握手错误原因可观察**（2026-10-30，`CloseReason::TlsError` + 线路用例）；**原始证书链仍不记录**。
 8. 🟡 **TLS handshake timeout**：入站有 10s 超时；`connect_time_ms` / `ssl_time_ms` 仍无赋值点。
 9. ✅ **CA key 文件权限与加载失败策略**：`0600` 创建并修正旧文件，有断言测试（`tls/ca.rs`）。
 
@@ -1183,8 +1183,11 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   已由 `tls_is_intercepted_by_default` 在线路上断言（SNI `localhost`、ALPN `http/1.1`、版本 `TLSv1.x`）。
   **边界**：脚本 `onConnect` 的 `ConnectionInfo.tls_sni` 仍为 `None`——它在 TLS 之前构造，
   属于 §8 的客户端级决策，不在本次范围内。
-- ⬜ `CloseReason::TlsError` 目前**没有生产者**：MITM 握手失败发生在 Flow 建立之前，
-  没有可承载原因的 Flow（语义已在枚举里，尚无终局映射到它）
+- ✅ **出站 TLS 失败现在映射到 `CloseReason::TlsError`**（2026-10-30）：`map_hyper_error` 沿 source
+  chain 识别 `rustls::Error`（并以证书错误文本兜底），Flow 的 `http.error` 与 `close_reason` 都带原因。
+  契约：`a_self_signed_target_is_rejected_under_the_default_policy`（真实 TLS 上游 + 默认策略）与
+  `a_tls_failure_keeps_its_reason_in_the_close_reason`。
+  **边界**：入站 MITM 握手失败发生在 Flow 建立之前，仍没有可承载原因的 Flow；该终局尚未映射到它。
 
 ### 24.8 事件与存储
 
@@ -1371,7 +1374,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **990 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **991 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +

@@ -206,8 +206,15 @@ pub async fn handle_request(
 /// This is deliberately conservative: unknown text stays `UpstreamClosed`, because inventing a
 /// reset that did not happen is worse than a less specific true statement.
 fn upstream_close_reason(error: &crate::proxy::outbound::UpstreamError) -> CloseReason {
-    if matches!(error, crate::proxy::outbound::UpstreamError::Reset { .. }) {
-        return CloseReason::Reset;
+    use crate::proxy::outbound::UpstreamError;
+    match error {
+        UpstreamError::Reset { .. } => return CloseReason::Reset,
+        UpstreamError::Tls(detail) => {
+            return CloseReason::TlsError {
+                detail: detail.clone(),
+            };
+        }
+        _ => {}
     }
     let text = error.to_string().to_ascii_lowercase();
     if text.contains("stream error")
