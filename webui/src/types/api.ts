@@ -425,3 +425,20 @@ export interface AuditEvent {
 export interface CoreAuditSnapshot {
   events: AuditEvent[];
 }
+
+
+/** One rule evaluation from GET /flows/{id}/trace. */
+export interface RuleTraceEvent {
+  rule_id: string;
+  stage: string;
+  matched: boolean;
+  duration_us: number;
+  outcome: string | { Failed: string };
+}
+
+export interface FlowRuleTrace {
+  flow_id: string;
+  events: RuleTraceEvent[];
+  truncated: boolean;
+  note?: string;
+}

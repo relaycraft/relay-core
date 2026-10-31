@@ -1,5 +1,5 @@
 import { createSignal, createResource, createMemo, createEffect, on, Show, For, Switch, Match, ErrorBoundary } from 'solid-js';
-import { getFlow, replayFlow, exportFlowHar } from '@/lib/api';
+import { getFlow, getFlowRuleTrace, replayFlow, exportFlowHar } from '@/lib/api';
 import { bodyBytes, decodeBodyText } from '@/lib/bodyText';
 import { buildCurlCommand } from '@/lib/flowActions';
 import { flowTrace } from '@/lib/flowTrace';
@@ -8,6 +8,7 @@ import { store } from '@/lib/store';
 import type { Flow, HttpLayer, HttpResponse, BodyData } from '@/types/api';
 import { parseSseEvent, selectSseEvents, type SseEventRecord } from '@/lib/sseEvents';
 import { toPem } from '@/lib/certificate';
+import { describeRuleEvaluation } from '@/lib/ruleTrace';
 
 type DetailTab = 'headers' | 'payload' | 'timing' | 'messages' | 'trace';
 
@@ -816,6 +817,19 @@ function TraceView(props: { flow: Flow }) {
   // rule had touched. See `lib/flowTrace.ts`.
   const trace = createMemo(() => flowTrace(props.flow));
 
+  // The bounded per-flow trace lives in the runtime, not in the stored flow; a 404 means the flow
+  // is gone (or the process restarted), which is not an error worth breaking the panel over.
+  const [ruleTrace] = createResource(
+    () => props.flow.id,
+    async (id) => {
+      try {
+        return await getFlowRuleTrace(id);
+      } catch {
+        return null;
+      }
+    },
+  );
+
   return (
     <div class="text-xs">
       <Show when={notices().length > 0}>
@@ -825,6 +839,23 @@ function TraceView(props: { flow: Flow }) {
             <div class="flex gap-2 px-1 py-0.5">
               <span class="text-text-dim w-20 shrink-0">{notice.kind}</span>
               <span class="text-text">{notice.summary}</span>
+            </div>
+          )}
+        </For>
+      </Show>
+
+      <Show when={(ruleTrace()?.events.length ?? 0) > 0}>
+        <h3 class="text-accent text-[13px] font-bold mt-3 mb-1">Rule evaluations</h3>
+        <Show when={ruleTrace()?.truncated}>
+          <div class="text-warn text-[11px] px-1 pb-1">
+            Older evaluations were dropped (bounded trace).
+          </div>
+        </Show>
+        <For each={ruleTrace()?.events ?? []}>
+          {(event) => (
+            <div class="px-1 py-0.5">
+              <span class="text-text-dim w-20 inline-block">{event.stage}</span>
+              <span class="text-text">{describeRuleEvaluation(event)}</span>
             </div>
           )}
         </For>

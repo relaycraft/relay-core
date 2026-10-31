@@ -37,6 +37,10 @@ export function getFlow(id: string): Promise<Flow> {
   return request<Flow>(`${BASE}/flows/${encodeURIComponent(id)}`);
 }
 
+export function getFlowRuleTrace(id: string): Promise<import('@/types/api').FlowRuleTrace> {
+  return request(`${BASE}/flows/${encodeURIComponent(id)}/trace`);
+}
+
 export function exportFlowHar(id: string): Promise<Response> {
   return fetch(`${BASE}/flows/${encodeURIComponent(id)}/har`);
 }
