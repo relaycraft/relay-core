@@ -34,6 +34,12 @@ pub enum UpstreamError {
     /// answered; this particular exchange was refused.
     #[error("upstream reset the stream: {detail}")]
     Reset { detail: String },
+    /// The peer announced that the whole connection is going away (HTTP/2 GOAWAY).
+    ///
+    /// Retrying on a new connection is legitimate here; that is not true of a reset stream without
+    /// knowing why, nor of a closed socket.
+    #[error("upstream is going away: {detail}")]
+    GoAway { detail: String },
 }
 
 /// Keep the typed HTTP/2 reset instead of erasing it into an opaque `io::Error`.
@@ -53,6 +59,13 @@ fn is_h2_reset(error: &(dyn std::error::Error + 'static)) -> bool {
 /// hyper wraps connector errors several layers deep; a certificate that fails verification must
 /// keep that identity, because "the certificate was rejected" is a different fact from "the socket
 /// closed" and a reader needs it to know whether changing trust could help.
+fn is_h2_go_away(error: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(h2) = error.downcast_ref::<h2::Error>() {
+        return h2.is_go_away();
+    }
+    error.source().is_some_and(is_h2_go_away)
+}
+
 fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
     if error.downcast_ref::<rustls::Error>().is_some() {
         return true;
@@ -73,6 +86,10 @@ where
 {
     if is_h2_reset(&error) {
         UpstreamError::Reset {
+            detail: format!("{error:?}"),
+        }
+    } else if is_h2_go_away(&error) {
+        UpstreamError::GoAway {
             detail: format!("{error:?}"),
         }
     } else if is_tls_error(&error) {

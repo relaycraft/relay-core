@@ -26,8 +26,10 @@ pub fn flow_is_error(flow: &Flow) -> bool {
         return true;
     }
     // A reset is the peer cancelling mid-exchange: the captured bytes are a prefix, not a result.
-    if matches!(flow.close_reason, Some(CloseReason::Reset))
-        || flow.tags.iter().any(|tag| tag == "stream-reset")
+    if matches!(
+        flow.close_reason,
+        Some(CloseReason::Reset | CloseReason::GoAway { .. })
+    ) || flow.tags.iter().any(|tag| tag == "stream-reset")
     {
         return true;
     }

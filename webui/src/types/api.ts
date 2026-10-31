@@ -190,6 +190,7 @@ export type CloseReason =
   | { reason: 'upstream_closed' }
   | { reason: 'timeout'; kind: string }
   | { reason: 'reset' }
+  | { reason: 'go_away'; detail: string }
   | { reason: 'policy_drop'; detail: string }
   | { reason: 'parser_error'; detail: string }
   | { reason: 'tls_error'; detail: string }

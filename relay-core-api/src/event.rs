@@ -31,6 +31,15 @@ pub enum CloseReason {
     },
     /// A peer reset the stream (e.g. HTTP/2 RST_STREAM).
     Reset,
+    /// The peer announced that the **connection** is going away (HTTP/2 GOAWAY).
+    ///
+    /// Different from [`Self::Reset`]: the exchange may have been refused before it started, and the
+    /// same request can be retried on a new connection. Keeping them apart is what lets a reader
+    /// choose "retry" over "the upstream is broken".
+    GoAway {
+        /// The protocol's diagnostic, when it provided one.
+        detail: String,
+    },
     /// A rule, script or policy deliberately dropped the exchange.
     PolicyDrop {
         /// Human-readable cause for audit/UI.

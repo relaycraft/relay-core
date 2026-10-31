@@ -240,6 +240,11 @@ fn upstream_close_reason(error: &crate::proxy::outbound::UpstreamError) -> Close
     use crate::proxy::outbound::UpstreamError;
     match error {
         UpstreamError::Reset { .. } => return CloseReason::Reset,
+        UpstreamError::GoAway { detail } => {
+            return CloseReason::GoAway {
+                detail: detail.clone(),
+            };
+        }
         UpstreamError::Tls(detail) => {
             return CloseReason::TlsError {
                 detail: detail.clone(),

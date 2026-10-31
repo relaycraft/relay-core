@@ -326,7 +326,7 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    - RelayCore → upstream
    - H2 ↔ H1 协议转换
 2. stream 级 Flow ID 和 connection 归属
-3. 并发 streams、reset、GOAWAY、取消（🟡 reset 已记录为 `CloseReason::Reset`）
+3. 并发 streams、reset、GOAWAY、取消（🟡 reset 有线路用例；GOAWAY 有独立变体，缺稳定线路复现）
 4. flow control 与背压
 5. header pseudo-fields 正确映射
 6. gRPC 所需的 framing 基础不被破坏
@@ -1343,7 +1343,9 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   四次错误结论与两条教训的完整记录见
   [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis。
 - ✅ 请求方向的 trailers 已记录（2026-10-30）。✅ 出站 RST_STREAM 现记录为 `CloseReason::Reset`
-  （2026-10-30，`h2_reset_test.rs`）；⬜ 仍缺：GOAWAY/取消的细分、
+  （2026-10-30，`h2_reset_test.rs`）；✅ GOAWAY 现在是独立的 `CloseReason::GoAway`，
+  但**只在 hyper 把 h2 GOAWAY 作为错误上报时**成立——实测 h2 服务端 abrupt close 时客户端只看到
+  broken pipe，仍归 `UpstreamClosed`（这是传输层事实，不是没分类）；⬜ 仍缺：取消的细分、
   `:authority` 与 CONNECT 目标不一致的诊断。
 - ✅ **入站 HTTP version 已传播**：`build_forward_request` 现调用
   `.version(parse_http_version(&current_req.version))`，转发请求的元数据反映真实入站协议
@@ -1384,7 +1386,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 ### 24.10 验证体系基线
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **999 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **1000 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
@@ -1427,7 +1429,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   `wire_matrix_h2c_inside_a_connect_tunnel_is_captured`（CONNECT 隧道内 h2c）、
   `wire_matrix_h2c_upstream_is_reachable`（h2c-only 上游 + trailer 端到端）、
   `test_https_mitm_h2`（TLS 后两并发 stream + 规则改写 + 版本）。
-  **已补**：出站 RST_STREAM → `Reset` 的线路用例；**仍缺**：GOAWAY/取消的语义断言。
+  **已补**：出站 RST_STREAM → `Reset` 的线路用例；GOAWAY 有独立变体但缺稳定线路复现（hyper 只报 broken pipe）；**仍缺**：取消的语义断言。
 - 透明捕获三个平台 provider（`linux_tproxy.rs` / `macos_pf.rs` / `windows.rs`）**各有 0 个测试**，
   测试全部基于 mock ⇒ 「Linux/macOS 可用」目前没有平台级证据
 - ✅ **MCP 资源订阅已实现**（本节此前写「不可订阅却在推送」，已过期）：

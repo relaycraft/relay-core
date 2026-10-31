@@ -503,6 +503,20 @@ fn a_tls_failure_keeps_its_reason_in_the_close_reason() {
 }
 
 #[test]
+fn a_goaway_is_distinct_from_a_stream_reset() {
+    use crate::proxy::outbound::UpstreamError;
+    assert_eq!(
+        upstream_close_reason(&UpstreamError::GoAway {
+            detail: "connection error: received GOAWAY".to_string()
+        }),
+        CloseReason::GoAway {
+            detail: "connection error: received GOAWAY".to_string()
+        },
+        "a connection being retired is not one stream being cancelled"
+    );
+}
+
+#[test]
 fn an_unrecognised_upstream_failure_stays_upstream_closed() {
     use crate::proxy::outbound::UpstreamError;
     assert_eq!(

@@ -19,9 +19,15 @@ import type {
 export function flowIsError(flow: Flow): boolean {
   const tags = flow.tags ?? [];
   if (tags.includes('error')) return true;
-  // `close_reason` is an internally tagged enum on the wire: `Reset` arrives as `{"reason":"reset"}`.
+  // `close_reason` is an internally tagged enum on the wire: `Reset` arrives as `{"reason":"reset"}`
+  // and GOAWAY as `{"reason":"go_away","detail":"…"}`.
   // A reset is the peer cancelling mid-exchange — the captured bytes are a prefix, not a result.
-  if (flow.close_reason?.reason === 'reset' || tags.includes('stream-reset')) return true;
+  if (
+    flow.close_reason?.reason === 'reset' ||
+    flow.close_reason?.reason === 'go_away' ||
+    tags.includes('stream-reset')
+  )
+    return true;
 
   if (flow.layer.type === 'Http') {
     const http = (flow.layer as HttpLayer).data;
