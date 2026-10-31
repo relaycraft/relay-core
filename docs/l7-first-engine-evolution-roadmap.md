@@ -467,7 +467,8 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    （insecure 时红色 `DISABLED` + 理由，无截图级验证）；**握手失败原因已记录为 `CloseReason::TlsError`**，**原始证书链与 connect/ssl 时间也已记录**（2026-10-30，仅新建直连）。
 6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
 7. ✅ **upstream 握手错误原因与原始证书链可观察**（2026-10-30）：
-   `CloseReason::TlsError` 携带原因；`HttpResponse.upstream_certificates` 保存目标链（leaf first，base64 DER）。
+   `CloseReason::TlsError` 携带原因；`HttpResponse.upstream_certificates` 保存目标链（leaf first，base64 DER），
+   Web UI 详情页现在可以展开每条证书查看 PEM。
    数据来自自建 TLS transport（`outbound_client.rs`），hyper 把连接元数据复制进 response extensions，
    因此不需要第二条连接或握手后探测。**边界**：只对**新建**直连生效；池化复用、父代理自身 TLS、
    passthrough 隧道不填（避免把旧握手算到本次请求）。
@@ -1384,6 +1385,13 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   而 **br/zstd 能力缺口是真实差距**，应按该文档 §3.3 补齐
 
 ### 24.10 验证体系基线
+
+- **出站 transport A/B（2026-11-01，quick 模式，25 连接、1KB、10s）**：
+  旧 hyper-rustls 连接器（HEAD `89dcbc0` 的 release 二进制）**38,869 req/s / P99 1.19ms / RSS 60MB**；
+  新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**。
+  吞吐无回退（约 +1.5–2.3%），P99 略好；冷启动样本 254–975ms，差异被既有的高方差掩盖，不作为结论。
+  这是 quick 冒烟而非 release 基线：TLS 路径的性能仍需在 release 模式下单独测量。
+
 
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
   `cargo test --workspace` 为 **1000 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个

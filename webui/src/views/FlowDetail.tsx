@@ -7,6 +7,7 @@ import { grpcOutcome } from '@/lib/flowSummary';
 import { store } from '@/lib/store';
 import type { Flow, HttpLayer, HttpResponse, BodyData } from '@/types/api';
 import { parseSseEvent, selectSseEvents, type SseEventRecord } from '@/lib/sseEvents';
+import { toPem } from '@/lib/certificate';
 
 type DetailTab = 'headers' | 'payload' | 'timing' | 'messages' | 'trace';
 
@@ -357,6 +358,23 @@ function HeadersView(props: { flow: Flow }) {
           <Show when={(res()?.trailers?.length ?? 0) > 0}>
             <div class="px-2 py-1 text-[12px] text-text-dim border-t border-border/60">Trailers</div>
             <HeaderTable headers={res()?.trailers ?? []} />
+          </Show>
+          <Show when={(res()?.upstream_certificates?.length ?? 0) > 0}>
+            <div class="px-2 py-1 text-[12px] text-text-dim border-t border-border/60">
+              Upstream certificates (leaf first)
+            </div>
+            <For each={res()?.upstream_certificates ?? []}>
+              {(certificate, index) => (
+                <details class="px-2 py-1 border-t border-border/40">
+                  <summary class="cursor-pointer text-[12px] text-text-dim">
+                    Certificate {index() + 1}
+                  </summary>
+                  <pre class="mt-1 p-2 bg-surface-alt rounded text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
+                    {toPem(certificate)}
+                  </pre>
+                </details>
+              )}
+            </For>
           </Show>
         </section>
       </Show>
