@@ -70,6 +70,7 @@ zstd = "0.14.0"
 etherparse = "0.13"
 
 [dev-dependencies]
+rustls-pemfile = "2"
 tempfile = "3.10"
 criterion = { package = "codspeed-criterion-compat", version = "2", features = ["html_reports"] }
 # Drives real WebSocket handshakes/upgrades in the wire-level matrix (tests/wire_matrix.rs).

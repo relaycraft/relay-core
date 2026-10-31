@@ -465,7 +465,7 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
    策略先验证后入库，坏 bundle 不会造成「API 说 custom_ca、实际仍用旧信任」的分离；运行中变更会重建
    client + connector。**边界**：`custom_ca` 会替换信任库，HTTPS 父代理与目标必须同时在该 bundle 内；Web UI 已在 Settings → TLS 显示验证模式
    （insecure 时红色 `DISABLED` + 理由，无截图级验证）；**握手失败原因已记录为 `CloseReason::TlsError`**，**原始证书链与 connect/ssl 时间也已记录**（2026-10-30，仅新建直连）。
-6. 🟡 **动态叶证书**：DNS/IP SAN 已可用；wildcard 与 IDN 无线路断言（见 §24.9）。
+6. ✅ **动态叶证书**：DNS/IP SAN 已可用；**wildcard 与 IDN 已由握手用例锁定**（2026-11-01，`tls_leaf_test.rs`）。
 7. ✅ **upstream 握手错误原因与原始证书链可观察**（2026-10-30）：
    `CloseReason::TlsError` 携带原因；`HttpResponse.upstream_certificates` 保存目标链（leaf first，base64 DER），
    Web UI 详情页现在可以展开每条证书查看 PEM。
@@ -1400,12 +1400,12 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**（无回退）。
   TLS 路径仍缺 release 基准。
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **1000 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **1002 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **117 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
   `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **7 个** +
-  `request_trailers_test.rs` **1 个** + `h2_reset_test.rs` **1 个**，**0 个 `#[ignore]`**。
+  `request_trailers_test.rs` **1 个** + `h2_reset_test.rs` **1 个** + `tls_leaf_test.rs` **2 个**，**0 个 `#[ignore]`**。
   数字只在下一次实测时更新——**不要用估算值替换它**。
 - **「不存在字节级断言」已不成立**：`wire_matrix.rs` 现在录制并断言上游 socket 实际收到的
   head/body，以及客户端在解码后实际收到的字节（gzip/br/zstd 三条重写用例）。
@@ -1532,7 +1532,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ⬜ **透明捕获**只有 Linux `REDIRECT` 手工验证；TPROXY / PF / WinDivert 无端到端用例。
 - ⬜ **请求方向 `Content-Encoding`** 有意不解码（替换体按明文发送并丢弃该头）。
 - ⬜ **SSE 按序回放 / Last-Event-ID** 未做；事件已记录。
-- ⬜ **TLS per-client 决策**、wildcard/IDN 叶证书线路断言未做。
+- ⬜ **TLS per-client 决策**未做；wildcard/IDN 叶证书已有握手用例（`tls_leaf_test.rs`）。
 
 ### 24.11 验证边界（2026-11-01）
 
@@ -1542,7 +1542,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 | 能力 | 已实测 | 未验证 / 边界 |
 |---|---|---|
 | HTTP/1.x、H2（含 h2c 双向）、WS、SSE、gRPC framing | macOS 本机 + Linux 非 V8 套件 | 新 TLS transport 尚未在 Windows 运行；TLS 路径无 release 基准 |
-| TLS 策略（passthrough/drop、验证模式、SNI/ALPN、证书链、timing） | 线路用例 + trust matrix + HTTPS 父代理 | 按**客户端**的决策、wildcard/IDN 叶证书断言 |
+| TLS 策略（passthrough/drop、验证模式、SNI/ALPN、证书链、timing） | 线路用例 + trust matrix + HTTPS 父代理 + wildcard/IDN 握手用例 | 按**客户端**的 TLS 决策未做 |
 | 透明捕获 | Linux `REDIRECT` + `SO_ORIGINAL_DST` 手工跑通（101） | TPROXY / PF / WinDivert 内核级用例；三平台无端到端 |
 | 规则 trace | store/HTTP/MCP/资源 + 未匹配用例 | 不持久化；daemon 重启即清空 |
 | Script/deno | macOS 测试通过 | 101（AMD Ryzen AI MAX+ / Ubuntu 26.04）上 V8 isolate 初始化 SIGSEGV；普通 Linux CI 待确认 |
