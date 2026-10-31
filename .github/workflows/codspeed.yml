@@ -9,7 +9,9 @@ on:
 jobs:
   benchmarks:
     name: Micro Benchmarks
-    runs-on: ubuntu-latest
+    # Pin: the CodSpeed simulation runner reports "Unsupported system" on newer
+    # ubuntu-latest images. 24.04 is the newest image it supports.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:

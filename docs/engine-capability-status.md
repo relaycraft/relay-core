@@ -12,6 +12,11 @@
 > - §11：逐规则评估（含**未匹配/跳过/失败**）已由 `FlowEvent::RuleEvaluated` 暴露给 SSE 与 Web UI；
 >   未匹配的规则此前根本不进 trace（executor 新增 `RuleOutcome::NotMatched`）。
 > - 验证体系：mitmproxy 差分已设 `REQUIRE_MITMPROXY=1`、覆盖率有 75% 门槛、soak 已每周跑、UDP E2E 在 Linux 上运行。
+> - §8：出站握手 timing（connect/ssl）与原始证书链、`CloseReason::TlsError`、RST_STREAM→`Reset`、
+>   GOAWAY→`GoAway` 已交付；证书链在 Web UI 可展开为 PEM。
+> - §11/§18：逐规则评估除事件流外新增有界 store，HTTP `GET /flows/{id}/trace`、MCP 工具与
+>   `flows://{id}/trace` 资源三面可查（仅进程内，不持久化）。
+> - 性能：旧 `release_v0.15.0` 报告与 2026-11-01 实测差约 6 倍，已不可引用；新 baseline 见路线图 §24.10。
 
 > **Web UI 验证**：见 [`webui-verification.md`](./webui-verification.md)。UI 此前验证很少，
 > 已建立可复现的截图靶场，并记录 13 项已修缺陷与**尚未验证**的部分（亮色遮罩、键盘可达性、窄窗口、长列表性能）。
@@ -29,9 +34,9 @@
 > 且从不读取的通道**，而请求处理用阻塞发送（详见
 > [`design-tap-body-completion.md`](./design-tap-body-completion.md) §6bis）。
 
-- **Status**: Snapshot / 一次性盘点，非路线图
-- **Date**: 2026-09-13
-- **Commit**: `bb10799` 起、`88581e7` 后（工作树含本次修正）
+- **Status**: Snapshot refreshed / 非路线图（2026-11-01 增量更新；正文仍以 2026-09-13 审计为底）
+- **Date**: 2026-11-01
+- **Commit**: `b41b030`
 - **方法**: 6 个独立只读审计 + 1 次实测；每条结论均以 `file:line` 或可复现命令为依据
 - **与路线图的关系**: [`l7-first-engine-evolution-roadmap.md`](./l7-first-engine-evolution-roadmap.md) 仍是**规划与验收的唯一权威**。
   本文只回答「**现状是什么**」，并为下一步排序提供证据。凡两者冲突，以代码与实测为准，并应修正路线图。

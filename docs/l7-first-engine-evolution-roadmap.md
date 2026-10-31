@@ -4,7 +4,7 @@
 
 - **Status**: Active / 长期对齐文档
 - **Created**: 2026-08-25
-- **Updated**: 2026-08-25
+- **Updated**: 2026-11-01
 - **Scope**: RelayCore engine / runtime / API 的底层能力与长期演进
 - **Positioning**: L7-first, L4-ready；以 HTTP 生态为主，保留向通用传输代理扩展的架构空间
 - **Related**:
@@ -25,7 +25,7 @@
 > 凡历史文档与本文档冲突的，以本文档为准。
 >
 > 历史文档中「M6/M7 已完成」等完成度口径与代码现状不一致（例如 `benchmarks/results/` 仅有 v0.8.2 / v0.8.3
-> 基线，当前版本为 0.10.0），**完成度一律以代码、测试与 CI 的实测结果为准**，不以历史文档的进度表为准。
+> 基线，当前版本为 0.15.0），**完成度一律以代码、测试与 CI 的实测结果为准**，不以历史文档的进度表为准。
 >
 > **已知失真项 / Known gaps** — 下列能力当前在代码中存在但与公开描述不符，在修复前**不得标记 Stable**：
 > 见 §24。
@@ -879,6 +879,11 @@ AI/MCP 是 RelayCore 的差异化 adapter，但不能替代底层协议正确性
 
 > 以下时间仅表示建议的投入顺序和滚动窗口，不是版本 deadline。每个阶段以退出条件为准；未完成的必做项顺延，不为追赶日期并行铺开大量新协议。
 
+> **2026-11-01 重新评估**：Phase A 的退出条件已基本满足；Phase B 的 L7 基线大部分完成
+> （H2/WS/SSE/SNI/ALPN/TLS 策略），剩余 **reverse / 多监听** 与透明捕获平台验证；
+> Phase C 的 gRPC framing、rule trace 已完成，codec registry / GraphQL 未做；Phase D 未启动。
+> 高改造项（reverse、TUN/SOCKS/DNS、HTTP/3）维持延后，理由见 §24.11。
+
 ### Phase A — 近期架构关口（0–8 周）
 
 目标：公开 L7 能力在线路层真实闭环。
@@ -1386,17 +1391,19 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 
 ### 24.10 验证体系基线
 
+- **v0.15.0 release baseline（2026-11-01，5 rounds × 30s，25 connections，1KB）**：
+  **33,007.8 req/s / P99 1.51ms / cold start 146ms / idle RSS 58.2MB / 100% success**，全部 DoD PASS。
+  基线文件：`benchmarks/results/baseline_v0.15.0.{json,md}`。
+  旧的 `release_v0.15.0_20261015_190830` 报告（5,791 req/s / P99 26.3ms / cold 854ms）与本次实测相差约 6 倍，
+  **已不可引用**；它记录的是 v0.14.0 的代码，却标了 0.15.0。
 - **出站 transport A/B（2026-11-01，quick 模式，25 连接、1KB、10s）**：
-  旧 hyper-rustls 连接器（HEAD `89dcbc0` 的 release 二进制）**38,869 req/s / P99 1.19ms / RSS 60MB**；
-  新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**。
-  吞吐无回退（约 +1.5–2.3%），P99 略好；冷启动样本 254–975ms，差异被既有的高方差掩盖，不作为结论。
-  这是 quick 冒烟而非 release 基线：TLS 路径的性能仍需在 release 模式下单独测量。
-
-
+  旧 hyper-rustls 连接器 **38,869 req/s / P99 1.19ms / RSS 60MB**；
+  新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**（无回退）。
+  TLS 路径仍缺 release 基准。
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
   `cargo test --workspace` 为 **1000 passed / 0 failed / 0 ignored**（53 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
-  Web UI 侧 `webui` 为 **111 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
+  Web UI 侧 `webui` 为 **114 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
   `ws_extensions_test.rs` **3 个** + `tls_policy_test.rs` **3 个** + `upstream_tls_policy_test.rs` **7 个** +
   `request_trailers_test.rs` **1 个** + `h2_reset_test.rs` **1 个**，**0 个 `#[ignore]`**。
@@ -1502,7 +1509,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   实现，harness 现可测量代理本身（实测 ~43k req/s / P99 10.3ms / 100% 成功率）
 - ✅ wire-level 矩阵（`relay-core-lib/tests/wire_matrix.rs`）：**6 个用例全部通过，无 `#[ignore]`
   占位**（基线往返、请求头、请求 body、响应头、响应状态、链式单次应用、WS 握手响应头）
-- ✅ **0.10.0 baseline 已产出**（见 §15-2）
+- ✅ **0.15.0 baseline 已产出**（见 §15-2）
 - ✅ A5a HTTP 响应方向收敛（§24.1 响应头/状态已修复）
 - ✅ A5b 请求 body 替换生效并重建 framing（§24.1 `SetRequestBody` 已修复）
 - ✅ A5c WS 握手响应收敛并补齐 `on_response_headers`（§24.1 WS 握手项已修复）
@@ -1518,6 +1525,30 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ✅ §24.8 类型化事件已接线（intercept 暂停/恢复、规则改动归因；决策见 `decisions/0003`）
 - ✅ §24.7 `Flow.close_reason` 已类型化并在全部终局赋值（14 处 HTTP 终止点 + 4 处 WS 出口 + UDP）
 - ✅ §24.8 `Completed`/`Errored` 已由 runtime 从 Flow 记录的关闭原因发出
-- ⬜ §24.8 剩余：`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived` 仍无生产者
-- ⬜ §24.1 剩余：`SetTtl`（有意未实现：需要 raw socket 访问，超出当前连接模型）
-- ⬜ §24.2–§24.9 的其余线路缺陷仍开放
+- ✅ §24.8 的事件模型已补齐（2026-10-12；`Started`/`HeadersReceived`/`BodyChunk`/`MessageReceived`
+  均有生产者，`RuleEvaluated` 于 2026-10-28 追加）——上一行「仍无生产者」是过期记录。
+- ⬜ §24.1 仅剩 `SetTtl`（有意不实现：需要 raw socket，超出当前连接模型）。
+- ⬜ 其余线路缺陷以 §24 各小节为准；`§24.2–§24.9` 的大部分已在 2026-09/10 的提交中关闭。
+- ⬜ **Reverse / 多监听**仍被 lifecycle 主动拒绝（最大功能缺口，需生命周期重设计）。
+- ⬜ **透明捕获**只有 Linux `REDIRECT` 手工验证；TPROXY / PF / WinDivert 无端到端用例。
+- ⬜ **请求方向 `Content-Encoding`** 有意不解码（替换体按明文发送并丢弃该头）。
+- ⬜ **SSE 按序回放 / Last-Event-ID** 未做；事件已记录。
+- ⬜ **TLS per-client 决策**、wildcard/IDN 叶证书线路断言未做。
+
+### 24.11 验证边界（2026-11-01）
+
+这张表回答「哪些结论有实测支撑，哪些只是代码存在」——§22 的第 8 条要求文档不超出实现，
+反向同样成立：没有覆盖的能力不能因为 CI 绿就被当作已验证。
+
+| 能力 | 已实测 | 未验证 / 边界 |
+|---|---|---|
+| HTTP/1.x、H2（含 h2c 双向）、WS、SSE、gRPC framing | macOS 本机 + Linux 非 V8 套件 | 新 TLS transport 尚未在 Windows 运行；TLS 路径无 release 基准 |
+| TLS 策略（passthrough/drop、验证模式、SNI/ALPN、证书链、timing） | 线路用例 + trust matrix + HTTPS 父代理 | 按**客户端**的决策、wildcard/IDN 叶证书断言 |
+| 透明捕获 | Linux `REDIRECT` + `SO_ORIGINAL_DST` 手工跑通（101） | TPROXY / PF / WinDivert 内核级用例；三平台无端到端 |
+| 规则 trace | store/HTTP/MCP/资源 + 未匹配用例 | 不持久化；daemon 重启即清空 |
+| Script/deno | macOS 测试通过 | 101（AMD Ryzen AI MAX+ / Ubuntu 26.04）上 V8 isolate 初始化 SIGSEGV；普通 Linux CI 待确认 |
+| 性能 | release 模式实测（见 §24.10） | 旧 `release_v0.15.0` 报告与实测差 6 倍，已不可引用 |
+
+**延后项及理由**：reverse / 多监听需要重设计 lifecycle（风险高、影响所有宿主）；
+TUN/SOCKS/DNS/WireGuard 属 Phase D，当前投入产出不匹配；HTTP/3 MITM 明确不承诺；
+cargo-fuzz 按决策 0011 不承诺。
