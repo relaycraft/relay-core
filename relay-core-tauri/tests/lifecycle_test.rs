@@ -19,19 +19,26 @@ fn init_crypto() {
     });
 }
 
+/// How long a transition may take on a loaded machine.
+///
+/// Five seconds was enough on an idle host and not enough during a release preflight (which runs
+/// right after a benchmark and the rest of the suite): the test timed out while the phase had
+/// already become `Running`, which is a deadline race rather than a stuck proxy.
+const PHASE_TIMEOUT: Duration = Duration::from_secs(15);
+
 async fn wait_until_phase(core: &CoreState, phase: RuntimeLifecyclePhase, timeout: Duration) {
     let start = std::time::Instant::now();
+    let mut last = core.lifecycle().phase;
     while start.elapsed() < timeout {
-        if core.lifecycle().phase == phase {
+        last = core.lifecycle().phase;
+        if last == phase {
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!(
-        "timed out waiting for {:?}, got {:?}",
-        phase,
-        core.lifecycle().phase
-    );
+    // Read the phase once: reading it again while formatting could report a phase the loop never
+    // actually observed, which made this failure look self-contradictory.
+    panic!("timed out after {timeout:?} waiting for {phase:?}, last observed {last:?}");
 }
 
 #[tokio::test]
@@ -74,7 +81,7 @@ async fn test_proxy_lifecycle_10x() {
         wait_until_phase(
             state.core.as_ref(),
             RuntimeLifecyclePhase::Running,
-            Duration::from_secs(5),
+            PHASE_TIMEOUT,
         )
         .await;
         match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
@@ -100,7 +107,7 @@ async fn test_proxy_lifecycle_10x() {
         wait_until_phase(
             state.core.as_ref(),
             RuntimeLifecyclePhase::Stopped,
-            Duration::from_secs(5),
+            PHASE_TIMEOUT,
         )
         .await;
         match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
