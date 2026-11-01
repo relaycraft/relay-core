@@ -2,7 +2,8 @@ use crate::server::HttpApiContext;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::sse::{Event, Sse},
     routing::{get, post},
 };
 use relay_core_api::flow::Layer;
@@ -18,6 +19,7 @@ pub fn router(ctx: Arc<HttpApiContext>) -> Router {
         .route("/api/v1/flows", get(search_flows))
         .route("/api/v1/flows/{id}/har", get(get_flow_har))
         .route("/api/v1/flows/{id}/trace", get(get_flow_trace))
+        .route("/api/v1/flows/{id}/events", get(replay_flow_events))
         .route("/api/v1/flows/{id}", get(get_flow))
         .route("/api/v1/flows/{id}/replay", post(replay_flow))
         .with_state(ctx)
@@ -93,6 +95,71 @@ async fn get_flow_trace(
         "events": snapshot.events,
         "truncated": snapshot.truncated,
     })))
+}
+
+/// Query/header input for resuming a recorded event stream.
+#[derive(Debug, Deserialize)]
+pub struct EventReplayParams {
+    /// Event id to resume **after**. The `Last-Event-ID` header wins over this when both are sent,
+    /// because that is what a reconnecting `EventSource` sends automatically.
+    pub last_event_id: Option<String>,
+}
+
+/// GET /api/v1/flows/{id}/events — replay a captured `text/event-stream` in order.
+///
+/// The events were recorded as they were parsed, so this is a replay of what the client actually
+/// received, not a re-parse of the stored bytes. `Last-Event-ID` resumes after the matching event,
+/// which is the same contract a live SSE client uses when it reconnects.
+async fn replay_flow_events(
+    State(ctx): State<Arc<HttpApiContext>>,
+    Path(id): Path<String>,
+    Query(params): Query<EventReplayParams>,
+    headers: HeaderMap,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
+    StatusCode,
+> {
+    let flow = ctx.flows.get_flow(&id).await.ok_or(StatusCode::NOT_FOUND)?;
+    let relay_core_api::flow::Layer::Http(http) = &flow.layer else {
+        return Ok(Sse::new(tokio_stream::iter(Vec::new())));
+    };
+    let events = http
+        .response
+        .as_ref()
+        .map(|response| response.sse_events.clone())
+        .unwrap_or_default();
+
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .or(params.last_event_id);
+
+    let start = last_event_id
+        .as_deref()
+        .and_then(|wanted| {
+            events
+                .iter()
+                .position(|event| event.id.as_deref() == Some(wanted))
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let frames: Vec<Result<Event, std::convert::Infallible>> = events
+        .into_iter()
+        .skip(start)
+        .map(|recorded| {
+            let mut event = Event::default().event(recorded.kind()).data(recorded.data);
+            if let Some(id) = recorded.id {
+                event = event.id(id);
+            }
+            if let Some(retry) = recorded.retry {
+                event = event.retry(std::time::Duration::from_millis(retry));
+            }
+            Ok(event)
+        })
+        .collect();
+
+    Ok(Sse::new(tokio_stream::iter(frames)))
 }
 
 async fn get_flow(
@@ -261,6 +328,100 @@ mod tests {
             "tags": [], "meta": {}
         }))
         .expect("sample flow")
+    }
+
+    #[tokio::test]
+    async fn a_captured_event_stream_replays_in_order_and_resumes_from_a_last_event_id() {
+        let state = Arc::new(CoreState::new(None).await);
+        let id = uuid::Uuid::new_v4().to_string();
+        let flow: Flow = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "start_time": "2026-05-20T10:00:00Z",
+            "end_time": "2026-05-20T10:00:01Z",
+            "network": {
+                "client_ip": "127.0.0.1", "client_port": 1, "server_ip": "0.0.0.0",
+                "server_port": 0, "protocol": "TCP", "tls": false,
+                "tls_version": null, "sni": null
+            },
+            "layer": { "type": "Http", "data": {
+                "request": { "method": "GET", "url": "https://example.com/events", "version": "HTTP/1.1",
+                             "headers": [], "cookies": [], "query": [], "body": null },
+                "response": {
+                    "status": 200, "status_text": "OK", "version": "HTTP/1.1",
+                    "headers": [["content-type", "text/event-stream"]], "cookies": [], "body": null,
+                    "trailers": [],
+                    "timing": { "time_to_first_byte": null, "time_to_last_byte": null,
+                                "connect_time_ms": null, "ssl_time_ms": null },
+                    "sse_events": [
+                        { "event": "tick", "data": "one", "id": "1" },
+                        { "event": "tick", "data": "two", "id": "2" },
+                        { "event": "tick", "data": "three", "id": "3" }
+                    ]
+                },
+                "error": null
+            }},
+            "tags": [], "meta": {}
+        }))
+        .expect("flow with recorded events");
+        state.upsert_flow(Box::new(flow));
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        let app = router(Arc::new(crate::server::HttpApiContext::new(state)));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/v1/flows/{id}/events"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("utf-8");
+        let one = body.find("data: one").expect("first event");
+        let two = body.find("data: two").expect("second event");
+        let three = body.find("data: three").expect("third event");
+        assert!(
+            one < two && two < three,
+            "events must replay in order: {body}"
+        );
+        assert!(body.contains("id: 1"), "ids must be preserved: {body}");
+
+        let resumed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/v1/flows/{id}/events"))
+                    .header("last-event-id", "2")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("request");
+        let body = String::from_utf8(
+            to_bytes(resumed.into_body(), usize::MAX)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("utf-8");
+        assert!(
+            !body.contains("data: one") && !body.contains("data: two"),
+            "got {body}"
+        );
+        assert!(
+            body.contains("data: three"),
+            "resume must continue after the id: {body}"
+        );
     }
 
     #[tokio::test]

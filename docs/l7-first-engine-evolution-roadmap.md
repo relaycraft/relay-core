@@ -427,7 +427,7 @@ RelayCore 已有 header/body 分阶段 interceptor、TapBody、规则和脚本�
   此前只有实时推送，事后是一张空面板，而空面板分不清「没发」与「没记录」。
   两条路的职责：实时推 `FlowUpdate::SseEvent`（流可能永不结束，等 body 就等于什么都看不到），
   记录供回看（由 `report_once` 送出的**累计前缀**在 runtime 侧用同一个解析器解析，只有一份实现）
-- ⬜ SSE event 持久化与**按序回放**（记录已落地；回放/重放未做）
+- ✅ SSE event **按序回放**（2026-11-01）：`GET /api/v1/flows/{id}/events` 按记录顺序重放，支持 `Last-Event-ID` 续播；持久化即 `HttpResponse.sse_events`（上限 500）
 - event 级规则和脚本
 - 重连/Last-Event-ID 辅助分析
 - SSE mock/replay server
@@ -1400,7 +1400,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**（无回退）。
   TLS 路径仍缺 release 基准。
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **1002 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **1003 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **117 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
@@ -1531,7 +1531,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 - ⬜ **Reverse / 多监听**仍被 lifecycle 主动拒绝（最大功能缺口，需生命周期重设计）。
 - ⬜ **透明捕获**只有 Linux `REDIRECT` 手工验证；TPROXY / PF / WinDivert 无端到端用例。
 - ⬜ **请求方向 `Content-Encoding`** 有意不解码（替换体按明文发送并丢弃该头）。
-- ⬜ **SSE 按序回放 / Last-Event-ID** 未做；事件已记录。
+- ✅ **SSE 按序回放 / Last-Event-ID** 已做（2026-11-01，`/flows/{id}/events`）。
 - ⬜ **TLS per-client 决策**未做；wildcard/IDN 叶证书已有握手用例（`tls_leaf_test.rs`）。
 
 ### 24.11 验证边界（2026-11-01）
