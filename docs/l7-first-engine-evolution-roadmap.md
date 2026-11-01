@@ -1551,3 +1551,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 **延后项及理由**：reverse / 多监听需要重设计 lifecycle（风险高、影响所有宿主）；
 TUN/SOCKS/DNS/WireGuard 属 Phase D，当前投入产出不匹配；HTTP/3 MITM 明确不承诺；
 cargo-fuzz 按决策 0011 不承诺。
+
+**Phase 2（本轮未启动）**：codec registry / GraphQL、MCP 写工具幂等与资源订阅、
+OpenTelemetry 全链路、DNS/SOCKS5/TUN/WireGuard/QUIC、分布式压测——这些是扩展面，
+需要单独排优先级；本轮只做了低风险的 Phase 1 收尾（SSE 回放、Trace 面板、wildcard/IDN）。
