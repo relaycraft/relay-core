@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
       - uses: ./.github/actions/rust-workspace
       - run: ./scripts/ci-check.sh
       - uses: actions/setup-node@v4
@@ -53,6 +55,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
 
       # The workspace pins 1.99.0, so installing targets for `stable` leaves the
       # pinned toolchain without them (`can't find crate for core`). Install the
@@ -144,6 +148,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
