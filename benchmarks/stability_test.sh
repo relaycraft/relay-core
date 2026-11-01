@@ -137,8 +137,13 @@ cleanup() {
   [[ -n "${PROXY_PID:-}" ]] && kill "$PROXY_PID" 2>/dev/null || true
   [[ -n "${TARGET_PID:-}" ]] && kill "$TARGET_PID" 2>/dev/null || true
   if [[ "${SOAK_DATA_DIR_CREATED:-0}" == "1" ]]; then
-    rm -rf "$RELAY_DATA_DIR"
+    # The proxy may still be writing its data directory for a moment after SIGTERM, so a single
+    # `rm -rf` can fail with "Directory not empty". That failure used to become the script's exit
+    # status through the EXIT trap, turning a PASS verdict into a red job.
+    rm -rf "$RELAY_DATA_DIR" 2>/dev/null || true
   fi
+  # An EXIT trap whose last command fails overrides the script's status; cleanup must never do that.
+  true
 }
 trap cleanup EXIT
 
