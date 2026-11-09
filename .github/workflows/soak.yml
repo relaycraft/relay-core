@@ -43,7 +43,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3 bc
-          curl -fsSL https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64 -o /usr/local/bin/oha
+          # GitHub's release CDN returns occasional 5xx; a soak that fails before it starts measures nothing.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+            https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64 -o /usr/local/bin/oha
           chmod +x /usr/local/bin/oha
 
       # relay-core-http's build script embeds the Web UI assets, so they have to exist before the CLI
