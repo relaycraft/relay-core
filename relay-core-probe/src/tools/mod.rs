@@ -1,7 +1,9 @@
 use crate::server::ProbeContext;
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub mod intercept;
 pub mod lifecycle;
@@ -125,7 +127,124 @@ pub fn tool_list() -> Vec<Tool> {
     // empty result as "no traffic".
     let mut tools = lifecycle::lifecycle_tool_schemas();
     tools.extend(rest);
+
+    // Every write tool accepts a retry key. It is added here, once, rather than in twenty schemas:
+    // a key that is not declared is one a validating client may refuse to send.
+    for tool in tools.iter_mut() {
+        let read_only = tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+            .unwrap_or(false);
+        if read_only {
+            continue;
+        }
+        let mut schema = (*tool.input_schema).clone();
+        let properties = schema
+            .entry("properties")
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(properties) = properties.as_object_mut() {
+            properties.insert(
+                "idempotency_key".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Optional retry key. Repeating a write with the same key returns the first result for five minutes instead of applying it again."
+                }),
+            );
+        }
+        tool.input_schema = Arc::new(schema);
+    }
     tools
+}
+
+/// How long a repeated `idempotency_key` returns the first result.
+pub const IDEMPOTENCY_TTL: Duration = Duration::from_secs(300);
+
+/// How many keys are remembered. A key entry is small, but an agent that retries in a loop must
+/// not be able to grow the process without bound.
+pub const IDEMPOTENCY_MAX_ENTRIES: usize = 256;
+
+/// Results of recent write calls, keyed by `(tool, idempotency_key)`.
+///
+/// A retry is not a new request: an agent that loses the response and calls again with the same key
+/// must not create a second rule, breakpoint or replay. The cache is deliberately in-memory and
+/// per-server instance — idempotency across a restart is the host's problem, not this process's.
+#[derive(Default)]
+pub struct IdempotencyCache {
+    entries: HashMap<(String, String), (Instant, ToolOutcome)>,
+    order: VecDeque<(String, String)>,
+}
+
+impl IdempotencyCache {
+    fn get(&mut self, tool: &str, key: &str) -> Option<ToolOutcome> {
+        let entry = (tool.to_string(), key.to_string());
+        let (stored_at, outcome) = self.entries.get(&entry)?;
+        if stored_at.elapsed() > IDEMPOTENCY_TTL {
+            self.entries.remove(&entry);
+            self.order.retain(|existing| existing != &entry);
+            return None;
+        }
+        Some(outcome.clone())
+    }
+
+    fn insert(&mut self, tool: &str, key: &str, outcome: ToolOutcome) {
+        let entry = (tool.to_string(), key.to_string());
+        if !self.entries.contains_key(&entry) {
+            while self.order.len() >= IDEMPOTENCY_MAX_ENTRIES {
+                let Some(oldest) = self.order.pop_front() else {
+                    break;
+                };
+                self.entries.remove(&oldest);
+            }
+            self.order.push_back(entry.clone());
+        }
+        self.entries.insert(entry, (Instant::now(), outcome));
+    }
+}
+
+/// Is this tool state-changing? Only those honour `idempotency_key`; caching a read would make a
+/// query return a stale answer for five minutes for no benefit.
+fn is_write_tool(name: &str) -> bool {
+    tool_list()
+        .iter()
+        .find(|tool| tool.name == name)
+        .and_then(|tool| tool.annotations.as_ref())
+        .and_then(|annotations| annotations.read_only_hint)
+        .map(|read_only| !read_only)
+        .unwrap_or(false)
+}
+
+/// Dispatch a tool call, honouring an optional `idempotency_key` on writes.
+///
+/// The key is a property of the call, not of a tool's domain schema, so it is stripped before the
+/// tool sees it. Absent key means exactly the previous behaviour.
+pub async fn dispatch_idempotent(
+    ctx: &Arc<ProbeContext>,
+    name: &str,
+    mut args: Value,
+) -> Result<ToolOutcome, ToolError> {
+    let key = args
+        .get("idempotency_key")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(key) = key.filter(|_| is_write_tool(name)) else {
+        return dispatch(ctx, name, args).await;
+    };
+    if let Value::Object(object) = &mut args {
+        object.remove("idempotency_key");
+    }
+
+    if let Ok(mut cache) = ctx.idempotency.lock()
+        && let Some(outcome) = cache.get(name, &key)
+    {
+        return Ok(outcome);
+    }
+
+    let outcome = dispatch(ctx, name, args).await?;
+    if let Ok(mut cache) = ctx.idempotency.lock() {
+        cache.insert(name, &key, outcome.clone());
+    }
+    Ok(outcome)
 }
 
 /// 按工具名分发调用
@@ -386,5 +505,54 @@ mod stable_rule_id_tests {
             ids.len(),
             "ids must distinguish these calls: {ids:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod idempotency_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn outcome(value: u64) -> ToolOutcome {
+        ToolOutcome::json(json!({ "n": value }))
+    }
+
+    #[test]
+    fn the_same_tool_and_key_returns_the_cached_outcome() {
+        let mut cache = IdempotencyCache::default();
+        cache.insert("set_rule", "k1", outcome(1));
+        assert_eq!(
+            cache
+                .get("set_rule", "k1")
+                .map(|outcome| outcome.structured),
+            Some(json!({ "n": 1 }))
+        );
+        assert!(
+            cache.get("set_rule", "k2").is_none(),
+            "a different key is a different call"
+        );
+        assert!(
+            cache.get("delete_rule", "k1").is_none(),
+            "a key is scoped to its tool"
+        );
+    }
+
+    #[test]
+    fn the_cache_is_bounded_and_evicts_the_oldest_key() {
+        let mut cache = IdempotencyCache::default();
+        for index in 0..(IDEMPOTENCY_MAX_ENTRIES + 10) {
+            cache.insert("set_rule", &format!("k{index}"), outcome(index as u64));
+        }
+        assert!(
+            cache.get("set_rule", "k0").is_none(),
+            "the oldest entry must be evicted"
+        );
+        assert!(
+            cache
+                .get("set_rule", &format!("k{}", IDEMPOTENCY_MAX_ENTRIES + 9))
+                .is_some(),
+            "the newest entry must survive"
+        );
+        assert!(cache.entries.len() <= IDEMPOTENCY_MAX_ENTRIES);
     }
 }

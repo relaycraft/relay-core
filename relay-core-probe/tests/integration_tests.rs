@@ -320,6 +320,53 @@ async fn set_and_delete_rule() {
 }
 
 #[tokio::test]
+async fn a_repeated_idempotency_key_does_not_apply_a_write_twice() {
+    let ctx = new_ctx().await;
+    let rule = json!({
+        "id": "idem-rule",
+        "name": "Idempotent",
+        "active": true,
+        "stage": "RequestHeaders",
+        "priority": 10,
+        "termination": "Continue",
+        "filter": { "type": "All" },
+        "actions": [{ "type": "AddRequestHeader", "config": { "name": "x-idem", "value": "1" } }],
+        "constraints": null
+    });
+
+    let first = tools::dispatch_idempotent(
+        &ctx,
+        "set_rule",
+        json!({ "rule": rule.clone(), "idempotency_key": "retry-1" }),
+    )
+    .await
+    .expect("first write");
+    assert_eq!(first.structured["rule_id"], "idem-rule");
+
+    // Remove the rule without a key, then repeat the original call. A cache hit must return the
+    // first result without recreating the rule; a miss would leave it present again.
+    tools::dispatch(&ctx, "delete_rule", json!({ "id": "idem-rule" }))
+        .await
+        .expect("delete");
+    let second = tools::dispatch_idempotent(
+        &ctx,
+        "set_rule",
+        json!({ "rule": rule, "idempotency_key": "retry-1" }),
+    )
+    .await
+    .expect("cached write");
+    assert_eq!(first.structured, second.structured);
+
+    let listed = tools::dispatch(&ctx, "list_rules", json!({}))
+        .await
+        .expect("list");
+    assert_eq!(
+        listed.structured["count"], 0,
+        "the retry must not have applied the write again"
+    );
+}
+
+#[tokio::test]
 async fn list_rules_returns_the_rule_that_was_set() {
     let ctx = new_ctx().await;
     let empty = structured(&tools::list_rules(&ctx).await.unwrap());

@@ -34,6 +34,9 @@
 //! - `set_intercept` / `get_pending_intercepts` / `resume_flow` — breakpoint flow
 //! - `get_policy` / `update_policy` / `patch_policy` — policy management
 //! - `clear_flows` — drop captured history without touching rules or audit
+//!
+//! Every write tool accepts an optional `idempotency_key`: repeating the call with the same key
+//! returns the first result for five minutes instead of applying the write again.
 //! - `get_script` / `set_script` — read and load Deno scripts for dynamic modification
 //!
 //! `get_flow_rule_trace` (and the `flows://{id}/trace` resource) reads the runtime's bounded

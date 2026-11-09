@@ -1400,7 +1400,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**（无回退）。
   TLS 路径仍缺 release 基准。
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **1003 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **1006 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **117 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
@@ -1552,6 +1552,6 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
 TUN/SOCKS/DNS/WireGuard 属 Phase D，当前投入产出不匹配；HTTP/3 MITM 明确不承诺；
 cargo-fuzz 按决策 0011 不承诺。
 
-**Phase 2（本轮未启动）**：codec registry / GraphQL、MCP 写工具幂等与资源订阅、
-OpenTelemetry 全链路、DNS/SOCKS5/TUN/WireGuard/QUIC、分布式压测——这些是扩展面，
+**Phase 2（部分启动）**：MCP 写工具已支持可选 `idempotency_key`（5 分钟、进程内）；
+codec registry / GraphQL、OpenTelemetry 全链路、DNS/SOCKS5/TUN/WireGuard/QUIC、分布式压测——这些是扩展面，
 需要单独排优先级；本轮只做了低风险的 Phase 1 收尾（SSE 回放、Trace 面板、wildcard/IDN）。

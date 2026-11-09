@@ -54,6 +54,8 @@ pub struct ProbeContext {
     /// passes its controller); `None` means an agent can never start one from here, which the
     /// lifecycle tools report as `proxy_control_unavailable` rather than pretending.
     pub proxy: Option<Arc<dyn ProxyControlService>>,
+    /// Last result per `(tool, idempotency_key)`, so a retried write is not applied twice.
+    pub idempotency: std::sync::Mutex<crate::tools::IdempotencyCache>,
 }
 
 impl ProbeContext {
@@ -68,6 +70,7 @@ impl ProbeContext {
             policy: core.clone(),
             script: core.clone(),
             proxy: None,
+            idempotency: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -409,7 +412,7 @@ impl ServerHandler for ProbeServer {
             .arguments
             .map(Value::Object)
             .unwrap_or(Value::Object(Default::default()));
-        let outcome = tools::dispatch(&self.ctx, &request.name, args)
+        let outcome = tools::dispatch_idempotent(&self.ctx, &request.name, args)
             .await
             .map_err(|e| {
                 let msg = e.to_string();
