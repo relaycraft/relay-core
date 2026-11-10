@@ -4,19 +4,113 @@
 //! a filter against still-compressed bytes and, worse, a rewritten body was sent while the upstream's
 //! `Content-Encoding` header still claimed it was compressed. Both are silent correctness failures.
 //!
-//! This module is deliberately narrow and honest:
+//! The behaviour is deliberately narrow and honest:
 //!
 //! * `gzip`, `deflate`, `br` and `zstd` are decoded, so rules see the plaintext and a rewrite is
 //!   re-encoded with the header intact — matching mitmproxy's behaviour for the same set (see
 //!   docs/mitmproxy-policy-benchmark.md §1.2).
+//! * **Stacked encodings are handled in the right order.** `Content-Encoding: gzip, br` means the
+//!   body was gzipped and then brotli-compressed, so decoding walks the list backwards and encoding
+//!   walks it forwards. Treating a stack as "unsupported" silently skipped rules on real traffic.
 //! * An encoding we do not implement is never guessed at, and never claimed: an unrewritten body
 //!   passes through untouched, and a rewrite of an unknown encoding is sent as plaintext with the
 //!   header dropped, so header and body still agree.
+//! * The codec set is a registry rather than a `match`. A host (or a test) can add a codec without
+//!   touching the decoder, and [`is_supported`] answers from the same registry the decode path uses,
+//!   so "supported" and "actually works" cannot drift apart.
 
 use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder};
+use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::{Arc, OnceLock, RwLock};
+
+/// One `Content-Encoding` implementation.
+///
+/// `decode` returns `None` when the bytes are not a valid stream for this codec; the caller then
+/// passes the body through untouched rather than guessing.
+pub trait ContentCodec: Send + Sync {
+    /// The name written in `Content-Encoding`. Lowercase, no parameters.
+    fn name(&self) -> &'static str;
+    fn decode(&self, body: &[u8]) -> Option<Vec<u8>>;
+    fn encode(&self, body: &[u8]) -> Option<Vec<u8>>;
+}
+
+/// Codecs by the name they answer to, including aliases such as `x-gzip`.
+#[derive(Default)]
+pub struct CodecRegistry {
+    codecs: HashMap<String, Arc<dyn ContentCodec>>,
+}
+
+impl CodecRegistry {
+    /// The registry every call uses unless a host installs its own.
+    pub fn builtin() -> Self {
+        let mut registry = Self::default();
+        registry.register(Arc::new(GzipCodec));
+        registry.register(Arc::new(DeflateCodec));
+        registry.register(Arc::new(BrotliCodec));
+        registry.register(Arc::new(ZstdCodec));
+        // `x-gzip` is what an old client sends for gzip; refusing it would leave real traffic
+        // un-decoded for a naming technicality.
+        registry
+            .alias("x-gzip", "gzip")
+            .alias("x-compress", "compress")
+            .alias("identity", "identity");
+        registry
+    }
+
+    pub fn register(&mut self, codec: Arc<dyn ContentCodec>) -> &mut Self {
+        self.codecs.insert(codec.name().to_string(), codec);
+        self
+    }
+
+    /// Point another name at an existing codec.
+    pub fn alias(&mut self, alias: &str, name: &str) -> &mut Self {
+        if let Some(codec) = self.codecs.get(name).cloned() {
+            self.codecs.insert(alias.to_string(), codec);
+        }
+        self
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn ContentCodec>> {
+        self.codecs.get(name).cloned()
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.codecs.keys().cloned().collect();
+        names.sort();
+        names
+    }
+}
+
+/// The registry used by [`decode_for_inspection`] and friends.
+///
+/// A `RwLock` rather than a `OnceLock` so a host can add a codec after startup; reads are the hot
+/// path and only take the shared lock for the lookup.
+fn registry() -> &'static RwLock<CodecRegistry> {
+    static REGISTRY: OnceLock<RwLock<CodecRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| RwLock::new(CodecRegistry::builtin()))
+}
+
+/// Add a codec at runtime. Re-registering a name replaces it.
+pub fn register_codec(codec: Arc<dyn ContentCodec>) {
+    if let Ok(mut registry) = registry().write() {
+        registry.register(codec);
+    }
+}
+
+/// The names a chain would need, in the order they are applied to the body.
+pub fn parse_encodings(content_encoding: Option<&str>) -> Vec<String> {
+    let Some(value) = content_encoding else {
+        return Vec::new();
+    };
+    value
+        .split(',')
+        .map(|part| part.trim().to_ascii_lowercase())
+        .filter(|part| !part.is_empty() && part != "identity")
+        .collect()
+}
 
 /// What happened when a body's encoding was resolved for inspection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,27 +130,29 @@ pub fn decode_for_inspection(
     body: &[u8],
     content_encoding: Option<&str>,
 ) -> (Vec<u8>, DecodedBody) {
-    let Some(encoding) = content_encoding else {
+    let encodings = parse_encodings(content_encoding);
+    if encodings.is_empty() {
         return (body.to_vec(), DecodedBody::AsReceived);
-    };
-
-    // Only a single, simple encoding is decoded; stacked encodings ("gzip, br") are left alone, as
-    // is an encoding we do not implement.
-    let encoding = encoding.trim().to_ascii_lowercase();
-    let decoded = match encoding.as_str() {
-        "gzip" | "x-gzip" => read_all(GzDecoder::new(body)),
-        "deflate" => read_all(DeflateDecoder::new(body)),
-        "br" => decode_brotli(body),
-        "zstd" => decode_zstd(body),
-        _ => None,
-    };
-
-    match decoded {
-        Some(plain) => (plain, DecodedBody::Decoded),
-        // A malformed or unsupported body falls back to the bytes as received; guessing would
-        // corrupt traffic.
-        None => (body.to_vec(), DecodedBody::AsReceived),
     }
+
+    let registry = match registry().read() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    // The header lists the encodings in the order they were applied, so undoing them means walking
+    // the list backwards.
+    let mut bytes = body.to_vec();
+    for name in encodings.iter().rev() {
+        let Some(codec) = registry.get(name) else {
+            return (body.to_vec(), DecodedBody::AsReceived);
+        };
+        match codec.decode(&bytes) {
+            Some(plain) => bytes = plain,
+            None => return (body.to_vec(), DecodedBody::AsReceived),
+        }
+    }
+    (bytes, DecodedBody::Decoded)
 }
 
 /// Brotli has no reader adapter in the `brotli` crate, so decompress into a bounded buffer.
@@ -111,6 +207,78 @@ fn read_all<R: Read>(mut reader: R) -> Option<Vec<u8>> {
     }
 }
 
+struct GzipCodec;
+struct DeflateCodec;
+struct BrotliCodec;
+struct ZstdCodec;
+
+impl ContentCodec for GzipCodec {
+    fn name(&self) -> &'static str {
+        "gzip"
+    }
+
+    fn decode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        read_all(GzDecoder::new(body))
+    }
+
+    fn encode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(body).ok()?;
+        encoder.finish().ok()
+    }
+}
+
+impl ContentCodec for DeflateCodec {
+    fn name(&self) -> &'static str {
+        "deflate"
+    }
+
+    fn decode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        read_all(DeflateDecoder::new(body))
+    }
+
+    fn encode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(body).ok()?;
+        encoder.finish().ok()
+    }
+}
+
+impl ContentCodec for BrotliCodec {
+    fn name(&self) -> &'static str {
+        "br"
+    }
+
+    fn decode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        decode_brotli(body)
+    }
+
+    fn encode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        brotli::BrotliCompress(
+            &mut std::io::Cursor::new(body),
+            &mut out,
+            &brotli::enc::BrotliEncoderParams::default(),
+        )
+        .ok()?;
+        Some(out)
+    }
+}
+
+impl ContentCodec for ZstdCodec {
+    fn name(&self) -> &'static str {
+        "zstd"
+    }
+
+    fn decode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        decode_zstd(body)
+    }
+
+    fn encode(&self, body: &[u8]) -> Option<Vec<u8>> {
+        zstd::stream::encode_all(body, ZSTD_LEVEL).ok()
+    }
+}
+
 /// Re-encode a rewritten body with `content_encoding`.
 ///
 /// Returns the bytes to send and the `Content-Encoding` that describes them. When the encoding
@@ -120,44 +288,28 @@ pub fn encode_after_rewrite(
     body: &[u8],
     content_encoding: Option<&str>,
 ) -> (Vec<u8>, Option<String>) {
-    let Some(encoding) = content_encoding else {
+    let encodings = parse_encodings(content_encoding);
+    if encodings.is_empty() {
         return (body.to_vec(), None);
+    }
+
+    let registry = match registry().read() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
     };
 
-    let normalized = encoding.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "gzip" | "x-gzip" => {
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            match encoder.write_all(body).and_then(|_| encoder.finish()) {
-                Ok(encoded) => (encoded, Some("gzip".to_string())),
-                Err(_) => (body.to_vec(), None),
-            }
+    // Applied in the order the header lists them, which is the reverse of decoding.
+    let mut bytes = body.to_vec();
+    for name in &encodings {
+        let Some(codec) = registry.get(name) else {
+            return (body.to_vec(), None);
+        };
+        match codec.encode(&bytes) {
+            Some(encoded) => bytes = encoded,
+            None => return (body.to_vec(), None),
         }
-        "deflate" => {
-            let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-            match encoder.write_all(body).and_then(|_| encoder.finish()) {
-                Ok(encoded) => (encoded, Some("deflate".to_string())),
-                Err(_) => (body.to_vec(), None),
-            }
-        }
-        "br" => {
-            let mut out = Vec::new();
-            match brotli::BrotliCompress(
-                &mut std::io::Cursor::new(body),
-                &mut out,
-                &brotli::enc::BrotliEncoderParams::default(),
-            ) {
-                Ok(_) => (out, Some("br".to_string())),
-                Err(_) => (body.to_vec(), None),
-            }
-        }
-        "zstd" => match zstd::stream::encode_all(body, ZSTD_LEVEL) {
-            Ok(encoded) => (encoded, Some("zstd".to_string())),
-            Err(_) => (body.to_vec(), None),
-        },
-        // Not implemented: send plaintext and stop claiming an encoding we did not apply.
-        _ => (body.to_vec(), None),
     }
+    (bytes, Some(encodings.join(", ")))
 }
 
 /// Extract `Content-Encoding` from a header list, if present.
@@ -168,13 +320,23 @@ pub fn content_encoding_of(headers: &[(String, String)]) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-/// Encoding names this module can decode and re-encode.
+/// Encoding names the built-in registry can decode and re-encode.
 pub const SUPPORTED_ENCODINGS: [&str; 5] = ["gzip", "x-gzip", "deflate", "br", "zstd"];
 
-/// Is this `Content-Encoding` one we can round-trip?
+/// Is this `Content-Encoding` chain round-trippable with the current registry?
+///
+/// Answers from the same registry the decode path uses, so "supported" cannot drift from "works".
+/// An empty or `identity` chain needs no codec and is supported trivially.
 pub fn is_supported(content_encoding: &str) -> bool {
-    let normalized = content_encoding.trim().to_ascii_lowercase();
-    SUPPORTED_ENCODINGS.contains(&normalized.as_str())
+    let encodings = parse_encodings(Some(content_encoding));
+    if encodings.is_empty() {
+        return true;
+    }
+    let registry = match registry().read() {
+        Ok(registry) => registry,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    encodings.iter().all(|name| registry.get(name).is_some())
 }
 
 #[cfg(test)]
@@ -265,7 +427,7 @@ mod tests {
         // An encoding we cannot produce must not be claimed: the header is dropped so that header and
         // body still agree. An unrewritten body is never touched, so this path only affects rewrites
         // of encodings we do not implement.
-        for encoding_name in ["x-weird", "gzip, br"] {
+        for encoding_name in ["x-weird", "gzip, x-weird"] {
             let (encoded, encoding) = encode_after_rewrite(b"REWRITTEN", Some(encoding_name));
 
             assert_eq!(
@@ -343,7 +505,7 @@ mod tests {
         for e in ["gzip", "x-gzip", "deflate", "br", "zstd"] {
             assert!(is_supported(e), "{e} should be supported");
         }
-        for e in ["identity", "unknown-codec", "gzip, br"] {
+        for e in ["unknown-codec", "gzip, unknown-codec"] {
             assert!(!is_supported(e), "{e} must not claim round-trip support");
         }
     }
@@ -353,9 +515,80 @@ mod tests {
         for e in ["gzip", "x-gzip", "deflate", "GZIP"] {
             assert!(is_supported(e), "{e} should be supported");
         }
-        for e in ["identity", "unknown-codec", "gzip, br"] {
+        // `identity` needs no codec: a body that is not encoded is trivially round-trippable, and
+        // refusing it would make a harmless header look like an unsupported encoding.
+        for e in ["identity", ""] {
+            assert!(is_supported(e), "{e:?} needs no codec");
+        }
+        for e in ["unknown-codec", "identity, unknown-codec"] {
             assert!(!is_supported(e), "{e} should not claim round-trip support");
         }
+    }
+
+    /// The header lists encodings in the order they were applied, so decoding must undo them
+    /// backwards. A stack treated as "unsupported" silently skipped body rules on real traffic.
+    #[test]
+    fn stacked_encodings_decode_backwards_and_encode_forwards() {
+        let plain = b"stacked payload";
+        let gzipped = gzip(plain);
+        let (double, encoding) = encode_after_rewrite(&gzipped, Some("br"));
+        assert_eq!(
+            encoding.as_deref(),
+            Some("br"),
+            "brotli wraps the gzip bytes"
+        );
+
+        // The wire form of gzip-then-brotli.
+        let wire = double;
+        let (decoded, state) = decode_for_inspection(&wire, Some("gzip, br"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(decoded, plain, "the stack must be undone in reverse order");
+
+        let (re_encoded, claimed) = encode_after_rewrite(plain, Some("gzip, br"));
+        assert_eq!(claimed.as_deref(), Some("gzip, br"));
+        let (again, state) = decode_for_inspection(&re_encoded, Some("gzip, br"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(again, plain);
+    }
+
+    /// A stack with one unknown member must pass through untouched: decoding the known half and
+    /// sending the unknown half through would produce bytes nobody can read.
+    #[test]
+    fn a_stack_with_an_unknown_member_is_left_alone() {
+        let wire = gzip(b"payload");
+        let (decoded, state) = decode_for_inspection(&wire, Some("gzip, mystery"));
+        assert_eq!(state, DecodedBody::AsReceived);
+        assert_eq!(decoded, wire);
+    }
+
+    /// A host can add a codec without touching the decoder, and `is_supported` follows the registry
+    /// rather than a hard-coded list.
+    #[test]
+    fn a_registered_codec_becomes_supported_and_usable() {
+        struct Reverse;
+        impl super::ContentCodec for Reverse {
+            fn name(&self) -> &'static str {
+                "reverse"
+            }
+            fn decode(&self, body: &[u8]) -> Option<Vec<u8>> {
+                Some(body.iter().rev().copied().collect())
+            }
+            fn encode(&self, body: &[u8]) -> Option<Vec<u8>> {
+                Some(body.iter().rev().copied().collect())
+            }
+        }
+
+        assert!(!is_supported("reverse"), "not registered yet");
+        super::register_codec(std::sync::Arc::new(Reverse));
+        assert!(is_supported("reverse"), "registration makes it supported");
+
+        let (decoded, state) = decode_for_inspection(b"abc", Some("reverse"));
+        assert_eq!(state, DecodedBody::Decoded);
+        assert_eq!(decoded, b"cba");
+
+        let (encoded, claimed) = encode_after_rewrite(b"abc", Some("reverse"));
+        assert_eq!(claimed.as_deref(), Some("reverse"));
+        assert_eq!(encoded, b"cba");
     }
 
     #[test]

@@ -881,7 +881,7 @@ AI/MCP 是 RelayCore 的差异化 adapter，但不能替代底层协议正确性
 
 > **2026-11-01 重新评估**：Phase A 的退出条件已基本满足；Phase B 的 L7 基线大部分完成
 > （H2/WS/SSE/SNI/ALPN/TLS 策略），剩余 **reverse / 多监听** 与透明捕获平台验证；
-> Phase C 的 gRPC framing、rule trace 已完成，codec registry / GraphQL 未做；Phase D 未启动。
+> Phase C 的 gRPC framing、rule trace、codec registry 已完成；GraphQL 未做；Phase D 未启动。
 > 高改造项（reverse、TUN/SOCKS/DNS、HTTP/3）维持延后，理由见 §24.11。
 
 ### Phase A — 近期架构关口（0–8 周）
@@ -920,7 +920,7 @@ AI/MCP 是 RelayCore 的差异化 adapter，但不能替代底层协议正确性
 目标：在 mitmproxy 基础覆盖之上形成结构化和自动化优势。
 
 - client/server replay 完善
-- codec registry
+- ~~codec registry~~ ✅ 2026-11-10（`ContentCodec` trait + 注册表，0014）
 - gRPC/Protobuf
 - GraphQL/MessagePack/Socket.IO
 - 更完整 fault injection
@@ -1400,7 +1400,7 @@ interceptor 在 `Flow.meta`（`#[serde(skip)]`，不进任何线路格式与存�
   新 `TlsTransport` **39,480 与 39,754 req/s / P99 1.03 与 0.95ms / RSS 60MB**（无回退）。
   TLS 路径仍缺 release 基准。
 - **计数已过期（本节此前为 493/22，后为 661/838、898、908、938）**：截至 **2026-10-30** 实测
-  `cargo test --workspace` 为 **1006 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
+  `cargo test --workspace` 为 **1009 passed / 0 failed / 0 ignored**（54 个套件；Linux 上另有 5 个
   `linux_tproxy` cmsg 解析用例，macOS 不编译，已在 Docker `rust:1.99-bookworm` 上实测通过），
   Web UI 侧 `webui` 为 **117 passed**（另有一条浏览器靶场检查 `[event stream]`，不在 vitest 计数内）；`relay-core-lib/tests/` 中 socket 级 E2E 为
   `wire_matrix.rs` **32 个用例** + `flow_relationships.rs` **5 个** + `sse_stream_test.rs` **3 个** +
@@ -1553,5 +1553,5 @@ TUN/SOCKS/DNS/WireGuard 属 Phase D，当前投入产出不匹配；HTTP/3 MITM 
 cargo-fuzz 按决策 0011 不承诺。
 
 **Phase 2（部分启动）**：MCP 写工具已支持可选 `idempotency_key`（5 分钟、进程内）；
-codec registry / GraphQL、OpenTelemetry 全链路、DNS/SOCKS5/TUN/WireGuard/QUIC、分布式压测——这些是扩展面，
+GraphQL、OpenTelemetry 全链路、DNS/SOCKS5/TUN/WireGuard/QUIC、分布式压测——这些是扩展面，
 需要单独排优先级；本轮只做了低风险的 Phase 1 收尾（SSE 回放、Trace 面板、wildcard/IDN）。
